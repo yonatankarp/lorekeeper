@@ -1,0 +1,58 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching "version" in src-tauri/tauri.conf.json) to build installers
+# for macOS, Windows and Linux and attach them to a draft GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libxkbcommon-dev patchelf
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', '__VERSION__') }}
+          releaseName: Lorekeeper __VERSION__
+          releaseBody: |
+            Installers for macOS (universal .dmg), Windows (.msi / setup .exe) and Linux (.AppImage / .deb / .rpm).
+
+            The builds are not code-signed yet:
+            - macOS: if it says the app is damaged or can't be opened, run `xattr -dr com.apple.quarantine /Applications/Lorekeeper.app`, or right-click → Open.
+            - Windows: SmartScreen may warn; choose More info → Run anyway.
+          releaseDraft: true
+          args: ${{ matrix.args }}

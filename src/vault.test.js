@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { backlinks, badName, buildTree, fillTemplate, folderFor, resolve, search, splitFrontmatter } from "./vault.js";
+
+const notes = [
+  { path: "Sessions/Session 2.md", content: "# Session 2\n- 20:15 @[[Mirela]] again\n- 20:30 went to [[Locations/Phandalin|town]]" },
+  { path: "Sessions/Session 10.md", content: "# Session 10\n- 21:00 [[mirela#Secrets|she]] lied\n- 21:05 [[Nobody]] here" },
+  { path: "NPCs/Mirela.md", content: "---\ntype: npc\nrace: elf\n---\n# Mirela\nInnkeeper." },
+  { path: "Locations/Phandalin.md", content: "# Phandalin" },
+  { path: "Archive/NPCs/Mirela.md", content: "old copy" },
+];
+const paths = notes.map((n) => n.path);
+
+test("resolves links like Obsidian", () => {
+  assert.equal(resolve("Mirela", paths), "NPCs/Mirela.md"); // shortest path wins
+  assert.equal(resolve("mirela", paths), "NPCs/Mirela.md"); // case-insensitive
+  assert.equal(resolve("Archive/NPCs/Mirela", paths), "Archive/NPCs/Mirela.md");
+  assert.equal(resolve("Locations/Phandalin.md", paths), "Locations/Phandalin.md");
+  assert.equal(resolve("Nobody", paths), null);
+  assert.equal(resolve("ela", paths), null); // no partial names
+  assert.equal(resolve("", paths), null);
+});
+
+test("backlinks find every linking line, including aliases and headings", () => {
+  assert.deepEqual(backlinks("NPCs/Mirela.md", notes), [
+    { path: "Sessions/Session 2.md", lines: ["- 20:15 @[[Mirela]] again"] },
+    { path: "Sessions/Session 10.md", lines: ["- 21:00 [[mirela#Secrets|she]] lied"] },
+  ]);
+  assert.deepEqual(backlinks("Locations/Phandalin.md", notes).map((b) => b.path), ["Sessions/Session 2.md"]);
+  assert.deepEqual(backlinks("Archive/NPCs/Mirela.md", notes), []);
+});
+
+test("tree sorts naturally and keeps empty folders", () => {
+  const tree = buildTree(["Sessions", "NPCs", "PCs"], paths);
+  assert.deepEqual(tree.dirs.map((d) => d.name), ["Archive", "Locations", "NPCs", "PCs", "Sessions"]);
+  assert.deepEqual(tree.dirs[4].files, ["Sessions/Session 10.md", "Sessions/Session 2.md"]); // newest first
+  assert.deepEqual(buildTree([], ["NPCs/Bob 10.md", "NPCs/Bob 2.md"]).dirs[0].files, ["NPCs/Bob 2.md", "NPCs/Bob 10.md"]);
+  assert.equal(tree.dirs[0].dirs[0].path, "Archive/NPCs");
+  assert.deepEqual(tree.dirs[3].files, []);
+});
+
+test("frontmatter, search, templates, names", () => {
+  assert.deepEqual(splitFrontmatter(notes[2].content), {
+    props: [["type", "npc"], ["race", "elf"]],
+    body: "# Mirela\nInnkeeper.",
+  });
+  assert.deepEqual(splitFrontmatter("# No props"), { props: [], body: "# No props" });
+
+  const hits = search("mirela", notes);
+  assert.deepEqual(hits.map((h) => h.path).slice(0, 2), ["Archive/NPCs/Mirela.md", "NPCs/Mirela.md"]); // names first
+  assert.equal(hits.find((h) => h.path === "Sessions/Session 2.md").snippet, "- 20:15 @[[Mirela]] again");
+  assert.deepEqual(search("  ", notes), []);
+
+  assert.equal(fillTemplate("# {{title}}\nMet {{date}}, {{title}}", "Bob", "2026-10-04"), "# Bob\nMet 2026-10-04, Bob");
+  assert.equal(folderFor("NPC", ["NPCs", "PCs"]), "NPCs");
+  assert.equal(folderFor("Monster", ["NPCs"]), "");
+  assert.equal(badName("Mirela"), "");
+  assert.ok(badName("a/b"));
+  assert.ok(badName("[[x]]"));
+  assert.ok(badName("  "));
+});

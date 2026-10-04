@@ -1,0 +1,16 @@
+{
+  "name": "dnd-session-notes",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "test": "node --test src/*.test.js && cargo test --manifest-path src-tauri/Cargo.toml",
+    "vendor": "cp node_modules/marked/lib/marked.esm.js src/vendor/"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "marked": "^18.0.14"
+  },
+  "packageManager": "pnpm@12.8.1"
+}

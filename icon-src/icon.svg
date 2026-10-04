@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c8322b"/><stop offset="1" stop-color="#7a1414"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbf1dc"/><stop offset="1" stop-color="#e9d3a6"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <!-- d20 -->
+  <g stroke="#5a0f0f" stroke-width="16" stroke-linejoin="round" stroke-linecap="round">
+    <polygon points="480,250 695,374 695,622 480,746 265,622 265,374" fill="#e2c48e"/>
+    <polygon points="480,345 345,580 615,580" fill="url(#face)"/>
+    <path d="M480,250 L480,345 M265,374 L480,345 M265,374 L345,580 M695,374 L480,345 M695,374 L615,580 M265,622 L345,580 M695,622 L615,580 M480,746 L345,580 M480,746 L615,580" fill="none"/>
+  </g>
+  <text x="480" y="530" font-family="Georgia, serif" font-weight="700" font-size="120" text-anchor="middle" fill="#7a1414">20</text>
+  <!-- quill -->
+  <g transform="translate(720,560) rotate(28)">
+    <path d="M0,-360 C80,-270 96,-90 30,130 L0,210 L-30,130 C-96,-90 -80,-270 0,-360 Z" fill="#fffaf0" stroke="#5a0f0f" stroke-width="12" stroke-linejoin="round"/>
+    <path d="M0,-320 L0,215" stroke="#5a0f0f" stroke-width="9" stroke-linecap="round"/>
+    <path d="M-16,205 L16,205 L0,310 Z" fill="#2b2b2b" stroke="#5a0f0f" stroke-width="8" stroke-linejoin="round"/>
+  </g>
+</svg>

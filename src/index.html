@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lorekeeper</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <aside id="sidebar">
+      <input id="search" type="search" placeholder="Search notes  ⌘K" aria-label="Search notes" autocomplete="off" />
+      <nav id="tree" aria-label="Vault"></nav>
+      <nav id="results" aria-label="Search results" hidden></nav>
+      <p id="result-count" class="sr-only" aria-live="polite"></p>
+      <footer class="side-foot">
+        <button id="new-page" class="ghost" title="New page (⌘N)">+ New page</button>
+        <button id="new-session" class="ghost" title="Start the next session file">+ Session</button>
+      </footer>
+    </aside>
+
+    <main>
+      <header id="bar">
+        <div id="crumbs"></div>
+        <span id="status" role="status"></span>
+        <button id="copy" hidden>Copy for D&amp;D Beyond</button>
+        <button id="toggle" class="ghost" title="Edit / preview (⌘E)">Edit</button>
+        <button id="obsidian" class="ghost" title="Open this page in Obsidian">Obsidian</button>
+      </header>
+      <div id="conflict" role="alert" hidden>
+        This page changed outside the app while you were editing.
+        <button id="take-theirs" class="ghost">Load their version</button>
+        <button id="keep-mine">Keep mine</button>
+      </div>
+      <div id="scroll">
+        <article id="view"></article>
+        <textarea id="editor" aria-label="Page text" spellcheck="true" hidden></textarea>
+        <p id="editor-hint" class="editor-hint" hidden>@ NPC · # Loot · ! Quest · ? Mystery · " Quote</p>
+        <section id="backlinks" aria-label="Linked from"></section>
+      </div>
+    </main>
+
+    <dialog id="new-dialog">
+      <form id="new-form" method="dialog">
+        <h2>New page</h2>
+        <label>Name <input id="new-name" required autocomplete="off" /></label>
+        <label>Template <select id="new-template"></select></label>
+        <label>Folder <select id="new-folder"></select></label>
+        <p id="new-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button value="cancel" formnovalidate class="ghost">Cancel</button>
+          <button id="new-create" value="create">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
