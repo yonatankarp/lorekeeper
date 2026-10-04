@@ -15,10 +15,11 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_clipboard_manager::ClipboardExt;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
-// ---------- notes on disk: an Obsidian-compatible vault at <Documents>/Lorekeeper ----------
+// ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
 //   Sessions/Session N.md   written by the hotkeys
 //   PCs/ NPCs/ Locations/ Items/ Factions/   your pages
 //   Templates/   starting text for "New page" (Obsidian's {{title}} / {{date}} syntax)
@@ -39,7 +40,12 @@ const LOGIN_ARG: &str = "--from-login";
 /// Serializes writes from the hotkeys and the editor so neither loses the other's change.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+/// The notes folder chosen in Settings.
 fn notes_dir(app: &AppHandle) -> PathBuf {
+    PathBuf::from(&app.state::<Mutex<Settings>>().lock().unwrap().vault_path)
+}
+
+fn default_vault(app: &AppHandle) -> PathBuf {
     let base = app.path().document_dir().or_else(|_| app.path().home_dir());
     base.expect("no home directory").join("Lorekeeper")
 }
@@ -79,7 +85,7 @@ fn new_session(dir: &Path) -> io::Result<PathBuf> {
     let n = latest_session(dir)? + 1;
     let path = session_path(dir, n);
     let date = chrono::Local::now().format("%Y-%m-%d");
-    fs::write(&path, format!("---\nsession: {n}\ndate: {date}\n---\n# Session {n} — {date}\n\n"))?;
+    fs::write(&path, format!("---\nsession: {n}\ndate: {date}\n---\n# Session {n} - {date}\n\n"))?;
     Ok(path)
 }
 
@@ -177,13 +183,24 @@ fn merge_save(disk: &str, base: &str, content: &str) -> Option<String> {
     Some(format!("{content}{sep}{tail}"))
 }
 
-// ---------- settings.json (lives next to the notes) ----------
+// ---------- settings.json (in the app's config folder) ----------
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+const THEMES: [&str; 3] = ["system", "light", "dark"];
+const SESSION_VIEWS: [&str; 2] = ["timeline", "journal"];
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
 struct Settings {
     quick_note: String,
     capture: String,
+    /// Empty in older files; load_settings fills in the default folder.
+    vault_path: String,
+    theme: String,
+    editor_font_size: u32,
+    session_view: String,
+    notifications: bool,
+    /// Kept by the OS (autostart), never in the file; see current_settings.
+    launch_at_login: bool,
 }
 
 impl Default for Settings {
@@ -191,27 +208,97 @@ impl Default for Settings {
         Self {
             quick_note: "CmdOrCtrl+Alt+N".into(),
             capture: "CmdOrCtrl+Shift+S".into(),
+            vault_path: String::new(),
+            theme: "system".into(),
+            editor_font_size: 15,
+            session_view: "timeline".into(),
+            notifications: true,
+            launch_at_login: false,
         }
     }
 }
 
-/// Writes the defaults only when the file is missing, so a typo never wipes your settings.
-fn load_settings(dir: &Path) -> Result<Settings, String> {
-    let path = dir.join("settings.json");
-    match fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("settings.json: {e}")),
-        Err(_) => {
-            let s = Settings::default();
-            let _ = fs::write(&path, serde_json::to_string_pretty(&s).unwrap());
-            Ok(s)
-        }
+fn settings_file(app: &AppHandle) -> tauri::Result<PathBuf> {
+    Ok(app.path().app_config_dir()?.join("settings.json"))
+}
+
+fn write_settings(file: &Path, s: &Settings) -> io::Result<()> {
+    let mut json = serde_json::to_value(s)?;
+    json.as_object_mut().unwrap().remove("launchAtLogin");
+    fs::create_dir_all(file.parent().unwrap())?;
+    fs::write(file, serde_json::to_string_pretty(&json)?)
+}
+
+/// Reads `file`, writing the defaults only when it's missing so a typo never wipes your settings.
+/// The first time, an older `<default vault>/settings.json` (hotkeys only) is moved over instead.
+fn load_settings(file: &Path, default_vault: &Path) -> Result<Settings, String> {
+    let legacy = default_vault.join("settings.json");
+    let migrate = !file.exists() && legacy.exists();
+    let src = if migrate { &legacy } else { file };
+    let mut s: Settings = match fs::read_to_string(src) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", src.display()))?,
+        Err(_) => Settings::default(),
+    };
+    if s.vault_path.is_empty() {
+        s.vault_path = default_vault.to_string_lossy().into_owned();
     }
+    if !file.exists() && write_settings(file, &s).is_ok() && migrate {
+        let _ = fs::remove_file(&legacy);
+    }
+    Ok(s)
+}
+
+/// Checks settings from the settings window; returns them with the font size clamped.
+fn validate(mut s: Settings) -> Result<Settings, String> {
+    let parse = |name: &str, keys: &str| keys.parse::<Shortcut>().map_err(|_| format!("{name}: \"{keys}\" isn't a valid shortcut."));
+    let quick = parse("Quick note", &s.quick_note)?;
+    let capture = parse("Save selection", &s.capture)?;
+    if quick == capture {
+        return Err("Quick note and Save selection need different shortcuts.".into());
+    }
+    // The capture hotkey's Cmd/Ctrl is reused for the copy keystroke (see send_copy).
+    let (primary, key) = if cfg!(target_os = "macos") { (Modifiers::SUPER, "⌘") } else { (Modifiers::CONTROL, "Ctrl") };
+    if !capture.mods.contains(primary) {
+        return Err(format!("The Save selection shortcut must include {key}."));
+    }
+    if !Path::new(&s.vault_path).is_absolute() {
+        return Err(format!("The notes folder must be a full path, not \"{}\".", s.vault_path));
+    }
+    if !THEMES.contains(&s.theme.as_str()) {
+        return Err(format!("Unknown theme \"{}\".", s.theme));
+    }
+    if !SESSION_VIEWS.contains(&s.session_view.as_str()) {
+        return Err(format!("Unknown session view \"{}\".", s.session_view));
+    }
+    s.editor_font_size = s.editor_font_size.clamp(11, 24);
+    Ok(s)
+}
+
+fn current_settings(app: &AppHandle) -> Settings {
+    let mut s = app.state::<Mutex<Settings>>().lock().unwrap().clone();
+    s.launch_at_login = app.autolaunch().is_enabled().unwrap_or(false);
+    s
+}
+
+/// Turns launch at login on or off and keeps the tray's checkmark in step.
+fn set_launch_at_login(app: &AppHandle, on: bool) -> Result<(), String> {
+    let al = app.autolaunch();
+    let result = if on { al.enable() } else { al.disable() };
+    let _ = app.state::<CheckMenuItem<tauri::Wry>>().set_checked(al.is_enabled().unwrap_or(false));
+    result.map_err(|e| format!("Launch at login: {e}"))
 }
 
 // ---------- helpers ----------
 
 fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// Success messages, which can be turned off in Settings. Errors and warnings use notify.
+fn notify_saved(app: &AppHandle, title: &str, body: &str) {
+    if app.state::<Mutex<Settings>>().lock().unwrap().notifications {
+        notify(app, title, body);
+    }
 }
 
 fn preview(text: &str) -> String {
@@ -222,13 +309,24 @@ fn preview(text: &str) -> String {
     p
 }
 
+/// Windows that make Lorekeeper a normal app (Dock icon, Cmd+Tab) while one of them is open.
+#[cfg(target_os = "macos")]
+const APP_WINDOWS: [&str; 2] = ["main", "settings"];
+
+#[cfg(target_os = "macos")]
+fn app_window_visible(app: &AppHandle, except: &str) -> bool {
+    APP_WINDOWS
+        .iter()
+        .filter(|l| **l != except)
+        .any(|l| app.get_webview_window(l).is_some_and(|w| w.is_visible().unwrap_or(false)))
+}
+
 fn show_window(app: &AppHandle, label: &str) {
     // dismiss() hides the whole app on macOS; a hidden app's windows won't show until it's unhidden.
     #[cfg(target_os = "macos")]
     {
         let _ = app.show();
-        // The notes window behaves like a normal app (Dock icon, Cmd+Tab) while it's open.
-        if label == "main" {
+        if APP_WINDOWS.contains(&label) {
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
         }
     }
@@ -305,17 +403,14 @@ fn capture_selection(app: &AppHandle) {
         Ok(saved) if saved.is_empty() => notify(app, "Nothing to save", "No text selected or copied."),
         Ok(saved) => {
             emit_changed(app);
-            notify(app, title, &preview(&saved));
+            notify_saved(app, title, &preview(&saved));
         }
         Err(e) => notify(app, "Couldn't save note", &e.to_string()),
     }
 }
 
-fn register_shortcuts(app: &AppHandle) {
-    let s = load_settings(&notes_dir(app)).unwrap_or_else(|e| {
-        notify(app, "Using default shortcuts", &e);
-        Settings::default()
-    });
+/// Registers both hotkeys. Returns the ones that couldn't be registered, e.g. "Quick note (CmdOrCtrl+Alt+N)".
+fn register_shortcuts(app: &AppHandle, s: &Settings) -> Vec<String> {
     let gs = app.global_shortcut();
     let quick = gs.on_shortcut(s.quick_note.as_str(), |app, _, e| {
         if e.state == ShortcutState::Pressed {
@@ -329,14 +424,14 @@ fn register_shortcuts(app: &AppHandle) {
             thread::spawn(move || capture_selection(&app));
         }
     });
-    for (keys, result) in [(&s.quick_note, quick), (&s.capture, capture)] {
-        if let Err(e) = result {
-            notify(app, "Shortcut unavailable", &format!("{keys}: {e}. Change it in Lorekeeper/settings.json."));
-        }
-    }
+    [("Quick note", &s.quick_note, quick), ("Save selection", &s.capture, capture)]
+        .into_iter()
+        .filter(|(_, _, result)| result.is_err())
+        .map(|(name, keys, _)| format!("{name} ({keys})"))
+        .collect()
 }
 
-// ---------- commands for the two windows ----------
+// ---------- commands for the windows ----------
 
 /// From the quick box. Returns the session the note went into ("Session 3") for the box to show.
 #[tauri::command]
@@ -361,7 +456,7 @@ fn dismiss(app: AppHandle) {
         let _ = w.hide();
     }
     #[cfg(target_os = "macos")]
-    if !app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false)) {
+    if !app_window_visible(&app, "capture") {
         let _ = app.hide();
     }
 }
@@ -453,6 +548,61 @@ fn copy_html(app: AppHandle, html: String, text: String) -> Result<(), String> {
     app.clipboard().write_html(html, Some(text)).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Settings {
+    current_settings(&app)
+}
+
+/// Checks and applies every setting, saves them, then tells all windows. On error nothing changes.
+#[tauri::command]
+fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
+    let new = validate(settings)?;
+    let old = current_settings(&app);
+    // Existing notes stay in the old folder; the new one gets the standard folders and templates.
+    if new.vault_path != old.vault_path {
+        create_vault_folders(Path::new(&new.vault_path)).map_err(|e| format!("Notes folder: {e}"))?;
+    }
+    if (&new.quick_note, &new.capture) != (&old.quick_note, &old.capture) {
+        let gs = app.global_shortcut();
+        let _ = gs.unregister_all();
+        let failed = register_shortcuts(&app, &new);
+        if !failed.is_empty() {
+            let _ = gs.unregister_all();
+            register_shortcuts(&app, &old);
+            return Err(format!("{} couldn't be registered. Another app may be using it.", failed.join(" and ")));
+        }
+    }
+    if new.launch_at_login != old.launch_at_login {
+        set_launch_at_login(&app, new.launch_at_login)?;
+    }
+    let file = settings_file(&app).map_err(|e| e.to_string())?;
+    write_settings(&file, &new).map_err(|e| format!("Couldn't save settings: {e}"))?;
+    *app.state::<Mutex<Settings>>().lock().unwrap() = new.clone();
+    let _ = app.emit("settings-changed", &new);
+    if new.vault_path != old.vault_path {
+        emit_changed(&app);
+    }
+    Ok(new)
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) {
+    show_window(&app, "settings");
+}
+
+/// None when cancelled. Async because the blocking dialog must not run on the main thread.
+#[tauri::command]
+async fn pick_vault_folder(app: AppHandle, window: tauri::WebviewWindow) -> Option<String> {
+    let dialog = app.dialog().file().set_title("Choose a notes folder").set_directory(notes_dir(&app));
+    let path = dialog.set_parent(&window).blocking_pick_folder()?.into_path().ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn open_vault_folder(app: AppHandle) {
+    open_external(notes_dir(&app));
+}
+
 // ---------- app ----------
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -460,10 +610,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let review = MenuItem::with_id(app, "review", "Open Lorekeeper…", true, None::<&str>)?;
     let new = MenuItem::with_id(app, "new", "New Session", true, None::<&str>)?;
     let folder = MenuItem::with_id(app, "folder", "Open in Obsidian", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let login = CheckMenuItem::with_id(app, "login", "Launch at Login", true, autostart, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&review, &new, &folder, &sep, &login, &quit])?;
+    let menu = Menu::with_items(app, &[&review, &new, &folder, &sep, &settings, &login, &quit])?;
+    app.manage(login); // for set_launch_at_login
 
     // macOS menu bar: monochrome template icon that follows light/dark. Elsewhere: the colored app icon,
     // since a black icon would vanish on Windows' dark taskbar.
@@ -478,21 +630,23 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("Lorekeeper")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(move |app, event| match event.id().as_ref() {
+        .on_menu_event(|app, event| match event.id().as_ref() {
             "review" => show_window(app, "main"),
             "new" => match new_session(&notes_dir(app)) {
                 Ok(p) => {
                     emit_changed(app);
-                    notify(app, "New session started", &p.file_name().unwrap().to_string_lossy());
+                    notify_saved(app, "New session started", &p.file_name().unwrap().to_string_lossy());
                 }
                 Err(e) => notify(app, "Couldn't start session", &e.to_string()),
             },
             "folder" => open_notes(app),
+            "settings" => show_window(app, "settings"),
             "login" => {
-                let al = app.autolaunch();
-                let on = al.is_enabled().unwrap_or(false);
-                let _ = if on { al.disable() } else { al.enable() };
-                let _ = login.set_checked(al.is_enabled().unwrap_or(!on));
+                let on = app.autolaunch().is_enabled().unwrap_or(false);
+                if let Err(e) = set_launch_at_login(app, !on) {
+                    notify(app, "Couldn't change Launch at Login", &e);
+                }
+                let _ = app.emit("settings-changed", current_settings(app));
             }
             "quit" => app.exit(0),
             _ => {}
@@ -508,6 +662,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![LOGIN_ARG])))
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             save_note,
             dismiss,
@@ -518,28 +673,45 @@ pub fn run() {
             start_session,
             open_in_obsidian,
             open_url,
-            copy_html
+            copy_html,
+            get_settings,
+            save_settings,
+            open_settings,
+            pick_vault_folder,
+            open_vault_folder
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            create_vault_folders(&notes_dir(app.handle()))?;
-            build_tray(app.handle())?;
-            register_shortcuts(app.handle());
+            let handle = app.handle();
+            let vault = default_vault(handle);
+            let settings = load_settings(&settings_file(handle)?, &vault).unwrap_or_else(|e| {
+                notify(handle, "Using default settings", &format!("{e}. Fix the file, or change a setting to replace it."));
+                Settings { vault_path: vault.to_string_lossy().into_owned(), ..Settings::default() }
+            });
+            // A folder on an unplugged drive shouldn't stop the app from starting.
+            if let Err(e) = create_vault_folders(Path::new(&settings.vault_path)) {
+                notify(handle, "Notes folder unavailable", &format!("{}: {e}", settings.vault_path));
+            }
+            app.manage(Mutex::new(settings.clone()));
+            build_tray(handle)?;
+            for keys in register_shortcuts(handle, &settings) {
+                notify(handle, "Shortcut unavailable", &format!("{keys} couldn't be registered. Change it in Settings."));
+            }
             // Opened by hand: show the notes. Started at login: stay quietly in the menu bar.
             if !std::env::args().any(|a| a == LOGIN_ARG) {
                 show_window(app.handle(), "main");
             }
             Ok(())
         })
-        // Closing the review window only hides it; the app keeps running in the tray.
+        // Closing a window only hides it; the app keeps running in the tray.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
                 #[cfg(target_os = "macos")]
-                if window.label() == "main" {
+                if !app_window_visible(window.app_handle(), window.label()) {
                     let _ = window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             }
@@ -575,7 +747,7 @@ mod tests {
         assert_eq!(append_note(&dir, " \n ").unwrap(), "");
         let s1 = fs::read_to_string(dir.join("Sessions/Session 1.md")).unwrap();
         assert!(s1.starts_with("---\nsession: 1\ndate: "));
-        assert!(s1.contains("\n# Session 1 — "));
+        assert!(s1.contains("\n# Session 1 - "));
         assert_eq!(s1.lines().filter(|l| l.starts_with("- ")).count(), 1);
         assert!(s1.trim_end().ends_with(" @Mirela the innkeeper"));
 
@@ -589,11 +761,6 @@ mod tests {
         fs::write(session_path(&dir, 10), "").unwrap();
         assert_eq!(latest_session(&dir).unwrap(), 10);
 
-        // A broken settings file is reported, not overwritten.
-        fs::write(dir.join("settings.json"), "{oops").unwrap();
-        assert!(load_settings(&dir).is_err());
-        assert_eq!(fs::read_to_string(dir.join("settings.json")).unwrap(), "{oops");
-
         // The vault walk lists folders and notes with / paths, skipping hidden entries.
         fs::create_dir_all(dir.join(".obsidian")).unwrap();
         fs::write(dir.join(".obsidian/app.md"), "").unwrap();
@@ -605,6 +772,73 @@ mod tests {
         assert!(vault.notes.iter().any(|n| n.path == "NPCs/Villains/Vex.md" && n.content == "# Vex"));
         assert!(!vault.folders.iter().chain(vault.notes.iter().map(|n| &n.path)).any(|p| p.contains(".obsidian")));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dnd-notes-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn settings_load_defaults_partial_files_and_migrate() {
+        let dir = temp_dir("settings");
+        let (config, vault) = (dir.join("config/settings.json"), dir.join("Lorekeeper"));
+        let vault_path = vault.to_string_lossy().into_owned();
+
+        // First run: defaults, pointing at the default vault, written to the config folder.
+        let s = load_settings(&config, &vault).unwrap();
+        assert_eq!(s, Settings { vault_path: vault_path.clone(), ..Settings::default() });
+        assert_eq!((s.theme.as_str(), s.editor_font_size, s.session_view.as_str(), s.notifications), ("system", 15, "timeline", true));
+        let written = fs::read_to_string(&config).unwrap();
+        assert!(written.contains("\"editorFontSize\": 15") && !written.contains("launchAtLogin"));
+
+        // A partial file keeps what it has and fills in the rest.
+        fs::write(&config, r#"{"theme":"dark","editorFontSize":18}"#).unwrap();
+        let s = load_settings(&config, &vault).unwrap();
+        assert_eq!((s.theme.as_str(), s.editor_font_size, s.quick_note.as_str()), ("dark", 18, "CmdOrCtrl+Alt+N"));
+        assert_eq!(s.vault_path, vault_path);
+
+        // A broken file is reported, not overwritten.
+        fs::write(&config, "{oops").unwrap();
+        assert!(load_settings(&config, &vault).is_err());
+        assert_eq!(fs::read_to_string(&config).unwrap(), "{oops");
+
+        // Old <vault>/settings.json: moved to the config folder, keeping its hotkeys.
+        fs::remove_file(&config).unwrap();
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("settings.json"), r#"{"quickNote":"CmdOrCtrl+Alt+Q","capture":"CmdOrCtrl+Shift+K"}"#).unwrap();
+        let s = load_settings(&config, &vault).unwrap();
+        assert_eq!((s.quick_note.as_str(), s.capture.as_str(), s.vault_path.as_str()), ("CmdOrCtrl+Alt+Q", "CmdOrCtrl+Shift+K", vault_path.as_str()));
+        assert!(!vault.join("settings.json").exists());
+        assert_eq!(load_settings(&config, &vault).unwrap(), s);
+
+        // A broken old file is reported and left where it is; nothing is written.
+        fs::remove_file(&config).unwrap();
+        fs::write(vault.join("settings.json"), "{oops").unwrap();
+        assert!(load_settings(&config, &vault).is_err());
+        assert!(!config.exists());
+        assert_eq!(fs::read_to_string(vault.join("settings.json")).unwrap(), "{oops");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn settings_validation() {
+        let ok = Settings { vault_path: std::env::temp_dir().to_string_lossy().into_owned(), ..Settings::default() };
+        assert_eq!(validate(ok.clone()).unwrap(), ok);
+        assert_eq!(validate(Settings { editor_font_size: 99, ..ok.clone() }).unwrap().editor_font_size, 24);
+        assert_eq!(validate(Settings { editor_font_size: 2, ..ok.clone() }).unwrap().editor_font_size, 11);
+        let bad = [
+            Settings { theme: "purple".into(), ..ok.clone() },
+            Settings { session_view: "grid".into(), ..ok.clone() },
+            Settings { vault_path: "notes".into(), ..ok.clone() },
+            Settings { quick_note: "CmdOrCtrl+Nope".into(), ..ok.clone() },
+            Settings { capture: "Alt+Shift+S".into(), ..ok.clone() },
+            Settings { capture: ok.quick_note.clone(), ..ok.clone() },
+        ];
+        for s in bad {
+            assert!(validate(s.clone()).is_err(), "{s:?} should be refused");
+        }
     }
 
     #[test]

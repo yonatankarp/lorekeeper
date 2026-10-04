@@ -6,7 +6,7 @@ const md = `---
 session: 14
 date: 2026-10-04
 ---
-# Session 14 — 2026-10-04
+# Session 14 - 2026-10-04
 
 - 20:01 Arrived in Phandalin
 - 20:15 @[[Mirela]] the innkeeper, shifty
@@ -14,7 +14,7 @@ date: 2026-10-04
 - 20:16 #+2 healing potions & 40gp
 - 20:30 !Find the <missing> caravan
 - 20:41 ?Why did the statue bleed
-- 20:50 "You'll regret this" — Baron
+- 20:50 "You'll regret this" - Baron
 - 21:02 Fought goblins
 ## Afterwards
 We camped by the river.
@@ -25,7 +25,7 @@ We camped by the river.
 
 test("groups notes by prefix, keeps hand-written lines, and escapes HTML", () => {
   const session = parse(md);
-  assert.equal(session.title, "Session 14 — 2026-10-04");
+  assert.equal(session.title, "Session 14 - 2026-10-04");
   assert.deepEqual(session.groups.event, [
     "Arrived in Phandalin",
     "Met [[Baron Vex|the Baron]] at the gate",
@@ -34,16 +34,16 @@ test("groups notes by prefix, keeps hand-written lines, and escapes HTML", () =>
     "Bought rope",
   ]);
   assert.deepEqual(session.groups.npc, ["[[Mirela]] the innkeeper, shifty"]); // bare "@" dropped
-  assert.deepEqual(session.groups.quote, [`"You'll regret this" — Baron`]);
+  assert.deepEqual(session.groups.quote, [`"You'll regret this" - Baron`]);
 
   // D&D Beyond export: links become plain labels.
   const html = toHtml(session);
-  assert.ok(html.startsWith("<h2>Session 14 — 2026-10-04</h2><h3>What happened</h3>"));
+  assert.ok(html.startsWith("<h2>Session 14 - 2026-10-04</h2><h3>What happened</h3>"));
   assert.ok(html.includes("<li>Met the Baron at the gate</li>"));
   assert.ok(html.includes("<li>Mirela the innkeeper, shifty</li>"));
   assert.ok(html.includes("<li>+2 healing potions &amp; 40gp</li>"));
   assert.ok(html.includes("<li>Find the &lt;missing&gt; caravan</li>"));
-  assert.ok(html.includes("<li>&quot;You&#39;ll regret this&quot; — Baron</li>"));
+  assert.ok(html.includes("<li>&quot;You&#39;ll regret this&quot; - Baron</li>"));
   assert.ok(!html.includes("<h3>Mysteries</h3><ul></ul>"));
   assert.ok(!html.includes("[["));
 

@@ -1,0 +1,44 @@
+/* Layout for settings.html; colors and controls come from styles.css. */
+body { display: block; overflow-y: auto; }
+.settings { max-width: 520px; margin: 0 auto; padding: 18px 24px 28px; }
+.settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+h1 { margin: 0 0 8px; font-size: 20px; }
+#saved-status { margin: 0; color: var(--muted); font-size: 13px; }
+section { padding: 14px 0 10px; border-top: 1px solid var(--line); }
+h2 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; margin: 6px 0; }
+.row select { grid-column: 2 / -1; justify-self: end; }
+.row kbd { font-size: 13px; padding: 3px 8px; min-width: 6ch; text-align: center; }
+.row kbd.recording { border-color: var(--accent-text); color: var(--accent-text); }
+.check { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+select {
+  padding: 5px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+}
+input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
+input[type="checkbox"] { width: 16px; height: 16px; margin: 0; }
+output { min-width: 4ch; color: var(--muted); font-variant-numeric: tabular-nums; }
+.path {
+  margin: 0 0 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  font: 12px ui-monospace, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+/* Kept in the page while empty so screen readers announce new text. */
+.error { margin: 0; color: var(--accent-text); font-size: 13px; }
+.error:not(:empty) { margin: 2px 0 6px; }

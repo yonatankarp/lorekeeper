@@ -18,8 +18,9 @@
   --kind-mystery: #6a3d9a;
   --kind-quote: #5c5c61;
 }
+/* Dark tokens appear twice: for the OS setting (unless Settings forces light) and when Settings forces dark. Keep both copies identical. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1b1b1d;
     --side: #202023;
     --panel: #252528;
@@ -39,6 +40,27 @@
     --kind-quote: #b4b4ba;
   }
 }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1b1b1d;
+  --side: #202023;
+  --panel: #252528;
+  --fg: #ececef;
+  --muted: #9a9aa0;
+  --line: #36363a;
+  --control-border: #79797f;
+  --hover: #2e2e32;
+  --accent: #c2453a;
+  --accent-text: #f08a7f;
+  --accent-soft: #46211e;
+  --link: #f08a7f;
+  --kind-npc: #8cb8ee;
+  --kind-loot: #e3b45f;
+  --kind-quest: #8fcf8a;
+  --kind-mystery: #c5a5ef;
+  --kind-quote: #b4b4ba;
+}
+:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }

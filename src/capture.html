@@ -5,7 +5,10 @@
     <title>Quick Note</title>
     <style>
       :root { color-scheme: light dark; --bg: #fff; --fg: #1d1d1f; --muted: #8a8a8e; --ghost: #a8a8ad; }
-      @media (prefers-color-scheme: dark) { :root { --bg: #232326; --fg: #f2f2f4; --muted: #8d8d93; --ghost: #6e6e74; } }
+      /* Same dark values twice: OS dark mode (unless Settings forces light), and Settings forcing dark. */
+      @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #232326; --fg: #f2f2f4; --muted: #8d8d93; --ghost: #6e6e74; } }
+      :root[data-theme="dark"] { color-scheme: dark; --bg: #232326; --fg: #f2f2f4; --muted: #8d8d93; --ghost: #6e6e74; }
+      :root[data-theme="light"] { color-scheme: light; }
       html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
       /* The ghost sits behind the input with the same box, so its text lines up with what's typed. */
       input, #ghost {
@@ -22,6 +25,6 @@
     <div id="ghost" aria-hidden="true"><span id="typed"></span><span id="rest"></span></div>
     <input id="note" aria-label="Session note" autocomplete="off" spellcheck="true" autofocus
            placeholder='Note…   @npc  #loot  !quest  ?mystery  "quote' />
-    <script src="capture.js"></script>
+    <script type="module" src="capture.js"></script>
   </body>
 </html>

@@ -1,7 +1,9 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
+import { createEditor } from "./editor.js";
 import { escape, parse, timeline, toHtml, toText } from "./notes.js";
 import { backlinks, badName, baseName, buildTree, fillTemplate, folderFor, resolve, search, splitFrontmatter } from "./vault.js";
+import { applyTheme } from "./theme.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -17,10 +19,9 @@ let saving = null; // in-flight save promise
 let inConflict = false;
 const closedFolders = new Set();
 const KINDS = { npc: ["@", "NPC"], loot: ["#", "Loot"], quest: ["!", "Quest"], mystery: ["?", "Mystery"], quote: ['"', "Quote"] };
-let sessionView = "timeline"; // or "journal": the grouped D&D Beyond preview
-try {
-  if (localStorage.getItem("sessionView") === "journal") sessionView = "journal";
-} catch {}
+let settings = { theme: "system", editorFontSize: 15, sessionView: "timeline" }; // until get_settings answers
+let sessionView = settings.sessionView; // or "journal": the grouped D&D Beyond preview; the switch changes it until restart
+let editor = null; // created on first Edit, then reused for every page
 
 const note = (path) => vault.notes.find((n) => n.path === path);
 const paths = () => vault.notes.map((n) => n.path);
@@ -28,6 +29,22 @@ const isSession = (path) => path?.startsWith("Sessions/");
 const dirty = () => saveTimer !== null || saving !== null;
 const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD
 const unescape = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[e]);
+
+/** The Markdown editor, created the first time it's needed. */
+function ed() {
+  if (!editor) {
+    editor = createEditor($("editor"), {
+      onChange: () => {
+        scheduleSave();
+        syncCopy();
+      },
+      onFollowLink: followLink,
+      pageNames: () => vault.notes.map((n) => baseName(n.path)),
+    });
+    editor.setFontSize(settings.editorFontSize);
+  }
+  return editor;
+}
 
 /** Reads the vault, keeping Templates/ out of the tree, search, links and backlinks. */
 async function loadVault() {
@@ -168,7 +185,7 @@ function sessionHtml(content) {
 
 /** Copy is pointless until the session has a note; while editing, the unsaved text counts. */
 const syncCopy = () =>
-  ($("copy").disabled = !timeline(editing ? $("editor").value : note(current)?.content ?? "").length);
+  ($("copy").disabled = !timeline(editing ? ed().getValue() : note(current)?.content ?? "").length);
 
 function render() {
   const n = note(current);
@@ -209,11 +226,11 @@ async function open(path, { edit = false } = {}) {
   editing = edit;
   inConflict = false;
   $("conflict").hidden = true;
-  if (editing) $("editor").value = base;
+  if (editing) ed().setValue(base, { reset: true });
   renderTree();
   render();
   $("scroll").scrollTop = 0;
-  if (editing) $("editor").focus();
+  if (editing) ed().focus();
 }
 
 function followLink(target) {
@@ -243,19 +260,14 @@ async function flush() {
 
 async function save() {
   const path = current;
-  const content = $("editor").value;
+  const content = ed().getValue();
   try {
     const written = await invoke("save_file", { path, content, base });
     base = written;
     const n = note(path);
     if (n) n.content = written;
     // Notes added by the hotkeys while editing were kept on disk; show them in the editor too.
-    if (written !== content && written.startsWith(content) && path === current) {
-      const ed = $("editor");
-      const [s, e] = [ed.selectionStart, ed.selectionEnd];
-      ed.value += written.slice(content.length);
-      ed.setSelectionRange(s, e);
-    }
+    if (written !== content && written.startsWith(content) && path === current) ed().append(written.slice(content.length));
     say("Saved");
   } catch (err) {
     if (err === "conflict") {
@@ -274,12 +286,7 @@ async function refresh() {
   if (current && !note(current)) current = null; // deleted or renamed elsewhere
   const n = note(current);
   if (n && !dirty() && !inConflict) {
-    if (editing && $("editor").value !== n.content) {
-      const ed = $("editor");
-      const [s, e] = [ed.selectionStart, ed.selectionEnd];
-      ed.value = n.content;
-      ed.setSelectionRange(s, e);
-    }
+    if (editing) ed().setValue(n.content); // keeps the cursor
     base = n.content;
   }
   renderTree();
@@ -353,9 +360,6 @@ $("view").addEventListener("click", (e) => {
   const view = e.target.closest(".view-switch button")?.dataset.view;
   if (!view) return;
   sessionView = view;
-  try {
-    localStorage.setItem("sessionView", view);
-  } catch {}
   render();
   $("view").querySelector(`[data-view="${view}"]`)?.focus(); // re-render replaced the button
 });
@@ -390,26 +394,21 @@ $("results").addEventListener("keydown", (e) => {
   }
 });
 
-$("editor").addEventListener("input", () => {
-  scheduleSave();
-  syncCopy();
-});
-
 $("toggle").addEventListener("click", async () => {
   if (editing) {
     await flush();
     editing = false;
   } else {
     editing = true;
-    $("editor").value = note(current)?.content ?? "";
-    base = $("editor").value;
+    base = note(current)?.content ?? "";
+    ed().setValue(base, { reset: true });
   }
   render();
-  if (editing) $("editor").focus();
+  if (editing) ed().focus();
 });
 
 $("copy").addEventListener("click", async () => {
-  const session = parse(editing ? $("editor").value : note(current)?.content ?? "");
+  const session = parse(editing ? ed().getValue() : note(current)?.content ?? "");
   await invoke("copy_html", { html: toHtml(session), text: toText(session) })
     .then(() => say("Copied. Paste it into the D&D Beyond journal"), (err) => say(`Copy failed: ${err}`));
 });
@@ -430,17 +429,17 @@ $("take-theirs").addEventListener("click", async () => {
   inConflict = false;
   $("conflict").hidden = true;
   await refresh();
-  $("editor").value = note(current)?.content ?? "";
-  base = $("editor").value;
+  base = note(current)?.content ?? "";
+  ed().setValue(base);
   render();
 });
 $("keep-mine").addEventListener("click", async () => {
   inConflict = false;
   $("conflict").hidden = true;
-  const mine = $("editor").value;
+  const mine = ed().getValue();
   await loadVault();
   base = note(current)?.content ?? ""; // save over what's on disk now
-  $("editor").value = mine;
+  ed().setValue(mine); // a refresh during the await may have loaded theirs
   saving = save().finally(() => (saving = null));
 });
 
@@ -451,14 +450,28 @@ document.addEventListener("keydown", (e) => {
   if (key === "k") $("search").focus();
   else if (key === "e" && current) $("toggle").click();
   else if (key === "n" && !$("new-dialog").open) openNewDialog();
+  else if (key === ",") invoke("open_settings").catch(say);
   else return;
   e.preventDefault();
 });
 
+/** Theme, editor font size and the default session view from the Settings window. */
+function applySettings(next) {
+  const prev = settings;
+  settings = { ...settings, ...next };
+  applyTheme(settings.theme);
+  editor?.setFontSize(settings.editorFontSize);
+  if (settings.sessionView !== prev.sessionView) sessionView = settings.sessionView;
+  if (prev.vaultPath !== undefined && settings.vaultPath !== prev.vaultPath) refresh();
+  else render();
+}
+
 // Hotkey notes and edits made in Obsidian show up here without a manual reload.
 listen("vault-changed", refresh);
+listen("settings-changed", (e) => applySettings(e.payload));
 window.addEventListener("focus", refresh);
 window.addEventListener("beforeunload", flush);
 
+applySettings(await invoke("get_settings").catch(() => ({})));
 await refresh();
 open(vault.currentSession || null);

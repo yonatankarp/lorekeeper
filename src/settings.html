@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Lorekeeper Settings</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <div class="settings">
+      <header class="settings-head">
+        <h1>Settings</h1>
+        <p id="saved-status" role="status"></p>
+      </header>
+
+      <section aria-labelledby="h-hotkeys">
+        <h2 id="h-hotkeys">Hotkeys</h2>
+        <div class="row">
+          <span id="quickNote-label">Quick note</span>
+          <kbd id="quickNote-keys"></kbd>
+          <button type="button" class="ghost" data-record="quickNote" aria-describedby="quickNote-keys">
+            Record<span class="sr-only"> Quick note shortcut</span>
+          </button>
+        </div>
+        <p class="error" id="quickNote-error" role="alert"></p>
+        <div class="row">
+          <span id="capture-label">Save selection</span>
+          <kbd id="capture-keys"></kbd>
+          <button type="button" class="ghost" data-record="capture" aria-describedby="capture-keys">
+            Record<span class="sr-only"> Save selection shortcut</span>
+          </button>
+        </div>
+        <p class="error" id="capture-error" role="alert"></p>
+        <p class="hint">Press Record, then the new combination. Esc cancels. The Save selection shortcut must include <span class="primary-key">⌘</span>.</p>
+      </section>
+
+      <section aria-labelledby="h-folder">
+        <h2 id="h-folder">Notes folder</h2>
+        <p class="path" id="vaultPath"></p>
+        <div class="actions">
+          <button type="button" class="ghost" id="choose">Choose…</button>
+          <button type="button" class="ghost" id="reveal">Show in <span class="file-manager">Finder</span></button>
+        </div>
+        <p class="error" id="vaultPath-error" role="alert"></p>
+        <p class="hint">Existing notes stay where they are. Move them in <span class="file-manager">Finder</span> if you want them in the new folder. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
+      </section>
+
+      <section aria-labelledby="h-appearance">
+        <h2 id="h-appearance">Appearance</h2>
+        <div class="row">
+          <label for="theme">Theme</label>
+          <select id="theme" data-setting="theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <p class="error" id="theme-error" role="alert"></p>
+        <div class="row">
+          <label for="editorFontSize">Editor font size</label>
+          <input type="range" id="editorFontSize" data-setting="editorFontSize" min="11" max="24" step="1" />
+          <output id="editorFontSize-value" for="editorFontSize"></output>
+        </div>
+        <p class="error" id="editorFontSize-error" role="alert"></p>
+        <div class="row">
+          <label for="sessionView">Default session view</label>
+          <select id="sessionView" data-setting="sessionView">
+            <option value="timeline">Timeline</option>
+            <option value="journal">Journal</option>
+          </select>
+        </div>
+        <p class="error" id="sessionView-error" role="alert"></p>
+      </section>
+
+      <section aria-labelledby="h-startup">
+        <h2 id="h-startup">Startup &amp; notifications</h2>
+        <label class="check"><input type="checkbox" data-setting="launchAtLogin" /> Launch at login</label>
+        <p class="error" id="launchAtLogin-error" role="alert"></p>
+        <label class="check"><input type="checkbox" data-setting="notifications" /> Show a notification when a note is saved</label>
+        <p class="error" id="notifications-error" role="alert"></p>
+      </section>
+    </div>
+    <script type="module" src="settings.js"></script>
+  </body>
+</html>

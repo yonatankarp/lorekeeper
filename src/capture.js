@@ -1,4 +1,7 @@
+import { applyTheme } from "./theme.js";
+
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 const input = document.getElementById("note");
 const ghost = document.getElementById("ghost");
 const typed = document.getElementById("typed");
@@ -88,3 +91,6 @@ window.addEventListener("focus", () => {
 });
 // Clicking away hides the box but keeps the draft for next time.
 window.addEventListener("blur", () => invoke("dismiss"));
+
+invoke("get_settings").then((s) => applyTheme(s.theme));
+listen("settings-changed", (e) => applyTheme(e.payload.theme));

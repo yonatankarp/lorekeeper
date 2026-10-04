@@ -33,10 +33,23 @@
         "resizable": false,
         "center": true,
         "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "settings",
+        "title": "Lorekeeper Settings",
+        "url": "settings.html",
+        "width": 560,
+        "height": 600,
+        "visible": false,
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {
