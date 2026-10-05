@@ -25,7 +25,6 @@ mod dropbox;
 mod gdrive;
 mod github;
 mod obsidian;
-mod onedrive;
 mod updater;
 
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
@@ -240,7 +239,6 @@ struct Settings {
     /// The Dropbox, Google and Microsoft accounts backed up to; set and cleared like github_user.
     dropbox_user: String,
     google_user: String,
-    onedrive_user: String,
     /// Check GitHub Releases for a new version at launch and once a day (see updater.rs).
     auto_update: bool,
     /// Optional global shortcuts; "" = off.
@@ -264,7 +262,6 @@ impl Default for Settings {
             github_user: String::new(),
             dropbox_user: String::new(),
             google_user: String::new(),
-            onedrive_user: String::new(),
             auto_update: true,
             new_session: String::new(),
             new_page: String::new(),
@@ -277,7 +274,6 @@ impl Settings {
         match p {
             cloud::Provider::Dropbox => &self.dropbox_user,
             cloud::Provider::Google => &self.google_user,
-            cloud::Provider::Onedrive => &self.onedrive_user,
         }
     }
 
@@ -285,7 +281,6 @@ impl Settings {
         *match p {
             cloud::Provider::Dropbox => &mut self.dropbox_user,
             cloud::Provider::Google => &mut self.google_user,
-            cloud::Provider::Onedrive => &mut self.onedrive_user,
         } = account;
         self
     }
@@ -1343,8 +1338,6 @@ mod tests {
         assert_eq!(dropbox::header_json(&json!({"path": "/NPCs/Vex.md"})), r#"{"path":"/NPCs/Vex.md"}"#);
         // Non-ASCII becomes \uXXXX, outside the basic plane as a surrogate pair.
         assert_eq!(dropbox::header_json(&json!({"path": "/Café 🐉.md"})), r#"{"path":"/Caf\u00e9 \ud83d\udc09.md"}"#);
-        assert_eq!(onedrive::encode_path("NPCs/Mirela & co #1.md"), "NPCs/Mirela%20%26%20co%20%231.md");
-        assert_eq!(onedrive::encode_path("Café.md"), "Caf%C3%A9.md");
     }
 
     #[test]

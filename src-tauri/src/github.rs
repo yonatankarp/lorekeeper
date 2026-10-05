@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 /// Public client ID of the Lorekeeper GitHub OAuth app (with Device Flow enabled).
 /// Empty: the Settings window says GitHub backup isn't set up in this build.
-pub const GITHUB_CLIENT_ID: &str = "";
+pub const GITHUB_CLIENT_ID: &str = "Ov23liwcKkQK0w1365N5";
 const NOT_SET_UP: &str = "GitHub backup isn't set up in this build yet.";
 const CANCELLED: &str = "Sign-in cancelled.";
 const MAX_FILE: u64 = 50 * 1024 * 1024;
@@ -34,7 +34,7 @@ pub(crate) static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
 
 // ---------- token in the OS credential store ----------
 
-/// One entry per account ("github", "dropbox", "google", "onedrive") under the app's identifier.
+/// One entry per account ("github", "dropbox", "google") under the app's identifier.
 pub(crate) fn keychain(account: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new("com.yonatankarp.dndnotes", account).map_err(|e| format!("Can't use the system's password storage: {e}"))
 }

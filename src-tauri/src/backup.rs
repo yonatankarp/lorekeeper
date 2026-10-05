@@ -1,5 +1,5 @@
 //! Backups: a dated copy of the vault in a folder of your choice, a commit to GitHub (github.rs)
-//! and uploads to Dropbox, Google Drive or OneDrive (cloud.rs). One background thread runs them,
+//! and uploads to Dropbox or Google Drive (cloud.rs). One background thread runs them,
 //! so two never overlap.
 
 use std::{
@@ -155,7 +155,6 @@ pub struct Status {
     github: Target,
     dropbox: Target,
     google: Target,
-    onedrive: Target,
     #[serde(skip_deserializing)]
     running: bool,
     /// Whether this build has the app IDs each sign-in needs.
@@ -165,8 +164,6 @@ pub struct Status {
     dropbox_available: bool,
     #[serde(skip_deserializing)]
     google_available: bool,
-    #[serde(skip_deserializing)]
-    onedrive_available: bool,
 }
 
 /// Where a backup goes.
@@ -184,7 +181,6 @@ impl Status {
             Kind::Github => &mut self.github,
             Kind::Cloud(cloud::Provider::Dropbox) => &mut self.dropbox,
             Kind::Cloud(cloud::Provider::Google) => &mut self.google,
-            Kind::Cloud(cloud::Provider::Onedrive) => &mut self.onedrive,
         }
     }
 }
@@ -211,7 +207,6 @@ pub fn status() -> Status {
     s.github_available = !github::GITHUB_CLIENT_ID.is_empty();
     s.dropbox_available = !cloud::DROPBOX_APP_KEY.is_empty();
     s.google_available = !cloud::GOOGLE_CLIENT_ID.is_empty();
-    s.onedrive_available = !cloud::ONEDRIVE_CLIENT_ID.is_empty();
     s
 }
 

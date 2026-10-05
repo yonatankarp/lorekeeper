@@ -286,15 +286,13 @@ $("gh-sign-out").addEventListener("click", () => {
   invoke("github_sign_out").catch((err) => { $("github-error").textContent = String(err); });
 });
 
-// ---------- Dropbox, Google Drive and OneDrive: sign-in happens in the browser ----------
+// ---------- Dropbox and Google Drive: sign-in happens in the browser ----------
 
 const CLOUDS = {
   dropbox: { name: "Dropbox", account: "Dropbox", where: "Apps/Lorekeeper in your Dropbox",
     help: "Only new and changed notes are uploaded. A note you delete here is deleted there too, and Dropbox keeps deleted files for 30 days or more, so you can restore them." },
   google: { name: "Google Drive", account: "Google", where: "the Lorekeeper folder in your Google Drive",
     help: "Only new and changed notes are uploaded. A note you delete here moves to the Google Drive trash, where you can restore it for 30 days." },
-  onedrive: { name: "OneDrive", account: "Microsoft", where: "Apps/Lorekeeper in your OneDrive",
-    help: "Only new and changed notes are uploaded. A note you delete here moves to the OneDrive recycle bin, where you can restore it for 30 days." },
 };
 const cloudCards = {};
 const cloudEl = (p, cls) => cloudCards[p].querySelector(`.${cls}`);

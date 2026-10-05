@@ -1,4 +1,4 @@
-//! Backups to Dropbox, Google Drive and OneDrive (see dropbox.rs, gdrive.rs, onedrive.rs).
+//! Backups to Dropbox and Google Drive (see dropbox.rs, gdrive.rs).
 //!
 //! Sign-in opens the browser (OAuth authorization code with PKCE, no client secret) and receives the
 //! code on a one-request web server at 127.0.0.1. The refresh token lives in the OS credential store.
@@ -22,13 +22,12 @@ use ring::rand::SecureRandom as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{dropbox, gdrive, github, onedrive};
+use crate::{dropbox, gdrive, github};
 
 /// Public client IDs of the Lorekeeper apps registered with each provider (see docs/DEVELOPMENT.md).
 /// Empty: the Settings window says that backup isn't set up in this build.
-pub const DROPBOX_APP_KEY: &str = "";
-pub const GOOGLE_CLIENT_ID: &str = "";
-pub const ONEDRIVE_CLIENT_ID: &str = "";
+pub const DROPBOX_APP_KEY: &str = "m7ph6dy364xcvi4";
+pub const GOOGLE_CLIENT_ID: &str = "159297619332-dqarcjgn49pg93g5k6ouidvtfrnjgrbv.apps.googleusercontent.com";
 
 /// Dropbox only accepts redirect URIs registered with their exact port.
 const DROPBOX_PORT: u16 = 47219;
@@ -40,10 +39,9 @@ const CANCELLED: &str = "Sign-in cancelled.";
 pub enum Provider {
     Dropbox,
     Google,
-    Onedrive,
 }
 
-pub const ALL: [Provider; 3] = [Provider::Dropbox, Provider::Google, Provider::Onedrive];
+pub const ALL: [Provider; 2] = [Provider::Dropbox, Provider::Google];
 
 impl Provider {
     /// The credential store account and the manifest's file name.
@@ -51,7 +49,6 @@ impl Provider {
         match self {
             Provider::Dropbox => "dropbox",
             Provider::Google => "google",
-            Provider::Onedrive => "onedrive",
         }
     }
 
@@ -59,7 +56,6 @@ impl Provider {
         match self {
             Provider::Dropbox => "Dropbox",
             Provider::Google => "Google Drive",
-            Provider::Onedrive => "OneDrive",
         }
     }
 
@@ -67,7 +63,6 @@ impl Provider {
         match self {
             Provider::Dropbox => DROPBOX_APP_KEY,
             Provider::Google => GOOGLE_CLIENT_ID,
-            Provider::Onedrive => ONEDRIVE_CLIENT_ID,
         }
     }
 
@@ -76,7 +71,6 @@ impl Provider {
         match self {
             Provider::Dropbox => 150 << 20,
             Provider::Google => 5 << 20,
-            Provider::Onedrive => 250 << 20, // Graph simple upload limit (driveitem-put-content)
         }
     }
 
@@ -84,7 +78,6 @@ impl Provider {
         match self {
             Provider::Dropbox => "https://api.dropboxapi.com/oauth2/token",
             Provider::Google => "https://oauth2.googleapis.com/token",
-            Provider::Onedrive => "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         }
     }
 
@@ -96,22 +89,15 @@ impl Provider {
                 "https://accounts.google.com/o/oauth2/v2/auth",
                 &[("scope", "https://www.googleapis.com/auth/drive.file"), ("access_type", "offline"), ("prompt", "consent")],
             ),
-            Provider::Onedrive => (
-                "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-                &[("scope", ONEDRIVE_SCOPE), ("prompt", "select_account")],
-            ),
         };
         tauri::Url::parse_with_params(base, extra).expect("valid URL")
     }
 
-    /// Google wants the loopback IP; Microsoft only matches http://localhost (any port), and Dropbox
-    /// allows plain http only for localhost.
+    /// Google wants the loopback IP; Dropbox allows plain http only for localhost.
     fn redirect_host(self) -> &'static str {
         if self == Provider::Google { "127.0.0.1" } else { "localhost" }
     }
 }
-
-const ONEDRIVE_SCOPE: &str = "Files.ReadWrite.AppFolder User.Read offline_access";
 
 fn not_set_up(p: Provider) -> String {
     format!("{} backup isn't set up in this build yet.", p.name())
@@ -194,12 +180,9 @@ fn field(p: Provider, v: &Value, name: &str) -> Result<String, String> {
 /// A fresh access token from the stored refresh token (each backup asks for one; they last an hour or more).
 pub fn access_token(p: Provider) -> Result<String, String> {
     let refresh = load_token(p)?;
-    let mut form = vec![("client_id", p.client_id()), ("grant_type", "refresh_token"), ("refresh_token", refresh.as_str())];
-    if p == Provider::Onedrive {
-        form.push(("scope", ONEDRIVE_SCOPE));
-    }
+    let form = [("client_id", p.client_id()), ("grant_type", "refresh_token"), ("refresh_token", refresh.as_str())];
     let v = token_request(p, &form)?;
-    // Microsoft replaces the refresh token on every use.
+    // Keep a replacement refresh token if the provider rotates it.
     if let Some(new) = v["refresh_token"].as_str().filter(|t| !t.is_empty() && *t != refresh) {
         save_token(p, new)?;
     }
@@ -327,11 +310,8 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
     };
     let listeners = listen(p)?;
     let port = listeners[0].local_addr().map_err(|e| e.to_string())?.port();
-    // Exactly as registered: Dropbox "http://localhost:47219/", Microsoft "http://localhost" (any port).
-    let redirect = match p {
-        Provider::Onedrive => format!("http://localhost:{port}"),
-        _ => format!("http://{}:{port}/", p.redirect_host()),
-    };
+    // Exactly as registered: Dropbox "http://localhost:47219/"; Google takes any loopback port.
+    let redirect = format!("http://{}:{port}/", p.redirect_host());
     let (verifier, state) = (random_token(), random_token());
     let mut url = p.auth_url();
     url.query_pairs_mut()
@@ -373,7 +353,6 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
     let account = match p {
         Provider::Dropbox => dropbox::account(&access),
         Provider::Google => gdrive::account(&access),
-        Provider::Onedrive => onedrive::account(&access),
     }?;
     if *ATTEMPT.lock().unwrap() != attempt {
         return Err(CANCELLED.into());
@@ -393,7 +372,7 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
 pub struct Uploaded {
     /// git_blob_sha of the content that was uploaded.
     pub hash: String,
-    /// Google Drive's file id; Dropbox and OneDrive work by path.
+    /// Google Drive's file id; Dropbox works by path.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub id: String,
 }
@@ -477,7 +456,6 @@ pub fn backup(p: Provider, account: &str, config_dir: &Path, vault: &Path) -> Re
     let result = match p {
         Provider::Dropbox => dropbox::push(&token, &plan, &mut m),
         Provider::Google => gdrive::push(&token, &plan, &mut m),
-        Provider::Onedrive => onedrive::push(&token, &plan, &mut m),
     };
     let _ = fs::write(&file, serde_json::to_string_pretty(&m).unwrap_or_default());
     result?;

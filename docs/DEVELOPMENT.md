@@ -39,7 +39,7 @@ Needs a GitHub OAuth app with **Enable Device Flow**; its client ID goes in `GIT
 
 ## Cloud backup apps
 
-Dropbox, Google Drive and OneDrive backups each need an app registered by the owner. Only its public client ID goes in the code: the constants `DROPBOX_APP_KEY`, `GOOGLE_CLIENT_ID` and `ONEDRIVE_CLIENT_ID` at the top of `src-tauri/src/cloud.rs`. Never add a client secret. While a constant is empty, Settings says that backup isn't set up. Sign-in uses OAuth with PKCE in the system browser and a one-request web server on the user's computer for the redirect.
+Dropbox and Google Drive backups each need an app registered by the owner. Only its public client ID goes in the code: the constants `DROPBOX_APP_KEY` and `GOOGLE_CLIENT_ID` at the top of `src-tauri/src/cloud.rs`. Never add a client secret. While a constant is empty, Settings says that backup isn't set up. Sign-in uses OAuth with PKCE in the system browser and a one-request web server on the user's computer for the redirect.
 
 **Dropbox** ([App Console](https://www.dropbox.com/developers/apps))
 
@@ -55,12 +55,6 @@ Dropbox, Google Drive and OneDrive backups each need an app registered by the ow
 2. **Google Auth Platform** (the OAuth consent screen): **Branding**: app name `Lorekeeper` and a support email. **Audience**: External. **Data Access > Add or remove scopes**: `https://www.googleapis.com/auth/drive.file` only. Google lists it as non-sensitive, so no security review is needed (Google may still ask to verify the app name and logo).
 3. **Clients > Create client**: application type **Desktop app**. Desktop clients have no redirect URI field: Google allows `http://127.0.0.1:<any port>/`. Copy the **Client ID** into `GOOGLE_CLIENT_ID`; leave the client secret out of the code.
 4. **Audience > Publish app** so the status is **In production**. In Testing, only listed test users can sign in and their sign-in expires after 7 days.
-
-**OneDrive** ([Microsoft Entra admin center](https://entra.microsoft.com/) > App registrations; a free Microsoft account works)
-
-1. **New registration**: name `Lorekeeper` (OneDrive names the app folder after it). **Supported account types**: Accounts in any organizational directory and personal Microsoft accounts. **Redirect URI**: platform **Public client/native (mobile & desktop)**, value `http://localhost` (Microsoft ignores the port for localhost). **Register**.
-2. **API permissions > Add a permission > Microsoft Graph > Delegated**: `Files.ReadWrite.AppFolder`, `offline_access` and `User.Read` (usually there already). No admin consent needed.
-3. Copy the **Application (client) ID** from **Overview** into `ONEDRIVE_CLIENT_ID`.
 
 Test each with a real account: sign in, first backup, a changed note uploads, a deleted note goes to the provider's trash, sign out and in again (no second upload of everything).
 
@@ -78,6 +72,6 @@ Test each with a real account: sign in, first backup, a changed note uploads, a 
 - Launch at login survives a restart; the tray item and Settings stay in step.
 - Backup folder gets today's copy right away; a removed USB drive gives one failure notification.
 - GitHub backup (needs the client ID): sign in, commit on backup, deleted note disappears from the repo.
-- Dropbox, Google Drive and OneDrive backups (need the client IDs): see "Cloud backup apps" above. Also Cancel during sign-in then Sign in again right away, and Dropbox with port 47219 taken.
+- Dropbox and Google Drive backups: see "Cloud backup apps" above. Also Cancel during sign-in then Sign in again right away, and Dropbox with port 47219 taken.
 - Obsidian button: guide before the folder is a vault, opens the page after.
 - Settings: new hotkey works at once; a taken one is refused; theme applies to every window.
