@@ -35,6 +35,16 @@ The private key is `~/.tauri/lorekeeper-updater.key` (password in `~/.tauri/lore
 
 Back it up and never commit it. If it's lost or leaks, a new key means everyone has to download the next version by hand.
 
+## Windows code signing
+
+Off until its secrets exist; until then the Windows installer ships unsigned and SmartScreen says "Unknown publisher". Uses an SSL.com IV (individual) code signing certificate with eSigner cloud signing (Azure Artifact Signing only takes individuals in the US or Canada). Signing happens inside `tauri build` via `bundle.windows.signCommand` (jsign), so the update `.sig` matches the signed installer. Never sign the `-setup.exe` after the build: that breaks Windows updates.
+
+1. Buy an [IV code signing certificate](https://www.ssl.com/products/software-integrity/code-signing/iv/) with **eSigner** storage and an eSigner plan; pass the ID check.
+2. Enroll the certificate in eSigner and save the **TOTP secret code** shown during enrollment (the base64 secret, not the PIN or just the QR code). Note the certificate's **credential ID**.
+3. Add Actions secrets: `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, `ESIGNER_CREDENTIAL_ID`, `ESIGNER_TOTP_SECRET`. Delete `ESIGNER_CREDENTIAL_ID` to turn signing off again.
+
+Each release uses about 8 signatures (app, 5 NSIS plugins, uninstaller, installer), and so does every re-run of the Windows job. Check: Properties > **Digital Signatures** on the `-setup.exe` and the installed `Lorekeeper.exe`, or `signtool verify /pa /v Lorekeeper_X.Y.Z_x64-setup.exe`. SmartScreen can still warn for new releases until downloads build reputation; the warning then names the publisher.
+
 ## GitHub backup
 
 Needs a GitHub OAuth app with **Enable Device Flow**; its client ID goes in `GITHUB_CLIENT_ID` in `src-tauri/src/github.rs`. Without it, Settings says GitHub backup isn't set up.
