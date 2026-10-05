@@ -236,20 +236,10 @@ fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
     if ok { Ok(root.join(p)) } else { Err(format!("Not an image in the vault: {rel}")) }
 }
 
-/// Lets the page view load images from the notes folder through the asset protocol. Tauri's scope can only grow,
-/// so a folder you switch away from is forbidden instead (forbidding wins over allowing).
-// ponytail: switching back to a campaign opened earlier in this run shows its images only after a restart, and when one
-// folder holds the other the old one stays allowed. A custom URI scheme reading the current folder would fix both.
-fn allow_vault_images(app: &AppHandle, new: &str, old: Option<&str>) {
-    let scope = app.asset_protocol_scope();
-    if let Some(old) = old {
-        let canon = |p: &str| fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
-        let (old_dir, new_dir) = (canon(old), canon(new));
-        if !old_dir.starts_with(&new_dir) && !new_dir.starts_with(&old_dir) {
-            let _ = scope.forbid_directory(old, true);
-        }
-    }
-    let _ = scope.allow_directory(new, true);
+/// Lets the page view load images from the notes folder through the asset protocol. Every campaign's folder
+/// stays allowed (they're all your own notes), since Tauri's scope can only grow and switching back must work.
+fn allow_vault_images(app: &AppHandle, dir: &str) {
+    let _ = app.asset_protocol_scope().allow_directory(dir, true);
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
@@ -1076,7 +1066,7 @@ fn switch_campaign(app: AppHandle, path: String) -> Result<(), String> {
     }
     create_vault_folders(Path::new(&path)).map_err(|e| format!("{}: {e}", backup::campaign_name(&path)))?;
     store_settings(&app, &Settings { vault_path: path.clone(), ..old.clone() })?;
-    allow_vault_images(&app, &path, Some(&old.vault_path));
+    allow_vault_images(&app, &path);
     backup::left(&old.vault_path); // its last changes still get backed up
     emit_changed(&app);
     backup::request(false);
@@ -1325,7 +1315,7 @@ pub fn run() {
                 notify(handle, "Notes folder unavailable", &format!("{}: {e}", settings.vault_path));
             }
             app.manage(Mutex::new(settings.clone()));
-            allow_vault_images(handle, &settings.vault_path, None);
+            allow_vault_images(handle, &settings.vault_path);
             build_tray(handle)?;
             // Windows are created here ("create": false in tauri.conf.json), after the state their
             // commands read. On Windows a page can call a command while Tauri is still building windows.
