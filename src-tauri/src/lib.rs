@@ -851,6 +851,38 @@ fn create_file(app: AppHandle, path: String, content: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Renames a note; never overwrites another one. A case-only rename ("mirela.md" to "Mirela.md")
+/// finds the same file on a case-insensitive disk, so it goes through a temporary name.
+fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    let (src, dst) = (vault_file(root, from)?, vault_file(root, to)?);
+    let _guard = WRITE_LOCK.lock().unwrap();
+    if !src.is_file() {
+        return Err(format!("{from} doesn't exist."));
+    }
+    // Listed under its exact name: a file of its own, not the source seen through case-insensitivity.
+    let listed = dst.parent().and_then(|d| fs::read_dir(d).ok()).is_some_and(|mut entries| {
+        entries.any(|e| e.is_ok_and(|e| Some(e.file_name().as_os_str()) == dst.file_name()))
+    });
+    let case_only = from.to_lowercase() == to.to_lowercase() && !listed;
+    if dst.exists() && !case_only {
+        return Err(format!("{to} already exists."));
+    }
+    let tmp = dst.with_extension("md.renaming");
+    let renamed = if case_only && !tmp.exists() {
+        fs::rename(&src, &tmp).and_then(|_| fs::rename(&tmp, &dst))
+    } else {
+        fs::rename(&src, &dst)
+    };
+    renamed.map_err(|e| format!("Couldn't rename {from}: {e}"))
+}
+
+#[tauri::command]
+fn rename_file(app: AppHandle, from: String, to: String) -> Result<(), String> {
+    rename_note(&notes_dir(&app), &from, &to)?;
+    backup::mark_changed(); // no vault-changed event: the window follows the renamed page itself
+    Ok(())
+}
+
 #[tauri::command]
 fn start_session(app: AppHandle) -> Result<String, String> {
     let root = notes_dir(&app);
@@ -1121,6 +1153,7 @@ pub fn run() {
             save_file,
             create_file,
             delete_file,
+            rename_file,
             start_session,
             session_status,
             open_in_obsidian,
@@ -1434,6 +1467,36 @@ mod tests {
         for bad in ["../secret.md", "NPCs/../../x.md", "/etc/passwd.md", "NPCs/Mirela.txt", "", "NPCs/"] {
             assert!(vault_file(root, bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    #[test]
+    fn rename_never_overwrites_but_changes_case() {
+        let dir = temp_dir("rename");
+        fs::create_dir_all(dir.join("NPCs")).unwrap();
+        fs::write(dir.join("NPCs/mirela.md"), "m").unwrap();
+        fs::write(dir.join("NPCs/Vex.md"), "v").unwrap();
+        let names = || {
+            let mut v: Vec<String> = fs::read_dir(dir.join("NPCs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        assert!(rename_note(&dir, "NPCs/mirela.md", "NPCs/Vex.md").unwrap_err().contains("already exists"));
+        if dir.join("NPCs/VEX.md").exists() {
+            // A case-insensitive disk: another page with the name in other case is still another page.
+            assert!(rename_note(&dir, "NPCs/mirela.md", "NPCs/vex.md").unwrap_err().contains("already exists"));
+        }
+        assert!(rename_note(&dir, "NPCs/Nobody.md", "NPCs/X.md").unwrap_err().contains("doesn't exist"));
+        for (from, to) in [("../mirela.md", "NPCs/X.md"), ("NPCs/mirela.md", "../X.md"), ("NPCs/mirela.md", "NPCs/X.txt")] {
+            assert!(rename_note(&dir, from, to).is_err(), "{from} -> {to} should be refused");
+        }
+        assert_eq!(fs::read_to_string(dir.join("NPCs/Vex.md")).unwrap(), "v");
+
+        // Case-only works on case-insensitive disks (macOS, Windows) and sensitive ones alike.
+        rename_note(&dir, "NPCs/mirela.md", "NPCs/Mirela.md").unwrap();
+        assert!(names().contains(&"Mirela.md".to_string()) && !names().contains(&"mirela.md".to_string()));
+        rename_note(&dir, "NPCs/Mirela.md", "NPCs/Mira.md").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("NPCs/Mira.md")).unwrap(), "m");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

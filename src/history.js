@@ -21,6 +21,10 @@ export function navHistory() {
       return list[i];
     },
     entry: (i) => list[i],
+    /** A renamed page: its entries follow it. */
+    rename(from, to) {
+      list = list.map((e) => (e === from ? to : e));
+    },
   };
 }
 

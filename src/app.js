@@ -3,8 +3,8 @@ import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, parse, removeLine, sessions, stripLinks, timeline, toHtml, toText } from "./notes.js";
 import {
-  backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, resolve,
-  search, splitFrontmatter,
+  backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, renameLinks,
+  resolve, search, splitFrontmatter,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -291,6 +291,7 @@ function render() {
   $("back").disabled = nav.find(-1, alive, current) < 0;
   $("forward").disabled = nav.find(1, alive, current) < 0;
   $("delete").disabled = !n;
+  $("rename").disabled = !n;
   $("backlinks").hidden = !n;
   $("toggle").hidden = !n;
   $("obsidian").hidden = !n || !canObsidian();
@@ -706,6 +707,76 @@ function undoRedo(dir) {
   else if (!modal()) appHistory(dir);
 }
 
+// ---------- renaming ----------
+
+let renaming = null; // the page the Rename dialog is for
+
+function openRenameDialog(path) {
+  if (!path || !note(path) || modal()) return;
+  renaming = path;
+  $("rename-name").value = baseName(path);
+  $("rename-error").textContent = "";
+  $("rename-dialog").showModal();
+  $("rename-name").select();
+}
+
+/**
+ * Renames page `from` to `to` and points every link to it at the new name, saving pending typing first. `exact`
+ * ([path, now, then], for undo) puts a note back as it was while it still holds `now`; one changed since gets its links
+ * rewritten instead. Returns the rewrites as [path after the rename, before, after], and the pages that couldn't be saved.
+ */
+async function renamePage(from, to, exact = []) {
+  await flush();
+  await loadVault(); // rewrite what's on disk now, so the saves below don't conflict
+  const known = paths();
+  const edits = [];
+  for (const { path, content } of [...vault.notes, ...templates]) {
+    const back = exact.find(([p, now]) => p === path && now === content);
+    const next = back ? back[2] : renameLinks(content, from, to, known);
+    if (next !== content) edits.push([path === from ? to : path, content, next]);
+  }
+  await invoke("rename_file", { from, to }); // refuses an existing page before any note changes
+  nav.rename(from, to);
+  if (current === from) current = to;
+  const failed = [];
+  for (const edit of edits) {
+    const [path, base, content] = edit;
+    await invoke("save_file", { path, content, base }).catch(() => failed.push(edit));
+  }
+  await refresh();
+  return { edits: edits.filter((e) => !failed.includes(e)), failed: failed.map(([p]) => baseName(p)) };
+}
+
+$("rename-cancel").addEventListener("click", () => $("rename-dialog").close());
+$("rename-form").addEventListener("submit", async (e) => {
+  if (e.submitter?.value !== "rename") return;
+  e.preventDefault();
+  const from = renaming;
+  const name = $("rename-name").value.trim();
+  const problem = badName(name);
+  if (problem) {
+    $("rename-error").textContent = problem;
+    return $("rename-name").focus();
+  }
+  const folder = from.split("/").slice(0, -1).join("/");
+  const to = folder ? `${folder}/${name}.md` : `${name}.md`;
+  if (to === from) return $("rename-dialog").close();
+  let done;
+  try {
+    done = await renamePage(from, to);
+  } catch (err) {
+    return ($("rename-error").textContent = err);
+  }
+  $("rename-dialog").close();
+  const { edits, failed } = done;
+  // ponytail: undo / redo report only their label, so a page whose links couldn't be saved then goes unmentioned.
+  record({ label: `Rename ${baseName(from)}`, undo: () => renamePage(to, from, edits.map(([p, was, now]) => [p, now, was])), redo: () => renamePage(from, to) });
+  const n = edits.filter(([p]) => p !== to).length;
+  say(failed.length ? `Renamed, but couldn't update the links in ${failed.join(", ")}`
+    : `Renamed to ${name}${n ? `; links updated in ${n} page${n === 1 ? "" : "s"}` : ""}`);
+});
+$("rename").addEventListener("click", () => openRenameDialog(current));
+
 // ---------- Obsidian ----------
 
 let guidePath = null; // the page the guide was opened for
@@ -782,6 +853,7 @@ const actions = {
   back: () => modal() || go(-1),
   forward: () => modal() || go(1),
   deletePage: () => deletePage(current),
+  renamePage: () => openRenameDialog(current),
   undo: () => undoRedo("undo"),
   redo: () => undoRedo("redo"),
   // Tauri's zoom-hotkey.js (zoomHotkeysEnabled, macOS/Linux) owns the zoom level; drive it with the key it listens for.
@@ -809,6 +881,10 @@ function run(name, from = "key") {
 }
 
 document.addEventListener("keydown", (e) => {
+  if (e.key === "F2") {
+    e.preventDefault();
+    return run("renamePage");
+  }
   if (!(e.metaKey || e.ctrlKey)) return;
   const key = e.key.toLowerCase();
   // The zoom polyfill zooms on this same keydown; marking it handled stops the View menu accelerator zooming again.
@@ -848,6 +924,7 @@ async function buildMenu() {
         item("New Session", "newSession", "CmdOrCtrl+Shift+N"),
         sep,
         item("Open in Obsidian", "obsidian"),
+        item("Rename…", "renamePage", "F2"),
         item("Move to Trash…", "deletePage"), // ⌘⌫ comes from the keydown handler, so text fields keep it
       ] },
       // Undo and Redo are our own items, not the predefined ones: the editor's history and the app's deletions need them.
@@ -893,6 +970,7 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
         { item: "Separator" },
+        { text: "Rename…", action: () => openRenameDialog(file) },
         { text: "Delete…", action: () => deletePage(file) },
       ]
     : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];
