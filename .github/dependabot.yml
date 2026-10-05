@@ -1,0 +1,32 @@
+# Weekly dependency update PRs, grouped so each ecosystem is one PR.
+# Security fixes come separately, as soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      tauri:
+        patterns: ["tauri*"]
+      rust:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Build tools only; nothing from node_modules ships. After a marked or
+  # @codemirror/* update, run `pnpm vendor` and commit src/vendor.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      js:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
