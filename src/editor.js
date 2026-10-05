@@ -290,8 +290,21 @@ function toolbar(view) {
  * Mounts the toolbar and editor in `parent`.
  * onChange(): the user edited the text. onFollowLink(target): a [[link]] was clicked.
  * pageNames(): page names for [[ and @ suggestions.
+ * onImage(file, pasted): saves a pasted or dropped image, resolving to the name to embed (null: not saved).
  */
-export function createEditor(parent, { onChange, onFollowLink, pageNames }) {
+export function createEditor(parent, { onChange, onFollowLink, pageNames, onImage }) {
+  /** Saves each image, then inserts ![[name]] at `at()` (asked after saving, since the text may have changed), one after another. */
+  async function embedImages(view, files, pasted, at) {
+    let next = null;
+    for (const file of files) {
+      const name = await onImage(file, pasted);
+      if (!name) continue;
+      const pos = Math.min(next ?? at(), view.state.doc.length);
+      const insert = `![[${name}]]`;
+      view.dispatch({ changes: { from: pos, insert }, selection: { anchor: pos + insert.length }, userEvent: "input" });
+      next = pos + insert.length;
+    }
+  }
   const extensions = [
     new LanguageSupport(markdown),
     EditorState.lineSeparator.of("\n"), // keep \r\n files byte-for-byte
@@ -327,6 +340,22 @@ export function createEditor(parent, { onChange, onFollowLink, pageNames }) {
         if (onActiveLine && !e.metaKey && !e.ctrlKey) return false;
         e.preventDefault();
         onFollowLink(link.dataset.target);
+        return true;
+      },
+      // Pasted or dropped images are saved into the vault and embedded where they land, as Obsidian does.
+      paste(e, view) {
+        const file = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && i.type.startsWith("image/"))?.getAsFile();
+        if (!file || !onImage) return false;
+        e.preventDefault();
+        embedImages(view, [file], true, () => view.state.selection.main.head);
+        return true;
+      },
+      drop(e, view) {
+        const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+        if (!files.length || !onImage) return false;
+        e.preventDefault();
+        const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }) ?? view.state.selection.main.head;
+        embedImages(view, files, false, () => Math.min(pos, view.state.doc.length));
         return true;
       },
     }),
