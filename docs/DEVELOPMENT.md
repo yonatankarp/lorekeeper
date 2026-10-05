@@ -56,6 +56,8 @@ Dropbox and Google Drive backups each need an app registered by the owner. Only 
 3. **Clients > Create client**: application type **Desktop app**. Desktop clients have no redirect URI field: Google allows `http://127.0.0.1:<any port>/`. Copy the **Client ID** into `GOOGLE_CLIENT_ID`; leave the client secret out of the code.
 4. **Audience > Publish app** so the status is **In production**. In Testing, only listed test users can sign in and their sign-in expires after 7 days.
 
+**Registered apps (owner: yonvata@gmail.com):** GitHub OAuth app "Lorekeeper" (device flow, tokens don't expire); Dropbox app "Lorekeeper" (development status, up to 500 users; **Apply for production** before passing that); Google Cloud project `lorekeeper-510711`, consent screen **In production** with `drive.file` only. The consent screen links to the home page and privacy policy, `docs/index.md` and `docs/PRIVACY.md`, served by GitHub Pages at https://yonatankarp.com/lorekeeper/. Keep the policy accurate when backups change, and don't add a logo to the consent screen unless you want to go through Google's brand verification.
+
 Test each with a real account: sign in, first backup, a changed note uploads, a deleted note goes to the provider's trash, sign out and in again (no second upload of everything).
 
 ## Patched dependencies
