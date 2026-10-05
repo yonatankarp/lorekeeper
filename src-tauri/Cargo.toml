@@ -42,3 +42,7 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# glib 0.18.5 with the RUSTSEC-2024-0429 fix backported (Linux only); see patches/README.md.
+[patch.crates-io]
+glib = { path = "patches/glib-0.18.5" }
