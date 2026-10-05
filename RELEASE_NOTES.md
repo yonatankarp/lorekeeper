@@ -1,10 +1,5 @@
-What's new in 0.3.0:
-- Lorekeeper now looks like a D&D book: parchment by day, torchlit dungeon by night
-- Home page with your latest session, open quests and the party
-- Quests with open/done status
-- Delete pages and notes, with Undo
-- Simpler New page: just pick NPC, Quest, Location...
-- Back/Forward, and fixes
+What's new in 0.3.1:
+- Fixes Lorekeeper closing right after it starts on some Windows PCs
 
 Downloads: macOS `.dmg` (Apple Silicon and Intel), Windows `-setup.exe`, Linux `.AppImage`. Lorekeeper 0.2.0 and later update themselves; the `.tar.gz`, `.sig` and `latest.json` files are for that.
 

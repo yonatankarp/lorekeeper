@@ -890,6 +890,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Release builds abort on panic with no console (Windows), so leave the reason in a file.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = fs::write(std::env::temp_dir().join("lorekeeper-crash.log"), format!("Lorekeeper {}: {info}\n", env!("CARGO_PKG_VERSION")));
+        default_hook(info);
+    }));
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -938,6 +944,11 @@ pub fn run() {
             }
             app.manage(Mutex::new(settings.clone()));
             build_tray(handle)?;
+            // Windows are created here ("create": false in tauri.conf.json), after the state their
+            // commands read. On Windows a page can call a command while Tauri is still building windows.
+            for config in &handle.config().app.windows {
+                tauri::WebviewWindowBuilder::from_config(handle, config)?.build()?;
+            }
             refresh_login_item(handle);
             backup::start(handle.clone());
             updater::start(handle.clone());
