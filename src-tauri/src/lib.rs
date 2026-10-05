@@ -238,7 +238,7 @@ fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
 
 /// Lets the page view load images from the notes folder through the asset protocol. Tauri's scope can only grow,
 /// so a folder you switch away from is forbidden instead (forbidding wins over allowing).
-// ponytail: switching back to a folder used earlier in this run shows its images only after a restart, and when one
+// ponytail: switching back to a campaign opened earlier in this run shows its images only after a restart, and when one
 // folder holds the other the old one stays allowed. A custom URI scheme reading the current folder would fix both.
 fn allow_vault_images(app: &AppHandle, new: &str, old: Option<&str>) {
     let scope = app.asset_protocol_scope();

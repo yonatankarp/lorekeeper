@@ -491,7 +491,7 @@ $("restore-use").addEventListener("click", () => {
   // A new campaign with backups of its own: its first backup can't touch the backup it came from.
   const target = restore.done.target;
   addCampaign(target).then(() => {
-    $("restore-status").textContent = `Opened ${campaignName(target)} as a new campaign. Your other campaigns are still where they were.`;
+    $("restore-status").textContent = `Added ${campaignName(target)} as a new campaign; the notes window is opening it. Your other campaigns are still where they were.`;
     $("restore-use").disabled = true;
   }, (err) => { $("restore-error").textContent = String(err); });
 });

@@ -147,9 +147,9 @@ pub fn plan<T>(target: &Path, files: Vec<(String, T)>) -> (Vec<(String, PathBuf,
 
 // ---------- the new folder ----------
 
-/// "Lorekeeper restored 2026-10-05" in `parent`, or "... (2)" and so on when that exists.
-pub fn suggest(parent: &Path, today: NaiveDate) -> PathBuf {
-    let base = format!("Lorekeeper restored {}", today.format("%Y-%m-%d"));
+/// "<campaign> restored 2026-10-05" in `parent` (so each campaign's copy has its own name), or "... (2)" and so on when that exists.
+pub fn suggest(parent: &Path, campaign: &str, today: NaiveDate) -> PathBuf {
+    let base = format!("{campaign} restored {}", today.format("%Y-%m-%d"));
     (1..).map(|n| parent.join(if n == 1 { base.clone() } else { format!("{base} ({n})") })).find(|p| !p.exists()).unwrap()
 }
 
@@ -486,7 +486,7 @@ pub fn campaign_places(app: AppHandle) -> Places {
 pub fn restore_target(app: AppHandle, parent: String) -> String {
     let vault = PathBuf::from(settings(&app).vault_path);
     let parent = if parent.is_empty() { vault.parent().unwrap_or(&vault).to_path_buf() } else { PathBuf::from(parent) };
-    suggest(&parent, Local::now().date_naive()).to_string_lossy().into_owned()
+    suggest(&parent, &backup::campaign_name(&vault.to_string_lossy()), Local::now().date_naive()).to_string_lossy().into_owned()
 }
 
 /// Downloads a backup into the new folder `target`, sending "restore-progress" [done, total] as it goes.
@@ -615,10 +615,10 @@ mod tests {
     fn suggested_folder_is_new() {
         let dir = temp_dir("suggest");
         let day = NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
-        assert_eq!(suggest(&dir, day), dir.join("Lorekeeper restored 2026-10-05"));
+        assert_eq!(suggest(&dir, "Lorekeeper", day), dir.join("Lorekeeper restored 2026-10-05"));
         fs::create_dir_all(dir.join("Lorekeeper restored 2026-10-05")).unwrap();
         fs::create_dir_all(dir.join("Lorekeeper restored 2026-10-05 (2)")).unwrap();
-        assert_eq!(suggest(&dir, day), dir.join("Lorekeeper restored 2026-10-05 (3)"));
+        assert_eq!(suggest(&dir, "Lorekeeper", day), dir.join("Lorekeeper restored 2026-10-05 (3)"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
