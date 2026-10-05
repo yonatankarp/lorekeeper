@@ -111,15 +111,20 @@ document.addEventListener("keydown", (e) => {
   save({ [key]: accel });
 }, true);
 
+for (const button of document.querySelectorAll("[data-clear]")) {
+  button.addEventListener("click", () => save({ [button.dataset.clear]: "" }));
+}
+
 // ---------- load, show and save ----------
 
 function render(s) {
   if (!s) return;
   current = s;
   applyTheme(s.theme);
-  for (const key of ["quickNote", "capture"]) {
-    if (recording?.dataset.record !== key) $(`${key}-keys`).textContent = readable(s[key]);
+  for (const key of ["quickNote", "capture", "newSession", "newPage"]) {
+    if (recording?.dataset.record !== key) $(`${key}-keys`).textContent = s[key] ? readable(s[key]) : "Not set";
   }
+  for (const button of document.querySelectorAll("[data-clear]")) button.disabled = !s[button.dataset.clear];
   $("vaultPath").textContent = s.vaultPath;
   for (const el of document.querySelectorAll("[data-setting]")) {
     const value = s[el.dataset.setting];
@@ -165,6 +170,11 @@ $("choose").addEventListener("click", async () => {
   if (path) save({ vaultPath: path });
 });
 $("reveal").addEventListener("click", () => invoke("open_vault_folder"));
+
+// ---------- updates: the result shows in a native dialog ----------
+
+window.__TAURI__.app?.getVersion().then((v) => { $("app-version").textContent = `Version ${v}`; }).catch(() => {});
+$("check-updates").addEventListener("click", () => invoke("check_for_updates"));
 
 const fileManager = isMac ? "Finder" : navigator.userAgent.includes("Windows") ? "Explorer" : "your file manager";
 for (const el of document.querySelectorAll(".file-manager")) el.textContent = fileManager;

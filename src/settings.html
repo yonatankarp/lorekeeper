@@ -58,6 +58,19 @@
           <p class="error" id="notifications-error" role="alert"></p>
         </div>
       </div>
+
+      <h2>Updates</h2>
+      <div class="card">
+        <div class="row">
+          <span id="app-version">Version</span>
+          <button type="button" class="ghost" id="check-updates" aria-describedby="app-version">Check now</button>
+        </div>
+        <div class="row">
+          <label for="autoUpdate">Check for updates automatically</label>
+          <input type="checkbox" role="switch" id="autoUpdate" data-setting="autoUpdate" />
+          <p class="error" id="autoUpdate-error" role="alert"></p>
+        </div>
+      </div>
     </section>
 
     <section class="panel" role="tabpanel" id="panel-hotkeys" aria-labelledby="tab-hotkeys" hidden>
@@ -83,8 +96,34 @@
           </div>
           <p class="error" id="capture-error" role="alert"></p>
         </div>
+        <div class="row">
+          <span id="newSession-label">New session</span>
+          <div class="actions">
+            <kbd id="newSession-keys"></kbd>
+            <button type="button" class="ghost" data-record="newSession" aria-describedby="newSession-keys">
+              Record<span class="sr-only"> New session shortcut</span>
+            </button>
+            <button type="button" class="ghost" data-clear="newSession">
+              Clear<span class="sr-only"> New session shortcut</span>
+            </button>
+          </div>
+          <p class="error" id="newSession-error" role="alert"></p>
+        </div>
+        <div class="row">
+          <span id="newPage-label">New page</span>
+          <div class="actions">
+            <kbd id="newPage-keys"></kbd>
+            <button type="button" class="ghost" data-record="newPage" aria-describedby="newPage-keys">
+              Record<span class="sr-only"> New page shortcut</span>
+            </button>
+            <button type="button" class="ghost" data-clear="newPage">
+              Clear<span class="sr-only"> New page shortcut</span>
+            </button>
+          </div>
+          <p class="error" id="newPage-error" role="alert"></p>
+        </div>
       </div>
-      <p class="hint">Press Record, then the new combination. Esc cancels. The Save selection shortcut must include <span class="primary-key">⌘</span>.</p>
+      <p class="hint">Press Record, then the new combination. Esc cancels. The Save selection shortcut must include <span class="primary-key">⌘</span>. New session and New page are off until you set them; <span class="mac-only">⌃⌥⌘S and ⌃⌥⌘P</span><span class="other-only">Ctrl+Alt+Shift+S and Ctrl+Alt+Shift+P</span> are usually free.</p>
     </section>
 
     <section class="panel" role="tabpanel" id="panel-appearance" aria-labelledby="tab-appearance" hidden>

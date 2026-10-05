@@ -21,6 +21,8 @@ use tauri_plugin_notification::NotificationExt;
 
 mod backup;
 mod github;
+mod obsidian;
+mod updater;
 
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
 //   Sessions/Session N.md   written by the hotkeys
@@ -140,6 +142,7 @@ struct Vault {
     notes: Vec<Note>,
     current_session: String,
     has_obsidian: bool,
+    obsidian_installed: bool,
 }
 
 /// Every folder and `.md` note, skipping hidden entries (.obsidian, .trash, .DS_Store).
@@ -209,6 +212,11 @@ struct Settings {
     github_repo: String,
     /// Set by signing in to GitHub, cleared by signing out; the settings window can't change it.
     github_user: String,
+    /// Check GitHub Releases for a new version at launch and once a day (see updater.rs).
+    auto_update: bool,
+    /// Optional global shortcuts; "" = off.
+    new_session: String,
+    new_page: String,
 }
 
 impl Default for Settings {
@@ -225,6 +233,9 @@ impl Default for Settings {
             backup_folder: String::new(),
             github_repo: "lorekeeper-notes".into(),
             github_user: String::new(),
+            auto_update: true,
+            new_session: String::new(),
+            new_page: String::new(),
         }
     }
 }
@@ -264,8 +275,16 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     let parse = |name: &str, keys: &str| keys.parse::<Shortcut>().map_err(|_| format!("{name}: \"{keys}\" isn't a valid shortcut."));
     let quick = parse("Quick note", &s.quick_note)?;
     let capture = parse("Save selection", &s.capture)?;
-    if quick == capture {
-        return Err("Quick note and Save selection need different shortcuts.".into());
+    let mut all = vec![("Quick note", quick), ("Save selection", capture)];
+    for (name, keys) in [("New session", &s.new_session), ("New page", &s.new_page)] {
+        if !keys.is_empty() {
+            all.push((name, parse(name, keys)?));
+        }
+    }
+    for (i, (a, ka)) in all.iter().enumerate() {
+        if let Some((b, _)) = all[i + 1..].iter().find(|(_, kb)| kb == ka) {
+            return Err(format!("{a} and {b} need different shortcuts."));
+        }
     }
     // The capture hotkey's Cmd/Ctrl is reused for the copy keystroke (see send_copy).
     let (primary, key) = if cfg!(target_os = "macos") { (Modifiers::SUPER, "⌘") } else { (Modifiers::CONTROL, "Ctrl") };
@@ -305,8 +324,36 @@ fn current_settings(app: &AppHandle) -> Settings {
 fn set_launch_at_login(app: &AppHandle, on: bool) -> Result<(), String> {
     let al = app.autolaunch();
     let result = if on { al.enable() } else { al.disable() };
+    if on && result.is_ok() {
+        remember_login_item(app);
+    }
     let _ = app.state::<CheckMenuItem<tauri::Wry>>().set_checked(al.is_enabled().unwrap_or(false));
     result.map_err(|e| format!("Launch at login: {e}"))
+}
+
+/// The login item stores this program's path, which moves when the app is renamed or reinstalled
+/// elsewhere. Records the path it was registered with, so refresh_login_item only acts once.
+fn login_item_marker(app: &AppHandle) -> Option<(PathBuf, String)> {
+    let exe = std::env::current_exe().ok()?.to_string_lossy().into_owned();
+    Some((app.path().app_config_dir().ok()?.join("login-item"), exe))
+}
+
+fn remember_login_item(app: &AppHandle) {
+    if let Some((marker, exe)) = login_item_marker(app) {
+        let _ = fs::write(marker, exe);
+    }
+}
+
+/// Re-registers an existing login item that points at an old program path (once per move).
+fn refresh_login_item(app: &AppHandle) {
+    let al = app.autolaunch();
+    let Some((marker, exe)) = login_item_marker(app) else { return };
+    if !al.is_enabled().unwrap_or(false) || fs::read_to_string(&marker).ok().as_deref() == Some(exe.as_str()) {
+        return;
+    }
+    if al.disable().is_ok() && al.enable().is_ok() {
+        remember_login_item(app);
+    }
 }
 
 // ---------- helpers ----------
@@ -368,13 +415,22 @@ fn open_external(target: impl AsRef<std::ffi::OsStr>) {
     let _ = std::process::Command::new(cmd).arg(target).spawn();
 }
 
-/// Opens the current session in Obsidian once the notes folder is a vault, otherwise the folder itself.
+/// Opens the current session in Obsidian once the notes folder is in a vault. Otherwise starts Obsidian
+/// with the folder's path on the clipboard, ready for "Open folder as vault", or shows the folder.
 fn open_notes(app: &AppHandle) {
     let dir = notes_dir(app);
-    let session = current_session(&dir).ok().filter(|_| dir.join(".obsidian").is_dir());
-    match session.and_then(|p| tauri::Url::parse_with_params("obsidian://open", [("path", p.to_string_lossy())]).ok()) {
-        Some(url) => open_external(url.as_str()),
-        None => open_external(&dir),
+    if obsidian::vault_root(&dir).is_some() {
+        match current_session(&dir) {
+            Ok(session) => obsidian::open(&session),
+            Err(_) => open_external(&dir),
+        }
+    } else if obsidian::installed() {
+        obsidian::launch();
+        let _ = app.clipboard().write_text(dir.to_string_lossy());
+        notify(app, "Add your notes to Obsidian", "Click “Open folder as vault” and choose the folder (its path is copied).");
+    } else {
+        open_external(&dir);
+        notify(app, "Obsidian isn't installed", "Get it free at obsidian.md. Showing the notes folder instead.");
     }
 }
 
@@ -445,11 +501,43 @@ fn register_shortcuts(app: &AppHandle, s: &Settings) -> Vec<String> {
             thread::spawn(move || capture_selection(&app));
         }
     });
-    [("Quick note", &s.quick_note, quick), ("Save selection", &s.capture, capture)]
+    let mut failed: Vec<String> = [("Quick note", &s.quick_note, quick), ("Save selection", &s.capture, capture)]
         .into_iter()
         .filter(|(_, _, result)| result.is_err())
         .map(|(name, keys, _)| format!("{name} ({keys})"))
-        .collect()
+        .collect();
+    // Optional shortcuts ("" = off).
+    let mut optional = |name: &str, keys: &str, action: fn(&AppHandle)| {
+        let pressed = move |app: &AppHandle, _: &_, e: tauri_plugin_global_shortcut::ShortcutEvent| {
+            if e.state == ShortcutState::Pressed {
+                action(app);
+            }
+        };
+        if !keys.is_empty() && gs.on_shortcut(keys, pressed).is_err() {
+            failed.push(format!("{name} ({keys})"));
+        }
+    };
+    optional("New session", &s.new_session, start_new_session);
+    optional("New page", &s.new_page, open_new_page);
+    failed
+}
+
+/// The New Session hotkey and tray item: starts the next session file without opening a window.
+fn start_new_session(app: &AppHandle) {
+    match new_session(&notes_dir(app)) {
+        Ok(p) => {
+            emit_changed(app);
+            backup::request(false); // captures the session that just ended
+            notify_saved(app, "New session started", &p.file_stem().unwrap_or_default().to_string_lossy());
+        }
+        Err(e) => notify(app, "Couldn't start session", &e.to_string()),
+    }
+}
+
+/// The New Page hotkey: brings up the notes window with the New page dialog open.
+fn open_new_page(app: &AppHandle) {
+    show_window(app, "main");
+    let _ = app.emit("new-page", ());
 }
 
 // ---------- commands for the windows ----------
@@ -497,7 +585,8 @@ fn read_vault(app: AppHandle) -> Result<Vault, String> {
     if n > 0 {
         vault.current_session = rel_path(&root, &session_path(&root, n));
     }
-    vault.has_obsidian = root.join(".obsidian").is_dir();
+    vault.has_obsidian = obsidian::vault_root(&root).is_some();
+    vault.obsidian_installed = obsidian::installed();
     Ok(vault)
 }
 
@@ -547,16 +636,21 @@ fn start_session(app: AppHandle) -> Result<String, String> {
     Ok(rel_path(&root, &path))
 }
 
+/// Opens a page in Obsidian. Outside a vault it can't, so the window shows how to add the notes folder;
+/// `launch` (the guide's "Open Obsidian" button) also starts Obsidian then.
 #[tauri::command]
-fn open_in_obsidian(app: AppHandle, path: String) -> Result<(), String> {
+fn open_in_obsidian(app: AppHandle, path: String, launch: Option<bool>) -> Result<obsidian::Opened, String> {
     let root = notes_dir(&app);
     let file = vault_file(&root, &path)?;
-    if !root.join(".obsidian").is_dir() {
-        return Err("Open “Lorekeeper” in Obsidian once first (Open folder as vault).".into());
+    if obsidian::vault_root(&root).is_some() {
+        obsidian::open(&file);
+        return Ok(obsidian::Opened::Opened { opened: true });
     }
-    let url = tauri::Url::parse_with_params("obsidian://open", [("path", file.to_string_lossy())]).map_err(|e| e.to_string())?;
-    open_external(url.as_str());
-    Ok(())
+    let installed = obsidian::installed();
+    if installed && launch == Some(true) {
+        obsidian::launch();
+    }
+    Ok(obsidian::Opened::NeedsVault { needs_vault: true, path: root.to_string_lossy().into_owned(), installed })
 }
 
 /// Opens web links from notes in the browser; anything else is refused.
@@ -593,7 +687,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     if new.backup_folder != old.backup_folder && !new.backup_folder.is_empty() {
         fs::create_dir_all(&new.backup_folder).map_err(|e| format!("Backup folder: {e}"))?;
     }
-    if (&new.quick_note, &new.capture) != (&old.quick_note, &old.capture) {
+    if (&new.quick_note, &new.capture, &new.new_session, &new.new_page) != (&old.quick_note, &old.capture, &old.new_session, &old.new_page) {
         let gs = app.global_shortcut();
         let _ = gs.unregister_all();
         let failed = register_shortcuts(&app, &new);
@@ -705,10 +799,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let new = MenuItem::with_id(app, "new", "New Session", true, None::<&str>)?;
     let folder = MenuItem::with_id(app, "folder", "Open in Obsidian", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", "Check for Updates…", true, None::<&str>)?;
     let login = CheckMenuItem::with_id(app, "login", "Launch at Login", true, autostart, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&review, &new, &folder, &sep, &settings, &login, &quit])?;
+    let menu = Menu::with_items(app, &[&review, &new, &folder, &sep, &settings, &update, &login, &quit])?;
     app.manage(login); // for set_launch_at_login
 
     // macOS menu bar: monochrome template icon that follows light/dark. Elsewhere: the colored app icon,
@@ -726,16 +821,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "review" => show_window(app, "main"),
-            "new" => match new_session(&notes_dir(app)) {
-                Ok(p) => {
-                    emit_changed(app);
-                    backup::request(false);
-                    notify_saved(app, "New session started", &p.file_name().unwrap().to_string_lossy());
-                }
-                Err(e) => notify(app, "Couldn't start session", &e.to_string()),
-            },
+            "new" => start_new_session(app),
             "folder" => open_notes(app),
             "settings" => show_window(app, "settings"),
+            "update" => updater::check(app, true),
             "login" => {
                 let on = app.autolaunch().is_enabled().unwrap_or(false);
                 if let Err(e) = set_launch_at_login(app, !on) {
@@ -758,6 +847,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![LOGIN_ARG])))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             save_note,
             dismiss,
@@ -779,7 +869,8 @@ pub fn run() {
             github_sign_in_start,
             github_sign_in_wait,
             github_sign_in_cancel,
-            github_sign_out
+            github_sign_out,
+            updater::check_for_updates
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon.
@@ -797,7 +888,9 @@ pub fn run() {
             }
             app.manage(Mutex::new(settings.clone()));
             build_tray(handle)?;
+            refresh_login_item(handle);
             backup::start(handle.clone());
+            updater::start(handle.clone());
             for keys in register_shortcuts(handle, &settings) {
                 notify(handle, "Shortcut unavailable", &format!("{keys} couldn't be registered. Change it in Settings."));
             }
@@ -899,6 +992,7 @@ mod tests {
         fs::write(&config, r#"{"theme":"dark","editorFontSize":18}"#).unwrap();
         let s = load_settings(&config, &vault).unwrap();
         assert_eq!((s.theme.as_str(), s.editor_font_size, s.quick_note.as_str()), ("dark", 18, "CmdOrCtrl+Alt+N"));
+        assert!(s.auto_update, "files from before automatic updates turn them on");
         assert_eq!(s.vault_path, vault_path);
 
         // A broken file is reported, not overwritten.
@@ -930,6 +1024,9 @@ mod tests {
         assert_eq!(validate(ok.clone()).unwrap(), ok);
         assert_eq!(validate(Settings { editor_font_size: 99, ..ok.clone() }).unwrap().editor_font_size, 24);
         assert_eq!(validate(Settings { editor_font_size: 2, ..ok.clone() }).unwrap().editor_font_size, 11);
+        // Optional shortcuts: off by default, any distinct valid combination when set.
+        let extra = Settings { new_session: "Ctrl+Alt+CmdOrCtrl+S".into(), new_page: "Ctrl+Alt+CmdOrCtrl+P".into(), ..ok.clone() };
+        assert_eq!(validate(extra.clone()).unwrap(), extra);
         let bad = [
             Settings { theme: "purple".into(), ..ok.clone() },
             Settings { session_view: "grid".into(), ..ok.clone() },
@@ -941,6 +1038,9 @@ mod tests {
             Settings { backup_folder: format!("{}/Backups", ok.vault_path), ..ok.clone() },
             Settings { github_repo: "my notes".into(), ..ok.clone() },
             Settings { github_repo: "".into(), ..ok.clone() },
+            Settings { new_session: "CmdOrCtrl+Nope".into(), ..ok.clone() },
+            Settings { new_session: ok.capture.clone(), ..ok.clone() },
+            Settings { new_session: "Ctrl+Alt+CmdOrCtrl+S".into(), new_page: "Ctrl+Alt+CmdOrCtrl+S".into(), ..ok.clone() },
         ];
         for s in bad {
             assert!(validate(s.clone()).is_err(), "{s:?} should be refused");

@@ -164,3 +164,7 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 @media (prefers-reduced-motion: reduce) {
   input[role="switch"], input[role="switch"]::before { transition: none; }
 }
+
+/* Platform-specific wording in hints. */
+:root:not([data-platform="macos"]) .mac-only,
+:root[data-platform="macos"] .other-only { display: none; }

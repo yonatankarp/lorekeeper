@@ -16,12 +16,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # One download per OS. "app" is needed on macOS for the updater's .app.tar.gz; the setup .exe
+          # and the .AppImage are updated in place. createUpdaterArtifacts adds the signed copies.
           - platform: macos-latest
-            args: --target universal-apple-darwin
+            args: --target universal-apple-darwin --bundles app,dmg
           - platform: windows-latest
-            args: ""
+            args: --bundles nsis
           - platform: ubuntu-22.04
-            args: ""
+            args: --bundles appimage
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -45,11 +47,14 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update files (.sig) that the app checks against plugins.updater.pubkey.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', '__VERSION__') }}
           releaseName: Lorekeeper __VERSION__
           releaseBody: |
-            Installers for macOS (universal .dmg), Windows (.msi / setup .exe) and Linux (.AppImage / .deb / .rpm).
+            Downloads: macOS `.dmg` (Apple Silicon and Intel), Windows `-setup.exe`, Linux `.AppImage`. Lorekeeper 0.2.0 and later update themselves; the `.tar.gz`, `.sig` and `latest.json` files are for that.
 
             The builds are not code-signed yet:
             - macOS: if it says the app is damaged or can't be opened, run `xattr -dr com.apple.quarantine /Applications/Lorekeeper.app`, or right-click → Open.

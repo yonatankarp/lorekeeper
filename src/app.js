@@ -15,6 +15,7 @@ const linux = !mac && !windows;
 const tauriWindow = window.__TAURI__.window?.getCurrentWindow();
 
 let vault = { folders: [], notes: [], currentSession: "" };
+const canObsidian = () => vault.hasObsidian || vault.obsidianInstalled; // installed but no vault yet: the button explains how
 let templates = []; // Templates/ notes: used by "New page", hidden everywhere else
 let current = null; // open page path
 let base = ""; // file content the editor started from, for conflict-safe saves
@@ -200,7 +201,7 @@ function render() {
   const folder = current ? current.split("/").slice(0, -1).join(" / ") : "";
   $("crumbs").innerHTML = n ? `${folder ? `<span class="folder">${escape(folder)} / </span>` : ""}<strong>${escape(baseName(current))}</strong>` : "";
   $("toggle").hidden = !n;
-  $("obsidian").hidden = !n || !vault.hasObsidian;
+  $("obsidian").hidden = !n || !canObsidian();
   $("copy").hidden = !n || !isSession(current);
   syncCopy();
   $("toggle").textContent = editing ? "Done" : "Edit";
@@ -421,7 +422,35 @@ $("copy").addEventListener("click", async () => {
     .then(() => say("Copied. Paste it into the D&D Beyond journal"), (err) => say(`Copy failed: ${err}`));
 });
 
-$("obsidian").addEventListener("click", () => invoke("open_in_obsidian", { path: current }).catch(say));
+// ---------- Obsidian ----------
+
+let guidePath = null; // the page the guide was opened for
+/** Opens `path` in Obsidian, or explains how to add the notes folder as a vault; `launch` also starts Obsidian. */
+async function openInObsidian(path, launch = false) {
+  let r;
+  try {
+    r = await invoke("open_in_obsidian", { path, launch });
+  } catch (err) {
+    return say(err);
+  }
+  if (!r.needsVault) return $("obsidian-dialog").open && $("obsidian-dialog").close();
+  if ($("obsidian-dialog").open) return;
+  guidePath = path;
+  $("obsidian-path").textContent = r.path;
+  $("obsidian-copied").textContent = "";
+  $("obsidian-launch").hidden = !r.installed;
+  $("obsidian-dialog").showModal();
+}
+
+$("obsidian").addEventListener("click", () => openInObsidian(current));
+$("obsidian-launch").addEventListener("click", () => openInObsidian(guidePath, true));
+$("obsidian-copy").addEventListener("click", () => {
+  const text = $("obsidian-path").textContent;
+  navigator.clipboard.writeText(text)
+    .catch(() => invoke("plugin:clipboard-manager|write_text", { text }))
+    .then(() => ($("obsidian-copied").textContent = "Copied"), (err) => ($("obsidian-copied").textContent = `Copy failed: ${err}`));
+});
+
 $("new-page").addEventListener("click", () => openNewDialog());
 $("new-session").addEventListener("click", async () => {
   try {
@@ -461,7 +490,7 @@ const actions = {
   toggle: () => current && $("toggle").click(),
   newPage: () => $("new-dialog").open || openNewDialog(),
   newSession: () => $("new-session").click(),
-  obsidian: () => current && vault.hasObsidian && $("obsidian").click(),
+  obsidian: () => current && canObsidian() && $("obsidian").click(),
   settings: () => invoke("open_settings").catch(say),
   // Tauri's zoom-hotkey.js (zoomHotkeysEnabled, macOS/Linux) owns the zoom level; drive it with the key it listens for.
   zoomIn: zoomKey("="),
@@ -554,7 +583,7 @@ $("sidebar").addEventListener("contextmenu", (e) => {
   const items = file !== undefined
     ? [
         { text: "Open", action: () => open(file) },
-        ...(vault.hasObsidian ? [{ text: "Open in Obsidian", action: () => invoke("open_in_obsidian", { path: file }).catch(say) }] : []),
+        ...(canObsidian() ? [{ text: "Open in Obsidian", action: () => openInObsidian(file) }] : []),
         { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
@@ -586,6 +615,8 @@ function applySettings(next) {
 // Hotkey notes and edits made in Obsidian show up here without a manual reload.
 listen("vault-changed", refresh);
 listen("settings-changed", (e) => applySettings(e.payload));
+// The global New Page hotkey (Rust shows this window first).
+listen("new-page", () => $("new-dialog").open || openNewDialog());
 window.addEventListener("focus", refresh);
 window.addEventListener("beforeunload", flush);
 

@@ -55,6 +55,25 @@
       </form>
     </dialog>
 
+    <dialog id="obsidian-dialog" aria-labelledby="obsidian-title">
+      <form method="dialog">
+        <h2 id="obsidian-title">Open your notes in Obsidian</h2>
+        <ol class="steps">
+          <li>In Obsidian, open the vault switcher (bottom-left) and choose “Open folder as vault”.</li>
+          <li>Pick this folder:
+            <span class="path-row"><code id="obsidian-path"></code>
+              <button type="button" id="obsidian-copy" class="ghost">Copy path</button></span>
+            <span id="obsidian-copied" class="copied" role="status"></span></li>
+          <li>After that, this button opens your notes directly.</li>
+        </ol>
+        <p class="tip">Already have a vault for this campaign? Choose a folder inside it in Settings &gt; General &gt; Notes folder.</p>
+        <div class="dialog-actions">
+          <button type="button" id="obsidian-launch" class="ghost">Open Obsidian</button>
+          <button value="done">Done</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="app.js"></script>
   </body>
 </html>
