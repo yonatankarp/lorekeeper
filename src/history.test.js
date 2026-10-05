@@ -40,3 +40,10 @@ test("undo stack: undo, redo, a new action clears redo, cap, failures drop the a
   await assert.rejects(s.undo());
   assert.equal(s.top().label, "d"); // the failed one is gone
 });
+
+test("a renamed page keeps its place in history", () => {
+  const nav = navHistory();
+  for (const p of [null, "A", "B"]) nav.visit(p);
+  nav.rename("A", "Z");
+  assert.equal(nav.entry(nav.find(-1, (p) => p !== "A", "B")), "Z");
+});

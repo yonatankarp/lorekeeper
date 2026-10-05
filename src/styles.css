@@ -396,6 +396,9 @@ main { display: flex; flex-direction: column; min-width: 0; height: 100vh; backg
 #view blockquote { margin: 12px 0; padding: 2px 14px; border-left: 3px solid var(--accent); font-style: italic; }
 #view code { font: 13px ui-monospace, Menlo, Consolas, monospace; background: var(--hover); padding: 1px 4px; border-radius: 4px; }
 #view pre { background: var(--hover); padding: 12px; border-radius: 8px; overflow: auto; }
+/* Maps and handouts from the vault; a missing one shows its name. */
+#view img, #backlinks img { max-width: 100%; height: auto; vertical-align: middle; border-radius: 4px; }
+#view .image-missing { color: var(--muted); font-style: italic; }
 #view pre code { background: none; padding: 0; }
 #view table { border-collapse: collapse; }
 #view th, #view td { border: 1px solid var(--line); padding: 4px 10px; }
@@ -627,7 +630,7 @@ dialog label.chip {
 dialog label.chip:has(:checked) { border-color: var(--accent-text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-text); }
 .chip:has(:checked) .icon { color: var(--accent-text); }
 .chip:has(:focus-visible) { outline: 2px solid var(--accent-text); outline-offset: 2px; }
-#new-error { color: var(--accent-text); min-height: 1.2em; margin: 0 0 8px; font-size: 15px; }
+#new-error, #rename-error { color: var(--accent-text); min-height: 1.2em; margin: 0 0 8px; font-size: 15px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 #obsidian-dialog .steps { margin: 0 0 12px; padding-left: 20px; font-size: 15.5px; line-height: 1.45; }
 #obsidian-dialog .steps li { margin-bottom: 8px; }

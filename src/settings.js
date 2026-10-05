@@ -239,6 +239,7 @@ function renderBackup(status) {
   $("github-run-error").textContent = current.githubUser ? status.github.lastError : "";
   $("backup-now").disabled = $("gh-now").disabled = status.running;
   $("backup-now").disabled ||= !current.backupFolder;
+  $("folder-restore").disabled = !current.backupFolder;
   $("gh-unavailable").hidden = status.githubAvailable;
   $("gh-sign-in").disabled = !status.githubAvailable;
   for (const p in CLOUDS) {
@@ -266,6 +267,8 @@ $("backup-choose").addEventListener("click", async () => {
 });
 $("backup-off").addEventListener("click", () => save({ backupFolder: "" }));
 for (const id of ["backup-now", "gh-now"]) $(id).addEventListener("click", () => invoke("backup_now"));
+$("folder-restore").addEventListener("click", () => openRestore("folder", "your backup folder"));
+$("gh-restore").addEventListener("click", () => openRestore("github", "GitHub"));
 $("gh-repo").addEventListener("click", (e) => {
   e.preventDefault();
   invoke("open_url", { url: `https://github.com/${current.githubUser}/${current.githubRepo}` });
@@ -335,6 +338,7 @@ for (const [p, c] of Object.entries(CLOUDS)) {
   cloudEl(p, "cloud-sign-in").addEventListener("click", () => cloudSignIn(p));
   cloudEl(p, "cloud-again").addEventListener("click", () => cloudSignIn(p));
   cloudEl(p, "cloud-now").addEventListener("click", () => invoke("backup_now"));
+  cloudEl(p, "cloud-restore").addEventListener("click", () => openRestore(p, c.name));
   cloudEl(p, "cloud-cancel").addEventListener("click", () => {
     cloudSigningIn = null; // set first, so the sign-in's "cancelled" error isn't shown
     invoke("cloud_sign_in_cancel");
@@ -382,6 +386,103 @@ async function cloudSignIn(p) {
   showClouds();
   cloudEl(p, current[`${p}User`] ? "cloud-now" : "cloud-sign-in").focus();
 }
+
+// ---------- restore: lists a backup, downloads it into a new folder, never over the notes folder ----------
+
+let restore = null; // the open dialog's state: { source, parent, target, done, running }
+
+function restoreView() {
+  const r = restore, busy = r.running;
+  $("restore-pick").hidden = !!r.done;
+  $("restore-actions").hidden = !!r.done;
+  $("restore-after").hidden = !r.done;
+  $("restore-target").textContent = r.target;
+  $("restore-choice").disabled = $("restore-change").disabled = busy || !$("restore-choice").options.length;
+  $("restore-go").disabled = busy || !r.target || !$("restore-choice").options.length;
+  $("restore-cancel").disabled = busy;
+  $("restore-progress").hidden = !busy;
+}
+
+async function openRestore(source, name) {
+  const r = restore = { source, parent: "", target: "", done: null, running: false };
+  $("restore-title").textContent = `Restore from ${name}`;
+  $("restore-choice").replaceChildren();
+  $("restore-status").textContent = "Looking for backups…";
+  $("restore-error").textContent = "";
+  restoreView();
+  $("restore-dialog").showModal();
+  const [list, target] = await Promise.allSettled([invoke("restore_list", { source }), invoke("restore_target", { parent: "" })]);
+  if (restore !== r) return; // closed and opened again meanwhile
+  $("restore-status").textContent = "";
+  if (list.status === "fulfilled") {
+    $("restore-choice").replaceChildren(...list.value.map((c) => new Option(c.label, c.id)));
+  } else {
+    $("restore-error").textContent = String(list.reason);
+  }
+  r.target = target.value ?? "";
+  restoreView();
+  if (list.status === "fulfilled") $("restore-choice").focus();
+}
+
+$("restore-change").addEventListener("click", async () => {
+  const r = restore;
+  const parent = await invoke("pick_folder", { title: "Choose where the restored notes go", start: "" });
+  if (parent && restore === r) {
+    r.parent = parent;
+    r.target = await invoke("restore_target", { parent });
+    restoreView();
+  }
+});
+
+$("restore-go").addEventListener("click", async () => {
+  const r = restore;
+  r.running = true;
+  $("restore-error").textContent = "";
+  $("restore-status").textContent = "Restoring…";
+  $("restore-progress").removeAttribute("value");
+  restoreView();
+  try {
+    r.done = await invoke("restore_start", { source: r.source, id: $("restore-choice").value, target: r.target });
+    const skipped = r.done.skipped.length ? ` Skipped ${r.done.skipped.length} that can't be saved here: ${r.done.skipped.join(", ")}.` : "";
+    $("restore-status").textContent = `Restored ${r.done.files} ${r.done.files === 1 ? "file" : "files"} to ${r.done.target}.${skipped}`;
+  } catch (err) {
+    $("restore-status").textContent = "";
+    $("restore-error").textContent = String(err);
+    // A failed restore can leave a partly filled folder; the next try goes to a fresh one.
+    r.target = await invoke("restore_target", { parent: r.parent }).catch(() => r.target);
+  }
+  r.running = false;
+  restoreView();
+  $(r.done ? "restore-close" : "restore-go").focus();
+});
+
+listen("restore-progress", ({ payload: [done, total] }) => {
+  if (!restore?.running) return;
+  $("restore-progress").max = total;
+  $("restore-progress").value = done;
+  $("restore-status").textContent = `Restoring ${Math.min(done + 1, total)} of ${total}…`;
+});
+
+$("restore-open").addEventListener("click", () => invoke("restore_open"));
+$("restore-use").addEventListener("click", () => {
+  const target = restore.done.target;
+  saves = saves.then(async () => {
+    try {
+      render(await invoke("save_settings", { settings: { ...current, vaultPath: target } }));
+      $("restore-status").textContent = `Your notes folder is now ${target}. The old one is still where it was.`;
+      $("restore-use").disabled = true;
+    } catch (err) {
+      $("restore-error").textContent = String(err);
+    }
+  });
+});
+for (const id of ["restore-cancel", "restore-close"]) $(id).addEventListener("click", () => $("restore-dialog").close());
+// Esc can't close it while a restore is running.
+$("restore-dialog").addEventListener("cancel", (e) => { if (restore?.running) e.preventDefault(); });
+$("restore-dialog").addEventListener("close", () => {
+  $("restore-use").disabled = false;
+  restore = null;
+});
 
 listen("backup-changed", (e) => renderBackup(e.payload));
 invoke("backup_status").then(renderBackup);

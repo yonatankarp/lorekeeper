@@ -16,7 +16,7 @@ On macOS, allow **Accessibility** the first time you use `⌘⇧S` (System Setti
 
 | Shortcut | What it does |
 |---|---|
-| `⌘⌥N` / `Ctrl+Alt+N` | One-line note box. Enter saves, Esc cancels. |
+| `⌘⌥N` / `Ctrl+Alt+N` | One-line note box. Enter saves, Esc cancels. `↑` in the empty box brings back the last note to fix. |
 | `⌘⇧S` / `Ctrl+Shift+S` | Saves the selected text, or the clipboard if nothing is selected. |
 | off until you set it | New session, without opening a window. |
 | off until you set it | New page, opens the New page dialog. |
@@ -36,12 +36,16 @@ Start a note with a symbol to file it:
 
 In the note box, `@Mir` or `[[Mir` suggests page names; Tab turns it into a link (`@[[Mirela]]`).
 
+If the current session's last note is over 12 hours old, the box offers the next session: `⌘Enter` / `Ctrl+Enter` saves the note there, Enter still saves to the current one.
+
 ## After the game
 
 - **Sessions** open as a **Timeline** (every note with its time). **Journal** shows them grouped the way **Copy for D&D Beyond** pastes them. Open quests are listed at the top.
 - **+ New page** (`⌘N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
 - **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
 - **Edit** (`⌘E`) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
+- **Rename** (`F2`) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
+- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and embedded as `![[Pasted image 20261005143012.png]]`, the way Obsidian does it; the page shows the image. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB. **Copy for D&D Beyond** leaves images out: upload them there yourself.
 - **Linked from** at the bottom of every page lists the sessions and pages that mention it.
 - `⌘K` searches, `⌘,` opens Settings, `⌘+` / `⌘−` zoom.
 
@@ -74,9 +78,11 @@ Campaign folders need different names, since the names keep their backups apart.
 
 **Settings > Backups**, any of these:
 
-- **Back up to a folder:** pick a folder in Google Drive, Dropbox, OneDrive, iCloud Drive or on a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days. To restore, copy notes back from the day you want.
-- **Dropbox or Google Drive:** click **Sign in**, then sign in and allow access in your browser (your password never goes through Lorekeeper). Lorekeeper only sees its own folder: **Apps/Lorekeeper** in Dropbox, **Lorekeeper** in Google Drive. Only new and changed notes are uploaded, and a note you delete is deleted there too. To restore, download the notes from that folder on the website. A deleted or overwritten note can be brought back from Dropbox's **Deleted files** or a file's **Version history**, or the Google Drive **Trash** (30 days or more).
-- **Back up to GitHub:** sign in with a code (no password in Lorekeeper). Every backup is a version in a private `lorekeeper-notes` repository. To restore, use **Code > Download ZIP** or a file's **History** on github.com.
+- **Back up to a folder:** pick a folder in Google Drive, Dropbox, OneDrive, iCloud Drive or on a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days.
+- **Dropbox or Google Drive:** click **Sign in**, then sign in and allow access in your browser (your password never goes through Lorekeeper). Lorekeeper only sees its own folder: **Apps/Lorekeeper** in Dropbox, **Lorekeeper** in Google Drive. Only new and changed notes are uploaded, and a note you delete is deleted there too. A deleted or overwritten note can be brought back from Dropbox's **Deleted files** or a file's **Version history**, or the Google Drive **Trash** (30 days or more).
+- **Back up to GitHub:** sign in with a code (no password in Lorekeeper). Every backup is a version in a private `lorekeeper-notes` repository. A file's **History** on github.com shows every older version.
+
+**To restore**, click **Restore…** next to a backup, pick a day (folder), a version (GitHub) or the current backup (Dropbox, Google Drive), and choose where the restored notes go. They're downloaded into a new folder (by default `Lorekeeper restored <date>` next to your notes folder); your notes folder and the backup are never changed. Then **Show in Finder** (Explorer on Windows) to copy back what you need, or **Use as notes folder** to switch to it. You can also restore by hand: copy from a dated folder, download from the Dropbox or Google Drive website, or use **Code > Download ZIP** on GitHub.
 
 Backups run on each new session, every 30 minutes while notes change, once a day, and on **Back up now**. Keeping the notes folder itself in a cloud drive syncs it, but sync isn't a backup: deletions sync too.
 
@@ -89,5 +95,5 @@ Backups run on each new session, every 30 minutes while notes change, once a day
 
 ## Limits
 
-- Renaming, moving and deleting pages, images and the graph view: use Obsidian or your file manager.
+- Moving pages to other folders and the graph view: use Obsidian or your file manager.
 - When saving a selection, the previous clipboard is restored as text only.

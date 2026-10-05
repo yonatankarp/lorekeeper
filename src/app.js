@@ -3,14 +3,15 @@ import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, parse, removeLine, sessions, stripLinks, timeline, toHtml, toText } from "./notes.js";
 import {
-  backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, resolve,
-  search, splitFrontmatter,
+  backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, renameLinks,
+  resolve, search, splitFrontmatter,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
 import { icon } from "./icons.js";
+import { ATTACHMENTS, freeName, imageLabel, isImage, pastedName, resolveImage, safeName } from "./images.js";
 
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 const { platform } = document.documentElement.dataset; // set by platform.js
@@ -53,6 +54,7 @@ function ed() {
         syncCopy();
       },
       onFollowLink: followLink,
+      onImage: saveImage,
       pageNames: () => vault.notes.map((n) => baseName(n.path)),
     });
     editor.setFontSize(settings.editorFontSize);
@@ -80,10 +82,25 @@ function say(msg) {
 const linkHtml = (target, labelHtml) =>
   `<a class="wikilink${resolve(target, paths()) ? "" : " missing"}" data-target="${escape(target)}" href="#">${labelHtml}</a>`;
 
+/**
+ * A vault image (`target` as written in ![[target|label]] or ![label](target)) as an <img> served by the asset
+ * protocol, which only reaches the notes folder. Web images aren't loaded (the CSP blocks them): they show as a link.
+ */
+function imageHtml(target, label) {
+  const { alt, width, height } = imageLabel(label, target.split("/").pop());
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return `<a href="${escape(target)}">${escape(alt || target)}</a>`;
+  const path = resolveImage(target, vault.images ?? []);
+  if (!path) return `<span class="image-missing" title="Image not found">${escape(alt || target)}</span>`;
+  const root = settings.vaultPath ?? "";
+  const sep = root.includes("\\") ? "\\" : "/";
+  const src = convertFileSrc(root.replace(/[\\/]+$/, "") + sep + path.split("/").join(sep));
+  return `<img src="${escape(src)}" alt="${escape(alt)}"${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""} loading="lazy">`;
+}
+
 marked.use({
   gfm: true,
   breaks: true, // Obsidian shows single newlines as line breaks
-  renderer: { html: ({ text }) => escape(text) }, // raw HTML in notes is shown, not run
+  renderer: { html: ({ text }) => escape(text), image: ({ href, text }) => imageHtml(href, text) }, // raw HTML in notes is shown, not run
   extensions: [
     {
       name: "wikilink",
@@ -91,15 +108,15 @@ marked.use({
       start: (src) => src.match(/!?\[\[/)?.index,
       tokenizer(src) {
         const m = /^!?\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]*))?\]\]/.exec(src);
-        if (m) return { type: "wikilink", raw: m[0], target: m[1].trim(), label: (m[3] ?? m[1]).trim() };
+        if (m) return { type: "wikilink", raw: m[0], target: m[1].trim(), label: (m[3] ?? m[1]).trim(), embed: m[0][0] === "!" };
       },
-      renderer: (t) => linkHtml(t.target, escape(t.label)),
+      renderer: (t) => (t.embed && isImage(t.target) ? imageHtml(t.target, t.label) : linkHtml(t.target, escape(t.label))),
     },
   ],
 });
 
-/** Raw text with its [[links]] made clickable. */
-const inlineLinks = (text) => linkify(text, linkHtml);
+/** Raw text with its [[links]] made clickable and its ![[images]] shown. */
+const inlineLinks = (text) => linkify(text, (target, label, m) => (m[1] && isImage(target) ? imageHtml(target, m[4] ?? target) : linkHtml(target, label)));
 
 function propsHtml(props) {
   if (!props.length) return "";
@@ -291,6 +308,7 @@ function render() {
   $("back").disabled = nav.find(-1, alive, current) < 0;
   $("forward").disabled = nav.find(1, alive, current) < 0;
   $("delete").disabled = !n;
+  $("rename").disabled = !n;
   $("backlinks").hidden = !n;
   $("toggle").hidden = !n;
   $("obsidian").hidden = !n || !canObsidian();
@@ -341,7 +359,7 @@ function go(dir) {
 function followLink(target) {
   const path = resolve(target, paths());
   if (path) open(path);
-  else openNewDialog(target.split("/").pop());
+  else if (!isImage(target)) openNewDialog(target.split("/").pop()); // not a page to make
 }
 
 // ---------- saving ----------
@@ -380,6 +398,47 @@ async function save() {
       inConflict = true;
       $("conflict").hidden = false;
     } else say(`Not saved: ${err}`);
+  }
+}
+
+const MAX_IMAGE = 20 * 1024 * 1024; // lib.rs refuses bigger ones too
+
+/**
+ * Saves a pasted or dropped image into Attachments/ and returns the name to embed, or null when it wasn't saved.
+ * Pasted images get Obsidian's "Pasted image <time>" name, dropped ones keep theirs; either way a name no other image
+ * in the vault has, so ![[name]] finds this one.
+ */
+async function saveImage(file, pasted) {
+  if (file.size > MAX_IMAGE) {
+    say("Not saved: images can be at most 20 MB");
+    return null;
+  }
+  const own = safeName(file.name ?? "");
+  const wanted = !pasted && isImage(own) && !own.startsWith(".") ? own : pastedName(new Date(), file.type);
+  if (!wanted) {
+    say("Not saved: only PNG, JPG, GIF, WebP and SVG images");
+    return null;
+  }
+  const data = await new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result.slice(r.result.indexOf(",") + 1)); // base64 after "data:image/png;base64,"
+    r.onerror = () => fail(r.error);
+    r.readAsDataURL(file);
+  });
+  for (;;) {
+    const name = freeName(wanted, vault.images ?? []);
+    const path = `${ATTACHMENTS}/${name}`;
+    let err = null;
+    await invoke("save_image", { path, data }).catch((e) => (err = String(e)));
+    if (err && !err.endsWith("already exists.")) {
+      say(`Not saved: ${err}`);
+      return null;
+    }
+    vault.images = [...(vault.images ?? []), path]; // saved now, or made outside the app since the vault was read
+    if (!err) {
+      say(`Saved ${path}`);
+      return name;
+    }
   }
 }
 
@@ -491,6 +550,9 @@ document.addEventListener("click", (e) => {
   if (/^https?:/i.test(href)) invoke("open_url", { url: href }).catch(say);
   else if (href && !href.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/i.test(href)) followLink(decodeURIComponent(href));
 });
+
+// A file dropped outside the editor would replace the app in the window; the editor saves dropped images itself.
+for (const type of ["dragover", "drop"]) document.addEventListener(type, (e) => e.dataTransfer?.types.includes("Files") && e.preventDefault());
 
 $("tree").addEventListener("click", (e) => {
   const b = e.target.closest(".folder-new");
@@ -706,6 +768,76 @@ function undoRedo(dir) {
   else if (!modal()) appHistory(dir);
 }
 
+// ---------- renaming ----------
+
+let renaming = null; // the page the Rename dialog is for
+
+function openRenameDialog(path) {
+  if (!path || !note(path) || modal()) return;
+  renaming = path;
+  $("rename-name").value = baseName(path);
+  $("rename-error").textContent = "";
+  $("rename-dialog").showModal();
+  $("rename-name").select();
+}
+
+/**
+ * Renames page `from` to `to` and points every link to it at the new name, saving pending typing first. `exact`
+ * ([path, now, then], for undo) puts a note back as it was while it still holds `now`; one changed since gets its links
+ * rewritten instead. Returns the rewrites as [path after the rename, before, after], and the pages that couldn't be saved.
+ */
+async function renamePage(from, to, exact = []) {
+  await flush();
+  await loadVault(); // rewrite what's on disk now, so the saves below don't conflict
+  const known = paths();
+  const edits = [];
+  for (const { path, content } of [...vault.notes, ...templates]) {
+    const back = exact.find(([p, now]) => p === path && now === content);
+    const next = back ? back[2] : renameLinks(content, from, to, known);
+    if (next !== content) edits.push([path === from ? to : path, content, next]);
+  }
+  await invoke("rename_file", { from, to }); // refuses an existing page before any note changes
+  nav.rename(from, to);
+  if (current === from) current = to;
+  const failed = [];
+  for (const edit of edits) {
+    const [path, base, content] = edit;
+    await invoke("save_file", { path, content, base }).catch(() => failed.push(edit));
+  }
+  await refresh();
+  return { edits: edits.filter((e) => !failed.includes(e)), failed: failed.map(([p]) => baseName(p)) };
+}
+
+$("rename-cancel").addEventListener("click", () => $("rename-dialog").close());
+$("rename-form").addEventListener("submit", async (e) => {
+  if (e.submitter?.value !== "rename") return;
+  e.preventDefault();
+  const from = renaming;
+  const name = $("rename-name").value.trim();
+  const problem = badName(name);
+  if (problem) {
+    $("rename-error").textContent = problem;
+    return $("rename-name").focus();
+  }
+  const folder = from.split("/").slice(0, -1).join("/");
+  const to = folder ? `${folder}/${name}.md` : `${name}.md`;
+  if (to === from) return $("rename-dialog").close();
+  let done;
+  try {
+    done = await renamePage(from, to);
+  } catch (err) {
+    return ($("rename-error").textContent = err);
+  }
+  $("rename-dialog").close();
+  const { edits, failed } = done;
+  // ponytail: undo / redo report only their label, so a page whose links couldn't be saved then goes unmentioned.
+  record({ label: `Rename ${baseName(from)}`, undo: () => renamePage(to, from, edits.map(([p, was, now]) => [p, now, was])), redo: () => renamePage(from, to) });
+  const n = edits.filter(([p]) => p !== to).length;
+  say(failed.length ? `Renamed, but couldn't update the links in ${failed.join(", ")}`
+    : `Renamed to ${name}${n ? `; links updated in ${n} page${n === 1 ? "" : "s"}` : ""}`);
+});
+$("rename").addEventListener("click", () => openRenameDialog(current));
+
 // ---------- Obsidian ----------
 
 let guidePath = null; // the page the guide was opened for
@@ -782,6 +914,7 @@ const actions = {
   back: () => modal() || go(-1),
   forward: () => modal() || go(1),
   deletePage: () => deletePage(current),
+  renamePage: () => openRenameDialog(current),
   undo: () => undoRedo("undo"),
   redo: () => undoRedo("redo"),
   // Tauri's zoom-hotkey.js (zoomHotkeysEnabled, macOS/Linux) owns the zoom level; drive it with the key it listens for.
@@ -809,6 +942,10 @@ function run(name, from = "key") {
 }
 
 document.addEventListener("keydown", (e) => {
+  if (e.key === "F2") {
+    e.preventDefault();
+    return run("renamePage");
+  }
   if (!(e.metaKey || e.ctrlKey)) return;
   const key = e.key.toLowerCase();
   // The zoom polyfill zooms on this same keydown; marking it handled stops the View menu accelerator zooming again.
@@ -848,6 +985,7 @@ async function buildMenu() {
         item("New Session", "newSession", "CmdOrCtrl+Shift+N"),
         sep,
         item("Open in Obsidian", "obsidian"),
+        item("Rename…", "renamePage", "F2"),
         item("Move to Trash…", "deletePage"), // ⌘⌫ comes from the keydown handler, so text fields keep it
       ] },
       // Undo and Redo are our own items, not the predefined ones: the editor's history and the app's deletions need them.
@@ -893,6 +1031,7 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
         { item: "Separator" },
+        { text: "Rename…", action: () => openRenameDialog(file) },
         { text: "Delete…", action: () => deletePage(file) },
       ]
     : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];

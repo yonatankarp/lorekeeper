@@ -6,10 +6,19 @@ const input = document.getElementById("note");
 const ghost = document.getElementById("ghost");
 const typed = document.getElementById("typed");
 const rest = document.getElementById("rest");
+const hint = document.getElementById("hint");
 let names = [], query = null, matches = [], pick = 0, saving = false;
+let editing = null; // the last note's text while ↑ has it in the box to fix
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const dismiss = () => { input.value = ""; suggest(); invoke("dismiss", { restoreFocus: true }); };
+const dismiss = () => { input.value = ""; edit(null); suggest(); invoke("dismiss", { restoreFocus: true }); };
+
+// ↑ in the empty box brings back the last note to fix: Enter rewrites it in place, Esc lets it go.
+function edit(text) {
+  editing = text;
+  hint.hidden = text === null;
+  if (text !== null) { input.value = text; suggest(); }
+}
 
 // A page name being typed at the end of the box: "@Mir" or an unclosed "[[Mir".
 // ponytail: end of the box only, since a ghost mid-text would overlap what follows.
@@ -49,19 +58,22 @@ function accept() {
 }
 
 // Shows where the note went before closing; on failure the draft comes back so nothing is lost.
-async function save() {
-  const draft = input.value;
-  saving = input.readOnly = true;
+async function save(startNew = false) {
+  const draft = input.value, old = editing;
+  saving = input.readOnly = hint.hidden = true;
   matches = [];
   render();
   try {
-    input.value = `✓ Saved to ${await invoke("save_note", { text: draft })}`;
+    // Fixing the last note keeps it where it is, so ⌘Enter only starts a new session for a new note.
+    const done = old === null ? `Saved to ${await invoke("save_note", { text: draft, startNew })}` : await invoke("fix_note", { old, text: draft });
+    input.value = `✓ ${done}`;
     await wait(700);
     dismiss();
   } catch (err) {
     input.value = `✗ ${err}`;
     await wait(2000);
     input.value = draft;
+    hint.hidden = old === null;
   }
   saving = input.readOnly = false;
 }
@@ -75,11 +87,18 @@ input.addEventListener("keydown", (e) => {
       pick = (pick + (e.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length;
       render();
     }
+  } else if (e.key === "ArrowUp" && !input.value) {
+    e.preventDefault();
+    invoke("last_note").then((text) => { if (text != null && !input.value) edit(text); });
+  } else if (e.key === "Escape" && editing !== null && !matches.length) {
+    input.value = "";
+    edit(null);
+    suggest();
   } else if (e.key === "Escape") {
     // First Escape drops a showing suggestion, the next one closes the box.
     if (matches.length) { matches = []; render(); } else dismiss();
   } else if (e.key === "Enter") {
-    if (input.value.trim()) save(); else dismiss();
+    if (input.value.trim()) save((e.metaKey || e.ctrlKey) && document.body.classList.contains("stale")); else dismiss();
   }
 });
 // The macOS menu bar is app-wide, and its Undo / Redo items act on the main window: undo typing here instead,
@@ -98,6 +117,15 @@ window.addEventListener("focus", () => {
 });
 // Clicking away hides the box but keeps the draft for next time.
 window.addEventListener("blur", () => invoke("dismiss", { restoreFocus: false }));
+
+// Offers a new session when the current one has gone quiet for 12+ hours (session_status); Enter still saves to it.
+const stale = document.getElementById("stale");
+const mod = navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl+";
+const ago = (h) => (h < 48 ? `${h} hours` : `${Math.floor(h / 24)} days`);
+window.addEventListener("focus", () => invoke("session_status").then((s) => {
+  document.body.classList.toggle("stale", !!s);
+  if (s) stale.textContent = `Last note was ${ago(s.idleHours)} ago. ${mod}Enter saves to a new Session ${s.next}.`;
+}));
 
 invoke("get_settings").then((s) => applyTheme(s.theme));
 listen("settings-changed", (e) => applyTheme(e.payload.theme));

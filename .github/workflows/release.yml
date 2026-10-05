@@ -25,6 +25,9 @@ jobs:
           - platform: ubuntu-22.04
             args: --bundles appimage
     runs-on: ${{ matrix.platform }}
+    env:
+      # Windows code signing (docs/DEVELOPMENT.md) is on only once the ESIGNER_* secrets exist.
+      WINDOWS_SIGNING: ${{ secrets.ESIGNER_CREDENTIAL_ID != '' }}
     steps:
       - uses: actions/checkout@v7
       - name: Linux build dependencies
@@ -54,6 +57,26 @@ jobs:
             cat RELEASE_NOTES.md
             echo 'NOTES_EOF'
           } >> "$GITHUB_OUTPUT"
+      # Tauri runs this signCommand on the app exe, the NSIS plugins, the uninstaller and the installer
+      # while bundling, so the update .sig is made from the signed installer. Passwords stay in env
+      # (jsign's "env:"), never in the config or on a command line.
+      - name: Windows code signing
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING == 'true'
+        shell: bash
+        env:
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+        run: |
+          jar="$RUNNER_TEMP/jsign.jar"
+          curl -fsSL -o "$jar" https://github.com/ebourg/jsign/releases/download/7.5/jsign-7.5.jar
+          echo "602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c  $jar" | sha256sum -c
+          conf="$(cygpath -m "$RUNNER_TEMP/windows-sign.json")"
+          cat > "$conf" <<EOF
+          {"bundle":{"windows":{"signCommand":{"cmd":"java","args":["-jar","$(cygpath -m "$jar")",
+            "--storetype","ESIGNER","--alias","$ESIGNER_CREDENTIAL_ID",
+            "--storepass","env:ESIGNER_STOREPASS","--keypass","env:ESIGNER_TOTP_SECRET",
+            "--tsaurl","http://ts.ssl.com","--tsmode","RFC3161","%1"]}}}}
+          EOF
+          echo "SIGN_ARGS=--config $conf" >> "$GITHUB_ENV"
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,9 +85,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Compiled into the app (see src-tauri/src/cloud.rs); kept out of the source.
           LOREKEEPER_GOOGLE_CLIENT_SECRET: ${{ secrets.LOREKEEPER_GOOGLE_CLIENT_SECRET }}
+          # Read by jsign during Windows code signing; unused otherwise.
+          ESIGNER_STOREPASS: ${{ secrets.ESIGNER_USERNAME }}|${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', '__VERSION__') }}
           releaseName: Lorekeeper __VERSION__
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ env.SIGN_ARGS }}

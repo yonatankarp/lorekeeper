@@ -28,7 +28,7 @@ Backups are optional and off until you sign in. When you do, Lorekeeper uploads 
 - **Google Drive:** Lorekeeper uses the `drive.file` permission, so it can only see and change files it created itself, in a `Lorekeeper` folder (and a `Lorekeeper - <name>` folder for each further campaign). It cannot see the rest of your Drive.
 - **GitHub:** Lorekeeper creates a private repository called `lorekeeper-notes` in your account and backs up to it, plus a private `lorekeeper-notes-<name>` repository for each further campaign. GitHub's sign-in grants access to your repositories in general; Lorekeeper only uses the repositories it created for your notes.
 
-Lorekeeper only uses this access to back up your notes. It does not read other data, and nothing is shared with, sold to or used by anyone else, including the developer.
+Lorekeeper only uses this access to back up your notes and, when you click Restore, to download that backup to your computer. It does not read other data, and nothing is shared with, sold to or used by anyone else, including the developer.
 
 Lorekeeper's use and transfer of information received from Google APIs adheres to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the Limited Use requirements.
 

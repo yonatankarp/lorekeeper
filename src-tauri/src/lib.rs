@@ -25,6 +25,7 @@ mod dropbox;
 mod gdrive;
 mod github;
 mod obsidian;
+mod restore;
 mod updater;
 
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
@@ -140,12 +141,115 @@ fn append_note(dir: &Path, text: &str) -> io::Result<String> {
     Ok(text)
 }
 
+/// The time and text of a quick-note line, "- HH:MM text".
+fn note_line(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("- ")?;
+    let (time, text) = (rest.get(..5)?, rest.get(5..)?.strip_prefix(' ')?);
+    let b = time.as_bytes();
+    (b[2] == b':' && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())).then_some((time, text))
+}
+
+/// The last quick-note line in a session: its byte range (without the line break), time and text.
+fn last_note_line(content: &str) -> Option<(std::ops::Range<usize>, &str, &str)> {
+    let (mut start, mut found) = (0, None);
+    for raw in content.split_inclusive('\n') {
+        let line = raw.trim_end_matches(['\n', '\r']);
+        if let Some((time, text)) = note_line(line) {
+            found = Some((start..start + line.len(), time, text));
+        }
+        start += raw.len();
+    }
+    found
+}
+
+/// The session with its last note rewritten to `new`, keeping its time, or None if that note no longer reads `old`.
+fn replace_last_note(content: &str, old: &str, new: &str) -> Option<String> {
+    let (range, time, text) = last_note_line(content)?;
+    (text == old).then(|| format!("{}- {time} {new}{}", &content[..range.start], &content[range.end..]))
+}
+
+/// ↑ in the quick box: rewrites the last note in place if it still reads `old`. If another note arrived since,
+/// the text is appended as a new note instead, so nothing is lost. Returns whether it was fixed in place;
+/// empty text keeps the note as it was.
+fn fix_last_note(dir: &Path, old: &str, text: &str) -> io::Result<bool> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return Ok(true);
+    }
+    let _guard = WRITE_LOCK.lock().unwrap();
+    let path = current_session(dir)?;
+    if let Some(fixed) = replace_last_note(&fs::read_to_string(&path)?, old, &text) {
+        fs::write(&path, fixed)?;
+        return Ok(true);
+    }
+    let time = chrono::Local::now().format("%H:%M");
+    let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+    writeln!(file, "- {time} {text}")?;
+    Ok(false)
+}
+
+/// Whole hours since `modified` when that is 12 or more: time to offer a new session.
+fn stale_hours(modified: std::time::SystemTime, now: std::time::SystemTime) -> Option<u64> {
+    let hours = now.duration_since(modified).ok()?.as_secs() / 3600;
+    (hours >= 12).then_some(hours)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StaleSession {
+    next: u32,
+    idle_hours: u64,
+}
+
+/// The newest session when its file hasn't changed in 12 hours. A fresh vault or a session with
+/// no notes yet has none (and no file gets created).
+fn stale_session(dir: &Path, now: std::time::SystemTime) -> io::Result<Option<StaleSession>> {
+    let n = latest_session(dir)?;
+    let path = session_path(dir, n);
+    if n == 0 || !fs::read_to_string(&path)?.lines().any(|l| l.starts_with("- ")) {
+        return Ok(None);
+    }
+    let modified = fs::metadata(path)?.modified()?;
+    Ok(stale_hours(modified, now).map(|idle_hours| StaleSession { next: n + 1, idle_hours }))
+}
+
 /// Turns a path from the webview into a file inside the vault. Only plain relative `.md`
 /// paths pass: no `..`, no absolute paths or drive prefixes.
 fn vault_file(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
     let ok = p.extension().is_some_and(|e| e == "md") && p.components().all(|c| matches!(c, Component::Normal(_)));
     if ok { Ok(root.join(p)) } else { Err(format!("Not a note in the vault: {rel}")) }
+}
+
+/// Images the page view shows and the editor saves (pasted or dropped); the same list as isImage in images.js.
+const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+fn is_image(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| IMAGE_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
+/// vault_file for images: only plain relative paths with an image extension.
+fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let p = Path::new(rel);
+    let ok = is_image(p) && p.components().all(|c| matches!(c, Component::Normal(_)));
+    if ok { Ok(root.join(p)) } else { Err(format!("Not an image in the vault: {rel}")) }
+}
+
+/// Lets the page view load images from the notes folder through the asset protocol. Tauri's scope can only grow,
+/// so a folder you switch away from is forbidden instead (forbidding wins over allowing).
+// ponytail: switching back to a folder used earlier in this run shows its images only after a restart, and when one
+// folder holds the other the old one stays allowed. A custom URI scheme reading the current folder would fix both.
+fn allow_vault_images(app: &AppHandle, new: &str, old: Option<&str>) {
+    let scope = app.asset_protocol_scope();
+    if let Some(old) = old {
+        let canon = |p: &str| fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+        let (old_dir, new_dir) = (canon(old), canon(new));
+        if !old_dir.starts_with(&new_dir) && !new_dir.starts_with(&old_dir) {
+            let _ = scope.forbid_directory(old, true);
+        }
+    }
+    let _ = scope.allow_directory(new, true);
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
@@ -164,6 +268,8 @@ struct Note {
 struct Vault {
     folders: Vec<String>,
     notes: Vec<Note>,
+    /// Image files, for ![[map.png]] embeds.
+    images: Vec<String>,
     current_session: String,
     has_obsidian: bool,
     obsidian_installed: bool,
@@ -183,6 +289,8 @@ fn walk(root: &Path, dir: &Path, vault: &mut Vault) -> io::Result<()> {
             if let Ok(content) = fs::read_to_string(&path) {
                 vault.notes.push(Note { path: rel_path(root, &path), content });
             }
+        } else if is_image(&path) {
+            vault.images.push(rel_path(root, &path));
         }
     }
     Ok(())
@@ -618,12 +726,38 @@ fn open_new_page(app: &AppHandle) {
 
 /// From the quick box. Returns the session the note went into ("Session 3") for the box to show.
 #[tauri::command]
-fn save_note(app: AppHandle, text: String) -> Result<String, String> {
+fn save_note(app: AppHandle, text: String, start_new: Option<bool>) -> Result<String, String> {
     let dir = notes_dir(&app);
-    match append_note(&dir, &text).and_then(|_| current_session(&dir)) {
+    let fresh = if start_new == Some(true) { new_session(&dir).map(|_| backup::request(false)) } else { Ok(()) };
+    match fresh.and_then(|_| append_note(&dir, &text)).and_then(|_| current_session(&dir)) {
         Ok(path) => {
             emit_changed(&app);
             Ok(path.file_stem().unwrap_or_default().to_string_lossy().into_owned())
+        }
+        Err(e) => {
+            notify(&app, "Couldn't save note", &e.to_string());
+            Err(e.to_string())
+        }
+    }
+}
+
+/// The current session's last note, without its "- HH:MM ", for ↑ in the quick box.
+#[tauri::command]
+fn last_note(app: AppHandle) -> Option<String> {
+    let dir = notes_dir(&app);
+    let n = latest_session(&dir).ok().filter(|&n| n > 0)?;
+    last_note_line(&fs::read_to_string(session_path(&dir, n)).ok()?).map(|(_, _, text)| text.to_owned())
+}
+
+/// From the quick box after ↑: fixes the last note. Returns what the box shows.
+#[tauri::command]
+fn fix_note(app: AppHandle, old: String, text: String) -> Result<String, String> {
+    let dir = notes_dir(&app);
+    match fix_last_note(&dir, &old, &text).and_then(|fixed| Ok((fixed, current_session(&dir)?))) {
+        Ok((fixed, path)) => {
+            emit_changed(&app);
+            let session = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            Ok(if fixed { format!("Fixed in {session}") } else { format!("Saved to {session} as a new note (the last one changed)") })
         }
         Err(e) => {
             notify(&app, "Couldn't save note", &e.to_string());
@@ -773,6 +907,64 @@ fn create_file(app: AppHandle, path: String, content: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Renames a note; never overwrites another one. A case-only rename ("mirela.md" to "Mirela.md")
+/// finds the same file on a case-insensitive disk, so it goes through a temporary name.
+fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    let (src, dst) = (vault_file(root, from)?, vault_file(root, to)?);
+    // Hotkey notes find the current session by its "Session N" name, so sessions keep theirs.
+    let session = |rel: &str| rel.strip_prefix("Sessions/").and_then(session_number).is_some();
+    if session(from) || session(to) {
+        return Err("Sessions keep their \"Session N\" names, so hotkey notes find the current one.".into());
+    }
+    let _guard = WRITE_LOCK.lock().unwrap();
+    if !src.is_file() {
+        return Err(format!("{from} doesn't exist."));
+    }
+    // Listed under its exact name: a file of its own, not the source seen through case-insensitivity.
+    let listed = dst.parent().and_then(|d| fs::read_dir(d).ok()).is_some_and(|mut entries| {
+        entries.any(|e| e.is_ok_and(|e| Some(e.file_name().as_os_str()) == dst.file_name()))
+    });
+    let case_only = from.to_lowercase() == to.to_lowercase() && !listed;
+    if dst.exists() && !case_only {
+        return Err(format!("{to} already exists."));
+    }
+    let tmp = dst.with_extension("md.renaming");
+    let renamed = if case_only && !tmp.exists() {
+        fs::rename(&src, &tmp).and_then(|_| fs::rename(&tmp, &dst))
+    } else {
+        fs::rename(&src, &dst)
+    };
+    renamed.map_err(|e| format!("Couldn't rename {from}: {e}"))
+}
+
+#[tauri::command]
+fn rename_file(app: AppHandle, from: String, to: String) -> Result<(), String> {
+    rename_note(&notes_dir(&app), &from, &to)?;
+    backup::mark_changed(); // no vault-changed event: the window follows the renamed page itself
+    Ok(())
+}
+
+/// Saves a pasted or dropped image (base64) into the vault, making its folder; never overwrites a file.
+#[tauri::command]
+fn save_image(app: AppHandle, path: String, data: String) -> Result<(), String> {
+    use base64::Engine as _;
+    let file = vault_image(&notes_dir(&app), &path)?;
+    if data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("Images can be at most 20 MB.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string())?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&file).map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => format!("{path} already exists."),
+        _ => e.to_string(),
+    })?;
+    f.write_all(&bytes).map_err(|e| e.to_string())?;
+    backup::mark_changed();
+    Ok(())
+}
+
 #[tauri::command]
 fn start_session(app: AppHandle) -> Result<String, String> {
     let root = notes_dir(&app);
@@ -780,6 +972,12 @@ fn start_session(app: AppHandle) -> Result<String, String> {
     emit_changed(&app);
     backup::request(false); // captures the session that just ended
     Ok(rel_path(&root, &path))
+}
+
+/// For the quick box: offers "Start Session N?" when the current session has gone quiet.
+#[tauri::command]
+fn session_status(app: AppHandle) -> Option<StaleSession> {
+    stale_session(&notes_dir(&app), std::time::SystemTime::now()).ok().flatten()
 }
 
 /// Opens a page in Obsidian. Outside a vault it can't, so the window shows how to add the notes folder;
@@ -854,6 +1052,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     }
     store_settings(&app, &new)?;
     if new.vault_path != old.vault_path {
+        allow_vault_images(&app, &new.vault_path, Some(&old.vault_path));
         emit_changed(&app);
     }
     if new.backup_folder != old.backup_folder {
@@ -1079,13 +1278,18 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             save_note,
+            last_note,
+            fix_note,
             dismiss,
             read_vault,
             page_names,
             save_file,
             create_file,
+            save_image,
             delete_file,
+            rename_file,
             start_session,
+            session_status,
             open_in_obsidian,
             open_url,
             copy_html,
@@ -1104,6 +1308,10 @@ pub fn run() {
             cloud_sign_in,
             cloud_sign_in_cancel,
             cloud_sign_out,
+            restore::restore_list,
+            restore::restore_target,
+            restore::restore_start,
+            restore::restore_open,
             updater::check_for_updates
         ])
         .setup(|app| {
@@ -1123,6 +1331,7 @@ pub fn run() {
                 notify(handle, "Notes folder unavailable", &format!("{}: {e}", settings.vault_path));
             }
             app.manage(Mutex::new(settings.clone()));
+            allow_vault_images(handle, &settings.vault_path, None);
             build_tray(handle)?;
             // Windows are created here ("create": false in tauri.conf.json), after the state their
             // commands read. On Windows a page can call a command while Tauri is still building windows.
@@ -1214,6 +1423,57 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dnd-notes-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn last_note_is_found_and_fixed_in_place() {
+        // Only "- HH:MM text" lines are notes; prose after the last one is skipped, and the rest is kept byte for byte.
+        let s = "# Session 1\r\n- 20:01 @Mirela ïnn\r\n- 1:5 x\n- 20:05 #potion\r\nThe party rests.\n- abcde y\n";
+        assert_eq!(last_note_line(s).map(|(_, time, text)| (time, text)), Some(("20:05", "#potion")));
+        assert_eq!(
+            replace_last_note(s, "#potion", "#potion of healing").unwrap(),
+            "# Session 1\r\n- 20:01 @Mirela ïnn\r\n- 1:5 x\n- 20:05 #potion of healing\r\nThe party rests.\n- abcde y\n"
+        );
+        assert_eq!(replace_last_note(s, "#poison", "x"), None);
+        assert_eq!(replace_last_note("# Session 1\n\n", "", "x"), None);
+        assert_eq!(last_note_line("- 20:01 ünïcode").unwrap().2, "ünïcode");
+
+        // In a vault: fixed in place keeping its time; empty text keeps it; a newer note means the fix is added as new.
+        let dir = temp_dir("fix-last");
+        fs::create_dir_all(dir.join("Sessions")).unwrap();
+        fs::write(session_path(&dir, 1), "# Session 1\n\n- 19:58 Mirela the innkeper\n").unwrap();
+        assert!(fix_last_note(&dir, "Mirela the innkeper", "  Mirela the\n innkeeper ").unwrap());
+        assert_eq!(fs::read_to_string(session_path(&dir, 1)).unwrap(), "# Session 1\n\n- 19:58 Mirela the innkeeper\n");
+        assert!(fix_last_note(&dir, "Mirela the innkeeper", "  ").unwrap());
+        assert_eq!(fs::read_to_string(session_path(&dir, 1)).unwrap(), "# Session 1\n\n- 19:58 Mirela the innkeeper\n");
+        append_note(&dir, "#potion").unwrap();
+        assert!(!fix_last_note(&dir, "Mirela the innkeeper", "Mirela the elf").unwrap());
+        let notes: Vec<String> = fs::read_to_string(session_path(&dir, 1)).unwrap().lines().filter_map(|l| Some(note_line(l)?.1.to_owned())).collect();
+        assert_eq!(notes, ["Mirela the innkeeper", "#potion", "Mirela the elf"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_prompt() {
+        let t = |h: u64, m: u64| std::time::UNIX_EPOCH + Duration::from_secs(h * 3600 + m * 60);
+        assert_eq!(stale_hours(t(0, 0), t(11, 59)), None);
+        assert_eq!(stale_hours(t(0, 0), t(12, 0)), Some(12));
+        assert_eq!(stale_hours(t(0, 0), t(72, 30)), Some(72));
+        assert_eq!(stale_hours(t(5, 0), t(0, 0)), None, "a file from the future isn't stale");
+
+        // A fresh vault gets no prompt and no session file; an old session offers the next one.
+        let dir = temp_dir("stale");
+        let far = std::time::SystemTime::now() + Duration::from_secs(1000 * 3600);
+        assert!(stale_session(&dir, far).unwrap().is_none());
+        assert_eq!(latest_session(&dir).unwrap(), 0);
+        append_note(&dir, "the party rests").unwrap();
+        assert!(stale_session(&dir, std::time::SystemTime::now()).unwrap().is_none());
+        let later = std::time::SystemTime::now() + Duration::from_secs(13 * 3600 + 60);
+        let s = stale_session(&dir, later).unwrap().unwrap();
+        assert_eq!((s.next, s.idle_hours), (2, 13));
+        new_session(&dir).unwrap();
+        assert!(stale_session(&dir, far).unwrap().is_none(), "a session without notes isn't stale");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1373,6 +1633,64 @@ mod tests {
         for bad in ["../secret.md", "NPCs/../../x.md", "/etc/passwd.md", "NPCs/Mirela.txt", "", "NPCs/"] {
             assert!(vault_file(root, bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    #[test]
+    fn rename_never_overwrites_but_changes_case() {
+        let dir = temp_dir("rename");
+        assert!(rename_note(&dir, "Sessions/Session 3.md", "Sessions/Ambush.md").is_err());
+        assert!(rename_note(&dir, "Notes.md", "Sessions/Session 9.md").is_err());
+        fs::create_dir_all(dir.join("NPCs")).unwrap();
+        fs::write(dir.join("NPCs/mirela.md"), "m").unwrap();
+        fs::write(dir.join("NPCs/Vex.md"), "v").unwrap();
+        let names = || {
+            let mut v: Vec<String> = fs::read_dir(dir.join("NPCs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        assert!(rename_note(&dir, "NPCs/mirela.md", "NPCs/Vex.md").unwrap_err().contains("already exists"));
+        if dir.join("NPCs/VEX.md").exists() {
+            // A case-insensitive disk: another page with the name in other case is still another page.
+            assert!(rename_note(&dir, "NPCs/mirela.md", "NPCs/vex.md").unwrap_err().contains("already exists"));
+        }
+        assert!(rename_note(&dir, "NPCs/Nobody.md", "NPCs/X.md").unwrap_err().contains("doesn't exist"));
+        for (from, to) in [("../mirela.md", "NPCs/X.md"), ("NPCs/mirela.md", "../X.md"), ("NPCs/mirela.md", "NPCs/X.txt")] {
+            assert!(rename_note(&dir, from, to).is_err(), "{from} -> {to} should be refused");
+        }
+        assert_eq!(fs::read_to_string(dir.join("NPCs/Vex.md")).unwrap(), "v");
+
+        // Case-only works on case-insensitive disks (macOS, Windows) and sensitive ones alike.
+        rename_note(&dir, "NPCs/mirela.md", "NPCs/Mirela.md").unwrap();
+        assert!(names().contains(&"Mirela.md".to_string()) && !names().contains(&"mirela.md".to_string()));
+        rename_note(&dir, "NPCs/Mirela.md", "NPCs/Mira.md").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("NPCs/Mira.md")).unwrap(), "m");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn image_paths_stay_in_the_vault() {
+        let root = Path::new("/vault");
+        for ok in ["Attachments/Pasted image 20261005143012.png", "map.JPG", "Maps/a.jpeg", "x.gif", "x.webp", "x.svg"] {
+            assert_eq!(vault_image(root, ok).unwrap(), root.join(ok));
+        }
+        for bad in ["../a.png", "Attachments/../../a.png", "/a.png", "a.md", "a.exe", "a.png.exe", "Attachments/", "", "png"] {
+            assert!(vault_image(root, bad).is_err(), "{bad} should be refused");
+        }
+        // Notes and images stay apart: neither check accepts the other's files.
+        assert!(vault_file(root, "map.png").is_err());
+
+        // The vault walk lists images next to notes, hidden folders still skipped.
+        let dir = temp_dir("images");
+        fs::create_dir_all(dir.join("Attachments")).unwrap();
+        fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        for f in ["Attachments/map.png", "Handout.JPG", "notes.txt", ".obsidian/icon.png"] {
+            fs::write(dir.join(f), "x").unwrap();
+        }
+        let mut vault = Vault::default();
+        walk(&dir, &dir, &mut vault).unwrap();
+        vault.images.sort();
+        assert_eq!(vault.images, ["Attachments/map.png", "Handout.JPG"]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

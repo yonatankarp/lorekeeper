@@ -31,6 +31,7 @@
         <button id="copy" hidden>Copy for D&amp;D Beyond</button>
         <button id="toggle" class="ghost" title="Edit / preview (⌘E)">Edit</button>
         <button id="obsidian" class="ghost" title="Open this page in Obsidian">Obsidian</button>
+        <button id="rename" class="ghost" title="Rename this page (F2)" disabled>Rename</button>
         <button id="delete" class="ghost icon-button" aria-label="Move page to the Trash" title="Move to the Trash (⌘⌫)" disabled></button>
       </header>
       <div id="conflict" role="alert" hidden>
@@ -73,6 +74,19 @@
         <div class="dialog-actions">
           <button id="delete-cancel" value="cancel" class="ghost" autofocus>Cancel</button>
           <button id="delete-confirm" value="delete" class="seal">Move to Trash</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="rename-dialog" aria-labelledby="rename-title">
+      <form id="rename-form" method="dialog" novalidate>
+        <h2 id="rename-title">Rename page</h2>
+        <label>New name <input id="rename-name" aria-required="true" aria-describedby="rename-help" autocomplete="off" /></label>
+        <p id="rename-help" class="sr-only">Links to this page are updated too.</p>
+        <p id="rename-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" id="rename-cancel" class="ghost">Cancel</button>
+          <button id="rename-confirm" value="rename" class="seal">Rename</button>
         </div>
       </form>
     </dialog>
