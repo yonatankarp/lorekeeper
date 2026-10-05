@@ -76,7 +76,7 @@ fn run(app: &AppHandle, manual: bool) -> bool {
     }
     let _done = Done;
 
-    let found = tauri::async_runtime::block_on(async { app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string()) });
+    let found = tauri::async_runtime::block_on(async { app.updater()?.check().await });
     let update = match found {
         Ok(Some(update)) => update,
         Ok(None) => {
@@ -88,7 +88,7 @@ fn run(app: &AppHandle, manual: bool) -> bool {
         Err(e) => {
             eprintln!("update check failed: {e}");
             if manual {
-                message(app, MessageDialogKind::Error, format!("Couldn't check for updates: {e}"));
+                message(app, MessageDialogKind::Warning, failure(&e, &app.package_info().version.to_string()));
             }
             return false;
         }
@@ -110,6 +110,17 @@ fn run(app: &AppHandle, manual: bool) -> bool {
             message(app, MessageDialogKind::Error, format!("Couldn't install the update: {e}"));
             true
         }
+    }
+}
+
+/// Plain-language text for a failed manual check.
+fn failure(e: &tauri_plugin_updater::Error, version: &str) -> String {
+    use tauri_plugin_updater::Error::*;
+    match e {
+        // No published release with update info (yet), or GitHub didn't answer with one.
+        ReleaseNotFound => format!("No update information is available right now. You have version {version}. Try again later."),
+        Reqwest(_) | Network(_) => "Couldn't reach GitHub to check for updates. Check your internet connection and try again.".into(),
+        _ => format!("Couldn't check for updates ({e})."),
     }
 }
 
@@ -141,6 +152,13 @@ mod tests {
         assert!(due(Some(now - INTERVAL), now));
         assert!(due(Some(now - Duration::from_secs(3 * 24 * 60 * 60)), now));
         assert!(due(Some(now + Duration::from_secs(60)), now), "clock went backwards");
+    }
+
+    #[test]
+    fn failed_check_messages() {
+        let msg = failure(&tauri_plugin_updater::Error::ReleaseNotFound, "0.2.0");
+        assert!(msg.starts_with("No update information is available right now. You have version 0.2.0."));
+        assert!(failure(&tauri_plugin_updater::Error::Network("offline".into()), "0.2.0").contains("internet connection"));
     }
 
     #[test]
