@@ -36,6 +36,8 @@ Start a note with a symbol to file it:
 
 In the note box, `@Mir` or `[[Mir` suggests page names; Tab turns it into a link (`@[[Mirela]]`).
 
+If the current session's last note is over 12 hours old, the box offers the next session: `⌘Enter` / `Ctrl+Enter` saves the note there, Enter still saves to the current one.
+
 ## After the game
 
 - **Sessions** open as a **Timeline** (every note with its time). **Journal** shows them grouped the way **Copy for D&D Beyond** pastes them. Open quests are listed at the top.
