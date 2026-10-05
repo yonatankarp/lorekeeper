@@ -13,7 +13,7 @@ use crate::{
 const P: Provider = Provider::Dropbox;
 
 /// An API call that takes and returns JSON (`null` for calls without arguments).
-fn rpc(token: &str, endpoint: &str, body: &Value) -> Result<(u16, Value), String> {
+pub(crate) fn rpc(token: &str, endpoint: &str, body: &Value) -> Result<(u16, Value), String> {
     call(P, || AGENT.post(format!("https://api.dropboxapi.com/2/{endpoint}")).header("Authorization", bearer(token)).send_json(body))
 }
 

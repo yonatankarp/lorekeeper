@@ -61,9 +61,11 @@ Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Templates/
 
 **Settings > Backups**, any of these:
 
-- **Back up to a folder:** pick a folder in Google Drive, Dropbox, OneDrive, iCloud Drive or on a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days. To restore, copy notes back from the day you want.
-- **Dropbox or Google Drive:** click **Sign in**, then sign in and allow access in your browser (your password never goes through Lorekeeper). Lorekeeper only sees its own folder: **Apps/Lorekeeper** in Dropbox, **Lorekeeper** in Google Drive. Only new and changed notes are uploaded, and a note you delete is deleted there too. To restore, download the notes from that folder on the website. A deleted or overwritten note can be brought back from Dropbox's **Deleted files** or a file's **Version history**, or the Google Drive **Trash** (30 days or more).
-- **Back up to GitHub:** sign in with a code (no password in Lorekeeper). Every backup is a version in a private `lorekeeper-notes` repository. To restore, use **Code > Download ZIP** or a file's **History** on github.com.
+- **Back up to a folder:** pick a folder in Google Drive, Dropbox, OneDrive, iCloud Drive or on a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days.
+- **Dropbox or Google Drive:** click **Sign in**, then sign in and allow access in your browser (your password never goes through Lorekeeper). Lorekeeper only sees its own folder: **Apps/Lorekeeper** in Dropbox, **Lorekeeper** in Google Drive. Only new and changed notes are uploaded, and a note you delete is deleted there too. A deleted or overwritten note can be brought back from Dropbox's **Deleted files** or a file's **Version history**, or the Google Drive **Trash** (30 days or more).
+- **Back up to GitHub:** sign in with a code (no password in Lorekeeper). Every backup is a version in a private `lorekeeper-notes` repository. A file's **History** on github.com shows every older version.
+
+**To restore**, click **Restore…** next to a backup, pick a day (folder), a version (GitHub) or the current backup (Dropbox, Google Drive), and choose where the restored notes go. They're downloaded into a new folder (by default `Lorekeeper restored <date>` next to your notes folder); your notes folder and the backup are never changed. Then **Show in Finder** (Explorer on Windows) to copy back what you need, or **Use as notes folder** to switch to it. You can also restore by hand: copy from a dated folder, download from the Dropbox or Google Drive website, or use **Code > Download ZIP** on GitHub.
 
 Backups run on each new session, every 30 minutes while notes change, once a day, and on **Back up now**. Keeping the notes folder itself in a cloud drive syncs it, but sync isn't a backup: deletions sync too.
 

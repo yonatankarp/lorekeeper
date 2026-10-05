@@ -169,3 +169,13 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 /* The browser sign-in step: text left, Cancel right. */
 .row > p.cloud-step { grid-column: auto; margin: 0; }
 #clouds .cloud-help { margin: 8px 8px 0; }
+/* Restore dialog. */
+#restore-dialog { width: min(480px, calc(100vw - 32px)); }
+.restore-label { margin: 0 0 4px; font-weight: 700; font-size: 15px; }
+.restore-to { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.restore-to .path { flex: 1; min-width: 0; margin: 0; }
+#restore-pick .hint { margin: 0 0 12px; }
+#restore-progress { width: 100%; margin-top: 12px; accent-color: var(--accent); }
+#restore-status { margin: 8px 0; overflow-wrap: anywhere; }
+#restore-status:empty { display: none; }
+#restore-error:not(:empty) { margin-bottom: 12px; overflow-wrap: anywhere; }

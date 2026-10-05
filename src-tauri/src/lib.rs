@@ -25,6 +25,7 @@ mod dropbox;
 mod gdrive;
 mod github;
 mod obsidian;
+mod restore;
 mod updater;
 
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
@@ -1032,6 +1033,10 @@ pub fn run() {
             cloud_sign_in,
             cloud_sign_in_cancel,
             cloud_sign_out,
+            restore::restore_list,
+            restore::restore_target,
+            restore::restore_start,
+            restore::restore_open,
             updater::check_for_updates
         ])
         .setup(|app| {

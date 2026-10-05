@@ -77,7 +77,7 @@ fn headers<B>(req: ureq::RequestBuilder<B>, token: &str) -> ureq::RequestBuilder
 }
 
 /// api.github.com: GET without a body, POST (or PATCH) with one.
-fn api(token: &str, method: &str, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
+pub(crate) fn api(token: &str, method: &str, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
     let url = format!("https://api.github.com{path}");
     read(match (method, body) {
         ("PATCH", Some(b)) => headers(AGENT.patch(&url), token).send_json(b),
@@ -86,7 +86,7 @@ fn api(token: &str, method: &str, path: &str, body: Option<Value>) -> Result<(u1
     })
 }
 
-fn ok((status, v): (u16, Value)) -> Result<Value, String> {
+pub(crate) fn ok((status, v): (u16, Value)) -> Result<Value, String> {
     match status {
         200..=299 => Ok(v),
         401 => Err("Your GitHub sign-in has expired. Sign out and sign in again in Settings.".into()),

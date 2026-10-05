@@ -171,7 +171,10 @@
         </div>
         <div class="row">
           <p class="backup-status" id="folder-status" role="status"></p>
-          <button type="button" class="ghost" id="backup-now">Back up now</button>
+          <div class="actions">
+            <button type="button" class="ghost" id="backup-now">Back up now</button>
+            <button type="button" class="ghost" id="folder-restore">Restore…</button>
+          </div>
           <p class="error" id="folder-run-error" role="alert"></p>
         </div>
       </div>
@@ -202,6 +205,7 @@
             <div class="actions">
               <button type="button" class="ghost cloud-again" hidden>Sign in again</button>
               <button type="button" class="ghost cloud-now">Back up now<span class="sr-only cloud-sr"></span></button>
+              <button type="button" class="ghost cloud-restore">Restore…<span class="sr-only cloud-sr"></span></button>
               <button type="button" class="ghost cloud-sign-out">Sign out<span class="sr-only cloud-sr"></span></button>
             </div>
             <p class="backup-status cloud-status" role="status"></p>
@@ -238,6 +242,7 @@
           </div>
           <div class="actions">
             <button type="button" class="ghost" id="gh-now">Back up now</button>
+            <button type="button" class="ghost" id="gh-restore">Restore…</button>
             <button type="button" class="ghost" id="gh-sign-out">Sign out</button>
           </div>
           <p class="backup-status" id="github-status" role="status"></p>
@@ -247,6 +252,32 @@
       </div>
       <p class="hint">Every backup is saved as a version, so you can see or restore notes from any point.</p>
     </section>
+
+    <!-- Restore: lists a backup's versions and downloads one into a new folder (restore.rs). -->
+    <dialog id="restore-dialog" aria-labelledby="restore-title">
+      <h2 id="restore-title"></h2>
+      <div id="restore-pick">
+        <label>Backup<select id="restore-choice"></select></label>
+        <p class="restore-label">Into a new folder</p>
+        <div class="restore-to">
+          <p class="path" id="restore-target"></p>
+          <button type="button" class="ghost" id="restore-change">Change…</button>
+        </div>
+        <p class="hint">Your notes folder stays as it is, and nothing in the backup is changed.</p>
+      </div>
+      <progress id="restore-progress" hidden></progress>
+      <p id="restore-status" role="status"></p>
+      <p class="error" id="restore-error" role="alert"></p>
+      <div class="dialog-actions" id="restore-actions">
+        <button type="button" class="ghost" id="restore-cancel">Cancel</button>
+        <button type="button" class="seal" id="restore-go">Restore</button>
+      </div>
+      <div class="dialog-actions" id="restore-after" hidden>
+        <button type="button" class="ghost" id="restore-open">Show in <span class="file-manager">Finder</span></button>
+        <button type="button" class="ghost" id="restore-use">Use as notes folder</button>
+        <button type="button" class="seal" id="restore-close">Done</button>
+      </div>
+    </dialog>
     <script type="module" src="settings.js"></script>
   </body>
 </html>

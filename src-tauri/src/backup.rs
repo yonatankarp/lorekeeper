@@ -43,7 +43,7 @@ pub fn old_snapshots(names: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 /// The path with symlinks resolved as far as it exists, so /var/x and /private/var/x compare equal.
-fn resolved(p: &Path) -> PathBuf {
+pub(crate) fn resolved(p: &Path) -> PathBuf {
     p.ancestors()
         .find_map(|a| Some(fs::canonicalize(a).ok()?.join(p.strip_prefix(a).ok()?)))
         .unwrap_or_else(|| p.to_path_buf())
