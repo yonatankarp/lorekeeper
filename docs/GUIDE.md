@@ -16,7 +16,7 @@ On macOS, allow **Accessibility** the first time you use `⌘⇧S` (System Setti
 
 | Shortcut | What it does |
 |---|---|
-| `⌘⌥N` / `Ctrl+Alt+N` | One-line note box. Enter saves, Esc cancels. |
+| `⌘⌥N` / `Ctrl+Alt+N` | One-line note box. Enter saves, Esc cancels. `↑` in the empty box brings back the last note to fix. |
 | `⌘⇧S` / `Ctrl+Shift+S` | Saves the selected text, or the clipboard if nothing is selected. |
 | off until you set it | New session, without opening a window. |
 | off until you set it | New page, opens the New page dialog. |

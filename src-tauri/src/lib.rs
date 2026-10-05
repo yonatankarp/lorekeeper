@@ -140,6 +140,53 @@ fn append_note(dir: &Path, text: &str) -> io::Result<String> {
     Ok(text)
 }
 
+/// The time and text of a quick-note line, "- HH:MM text".
+fn note_line(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("- ")?;
+    let (time, text) = (rest.get(..5)?, rest.get(5..)?.strip_prefix(' ')?);
+    let b = time.as_bytes();
+    (b[2] == b':' && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())).then_some((time, text))
+}
+
+/// The last quick-note line in a session: its byte range (without the line break), time and text.
+fn last_note_line(content: &str) -> Option<(std::ops::Range<usize>, &str, &str)> {
+    let (mut start, mut found) = (0, None);
+    for raw in content.split_inclusive('\n') {
+        let line = raw.trim_end_matches(['\n', '\r']);
+        if let Some((time, text)) = note_line(line) {
+            found = Some((start..start + line.len(), time, text));
+        }
+        start += raw.len();
+    }
+    found
+}
+
+/// The session with its last note rewritten to `new`, keeping its time, or None if that note no longer reads `old`.
+fn replace_last_note(content: &str, old: &str, new: &str) -> Option<String> {
+    let (range, time, text) = last_note_line(content)?;
+    (text == old).then(|| format!("{}- {time} {new}{}", &content[..range.start], &content[range.end..]))
+}
+
+/// ↑ in the quick box: rewrites the last note in place if it still reads `old`. If another note arrived since,
+/// the text is appended as a new note instead, so nothing is lost. Returns whether it was fixed in place;
+/// empty text keeps the note as it was.
+fn fix_last_note(dir: &Path, old: &str, text: &str) -> io::Result<bool> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return Ok(true);
+    }
+    let _guard = WRITE_LOCK.lock().unwrap();
+    let path = current_session(dir)?;
+    if let Some(fixed) = replace_last_note(&fs::read_to_string(&path)?, old, &text) {
+        fs::write(&path, fixed)?;
+        return Ok(true);
+    }
+    let time = chrono::Local::now().format("%H:%M");
+    let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+    writeln!(file, "- {time} {text}")?;
+    Ok(false)
+}
+
 /// Turns a path from the webview into a file inside the vault. Only plain relative `.md`
 /// paths pass: no `..`, no absolute paths or drive prefixes.
 fn vault_file(root: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -611,6 +658,31 @@ fn save_note(app: AppHandle, text: String) -> Result<String, String> {
     }
 }
 
+/// The current session's last note, without its "- HH:MM ", for ↑ in the quick box.
+#[tauri::command]
+fn last_note(app: AppHandle) -> Option<String> {
+    let dir = notes_dir(&app);
+    let n = latest_session(&dir).ok().filter(|&n| n > 0)?;
+    last_note_line(&fs::read_to_string(session_path(&dir, n)).ok()?).map(|(_, _, text)| text.to_owned())
+}
+
+/// From the quick box after ↑: fixes the last note. Returns what the box shows.
+#[tauri::command]
+fn fix_note(app: AppHandle, old: String, text: String) -> Result<String, String> {
+    let dir = notes_dir(&app);
+    match fix_last_note(&dir, &old, &text).and_then(|fixed| Ok((fixed, current_session(&dir)?))) {
+        Ok((fixed, path)) => {
+            emit_changed(&app);
+            let session = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            Ok(if fixed { format!("Fixed in {session}") } else { format!("Saved to {session} as a new note (the last one changed)") })
+        }
+        Err(e) => {
+            notify(&app, "Couldn't save note", &e.to_string());
+            Err(e.to_string())
+        }
+    }
+}
+
 /// Hides the quick-note box and hands focus back to the app you were in.
 #[tauri::command]
 fn dismiss(app: AppHandle, restore_focus: Option<bool>) {
@@ -1008,6 +1080,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             save_note,
+            last_note,
+            fix_note,
             dismiss,
             read_vault,
             page_names,
@@ -1140,6 +1214,34 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dnd-notes-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn last_note_is_found_and_fixed_in_place() {
+        // Only "- HH:MM text" lines are notes; prose after the last one is skipped, and the rest is kept byte for byte.
+        let s = "# Session 1\r\n- 20:01 @Mirela ïnn\r\n- 1:5 x\n- 20:05 #potion\r\nThe party rests.\n- abcde y\n";
+        assert_eq!(last_note_line(s).map(|(_, time, text)| (time, text)), Some(("20:05", "#potion")));
+        assert_eq!(
+            replace_last_note(s, "#potion", "#potion of healing").unwrap(),
+            "# Session 1\r\n- 20:01 @Mirela ïnn\r\n- 1:5 x\n- 20:05 #potion of healing\r\nThe party rests.\n- abcde y\n"
+        );
+        assert_eq!(replace_last_note(s, "#poison", "x"), None);
+        assert_eq!(replace_last_note("# Session 1\n\n", "", "x"), None);
+        assert_eq!(last_note_line("- 20:01 ünïcode").unwrap().2, "ünïcode");
+
+        // In a vault: fixed in place keeping its time; empty text keeps it; a newer note means the fix is added as new.
+        let dir = temp_dir("fix-last");
+        fs::create_dir_all(dir.join("Sessions")).unwrap();
+        fs::write(session_path(&dir, 1), "# Session 1\n\n- 19:58 Mirela the innkeper\n").unwrap();
+        assert!(fix_last_note(&dir, "Mirela the innkeper", "  Mirela the\n innkeeper ").unwrap());
+        assert_eq!(fs::read_to_string(session_path(&dir, 1)).unwrap(), "# Session 1\n\n- 19:58 Mirela the innkeeper\n");
+        assert!(fix_last_note(&dir, "Mirela the innkeeper", "  ").unwrap());
+        assert_eq!(fs::read_to_string(session_path(&dir, 1)).unwrap(), "# Session 1\n\n- 19:58 Mirela the innkeeper\n");
+        append_note(&dir, "#potion").unwrap();
+        assert!(!fix_last_note(&dir, "Mirela the innkeeper", "Mirela the elf").unwrap());
+        let notes: Vec<String> = fs::read_to_string(session_path(&dir, 1)).unwrap().lines().filter_map(|l| Some(note_line(l)?.1.to_owned())).collect();
+        assert_eq!(notes, ["Mirela the innkeeper", "#potion", "Mirela the elf"]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
