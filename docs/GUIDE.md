@@ -42,7 +42,7 @@ In the note box, `@Mir` or `[[Mir` suggests page names; Tab turns it into a link
 - **+ New page** (`⌘N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
 - **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
 - **Edit** (`⌘E`) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
-- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and shown in the page as `![[Pasted image 20261005143012.png]]`, the way Obsidian does it. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB. **Copy for D&D Beyond** leaves images out: upload them there yourself.
+- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and embedded as `![[Pasted image 20261005143012.png]]`, the way Obsidian does it; the page shows the image. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB. **Copy for D&D Beyond** leaves images out: upload them there yourself.
 - **Linked from** at the bottom of every page lists the sessions and pages that mention it.
 - `⌘K` searches, `⌘,` opens Settings, `⌘+` / `⌘−` zoom.
 

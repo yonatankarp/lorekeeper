@@ -414,6 +414,10 @@ async function saveImage(file, pasted) {
   }
   const own = safeName(file.name ?? "");
   const wanted = !pasted && isImage(own) && !own.startsWith(".") ? own : pastedName(new Date(), file.type);
+  if (!wanted) {
+    say("Not saved: only PNG, JPG, GIF, WebP and SVG images");
+    return null;
+  }
   const data = await new Promise((ok, fail) => {
     const r = new FileReader();
     r.onload = () => ok(r.result.slice(r.result.indexOf(",") + 1)); // base64 after "data:image/png;base64,"

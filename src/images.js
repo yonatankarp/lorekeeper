@@ -37,11 +37,12 @@ export function imageLabel(label, fallbackAlt = "") {
 
 const EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg" };
 
-/** Obsidian's name for a pasted image: "Pasted image 20261005143012.png" (local time). */
+/** Obsidian's name for a pasted image: "Pasted image 20261005143012.png" (local time); null for a type not allowed (HEIC, TIFF...). */
 export function pastedName(date, type) {
+  if (!EXT[type]) return null;
   const pad = (n) => String(n).padStart(2, "0");
   const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-  return `Pasted image ${stamp}.${EXT[type] ?? "png"}`;
+  return `Pasted image ${stamp}.${EXT[type]}`;
 }
 
 /** A dropped file's own name, minus characters that break [[links]] or file names. */

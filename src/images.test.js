@@ -41,6 +41,7 @@ test("embed labels give the width, optional height and alt text", () => {
 test("pasted images get Obsidian's name, dropped ones a safe free name", () => {
   assert.equal(pastedName(new Date(2026, 9, 5, 14, 30, 12), "image/png"), "Pasted image 20261005143012.png");
   assert.equal(pastedName(new Date(2026, 0, 2, 3, 4, 5), "image/jpeg"), "Pasted image 20260102030405.jpg");
+  assert.equal(pastedName(new Date(), "image/heic"), null); // never HEIC bytes under a .png name
   assert.equal(safeName("map [v2] #1.png"), "map -v2- -1.png");
   assert.equal(freeName("Map.png", images), "Map 1.png"); // map.png is taken, in any folder and case
   assert.equal(freeName("map.png", [...images, "Attachments/map 1.png"]), "map 2.png");
