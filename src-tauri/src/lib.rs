@@ -619,13 +619,14 @@ fn dismiss(app: AppHandle, restore_focus: Option<bool>) {
     }
     // Enter/Esc: back to the app the box opened over, even with Lorekeeper's window open behind.
     // Clicking away (restore_focus false) leaves focus where the click went.
-    if return_to_front_app(restore_focus.unwrap_or(true)) {
-        return;
-    }
+    let restored = return_to_front_app(restore_focus.unwrap_or(true));
+    // Nothing to go back to: on macOS, step aside if no other Lorekeeper window is open.
     #[cfg(target_os = "macos")]
-    if !app_window_visible(&app, "capture") {
+    if !restored && !app_window_visible(&app, "capture") {
         let _ = app.hide();
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = restored;
 }
 
 /// The app in front when the quick-note box opened (macOS process id, Windows window handle).
@@ -719,13 +720,16 @@ fn delete_file(app: AppHandle, path: String) -> Result<(), String> {
     }
     {
         let _guard = WRITE_LOCK.lock().unwrap();
-        let mut trash = trash::TrashContext::default();
         // The file-manager call needs no "control Finder" permission prompt; the file can still be dragged back out.
         #[cfg(target_os = "macos")]
-        {
+        let trash = {
             use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            let mut trash = trash::TrashContext::default();
             trash.set_delete_method(DeleteMethod::NsFileManager);
-        }
+            trash
+        };
+        #[cfg(not(target_os = "macos"))]
+        let trash = trash::TrashContext::default();
         trash.delete(&file).map_err(|e| format!("Couldn't move {path} to the Trash: {e}"))?;
     }
     emit_changed(&app);
@@ -1076,11 +1080,11 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| match event {
+        .run(|_app, event| match event {
             RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
             // Clicking the app in the Dock, Finder or Spotlight while it's running.
             #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => show_window(app, "main"),
+            RunEvent::Reopen { .. } => show_window(_app, "main"),
             _ => {}
         });
 }
