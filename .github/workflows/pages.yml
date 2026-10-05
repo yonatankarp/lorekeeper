@@ -1,0 +1,51 @@
+name: Pages
+
+# Builds the website (scripts/build-site.mjs) and publishes it to https://yonatankarp.com/lorekeeper/.
+# Needs Settings > Pages > Source: "GitHub Actions". The custom domain comes from the user site
+# (yonatankarp.github.io), so no CNAME file is needed here.
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - scripts/**
+      - src/styles.css
+      - src/fonts/**
+      - src/icons.js
+      - src/vendor/marked.esm.js
+      - src-tauri/icons/128x128@2x.png
+      - src-tauri/icons/32x32.png
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: node scripts/build-site.mjs
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

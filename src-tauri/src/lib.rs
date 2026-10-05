@@ -543,6 +543,7 @@ fn register_shortcuts(app: &AppHandle, s: &Settings) -> Vec<String> {
     let gs = app.global_shortcut();
     let quick = gs.on_shortcut(s.quick_note.as_str(), |app, _, e| {
         if e.state == ShortcutState::Pressed {
+            remember_front_app();
             show_window(app, "capture");
         }
     });
@@ -612,13 +613,59 @@ fn save_note(app: AppHandle, text: String) -> Result<String, String> {
 
 /// Hides the quick-note box and hands focus back to the app you were in.
 #[tauri::command]
-fn dismiss(app: AppHandle) {
+fn dismiss(app: AppHandle, restore_focus: Option<bool>) {
     if let Some(w) = app.get_webview_window("capture") {
         let _ = w.hide();
+    }
+    // Enter/Esc: back to the app the box opened over, even with Lorekeeper's window open behind.
+    // Clicking away (restore_focus false) leaves focus where the click went.
+    if return_to_front_app(restore_focus.unwrap_or(true)) {
+        return;
     }
     #[cfg(target_os = "macos")]
     if !app_window_visible(&app, "capture") {
         let _ = app.hide();
+    }
+}
+
+/// The app in front when the quick-note box opened (macOS process id, Windows window handle).
+static FRONT_APP: Mutex<Option<isize>> = Mutex::new(None);
+
+fn remember_front_app() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSRunningApplication, NSWorkspace};
+        let me = NSRunningApplication::currentApplication().processIdentifier();
+        let front = NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| a.processIdentifier());
+        *FRONT_APP.lock().unwrap() = front.filter(|&pid| pid != me).map(|pid| pid as isize);
+    }
+    #[cfg(windows)]
+    {
+        let hwnd = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+        *FRONT_APP.lock().unwrap() = (!hwnd.is_invalid()).then_some(hwnd.0 as isize);
+    }
+}
+
+/// Forgets the remembered app, and with `restore` brings it back to the front. False if nothing was restored.
+fn return_to_front_app(restore: bool) -> bool {
+    let Some(front) = FRONT_APP.lock().unwrap().take().filter(|_| restore) else {
+        return false;
+    };
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+        NSRunningApplication::runningApplicationWithProcessIdentifier(front as libc::pid_t)
+            .is_some_and(|a| a.activateWithOptions(NSApplicationActivationOptions::empty()))
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::SetForegroundWindow};
+        unsafe { SetForegroundWindow(HWND(front as *mut core::ffi::c_void)) }.as_bool()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = front;
+        false
     }
 }
 
@@ -1285,6 +1332,23 @@ mod tests {
         let err = parse_redirect(&req("/?error=server_error&error_description=Try+later&state=s1"), "s1").unwrap().unwrap_err();
         assert_eq!(err, "Sign-in failed: Try later");
         assert!(parse_redirect(&req("/?code=&state=s1"), "s1").unwrap().is_err());
+    }
+
+    #[test]
+    fn sign_in_page() {
+        use base64::Engine as _;
+        let html = cloud::page(false, "Sign-in didn't finish", r#"Sign-in failed: <script>alert("x")</script> & more"#);
+        assert!(html.contains("Sign-in failed: &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"), "{html}");
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("mark fail") && html.contains("You can close this tab and return to Lorekeeper."));
+        assert!(cloud::page(true, "You're signed in", "").contains("mark ok"));
+        // Fonts and icon inlined with the standard base64 alphabet (browsers don't accept URL-safe in data URIs).
+        for kind in ["data:font/woff2;base64,", "data:image/png;base64,"] {
+            let start = html.find(kind).expect(kind) + kind.len();
+            let end = start + html[start..].find(['"', ')']).unwrap();
+            assert!(base64::engine::general_purpose::STANDARD.decode(&html[start..end]).is_ok(), "{kind}");
+        }
+        assert!(html.len() < 150_000, "{} bytes", html.len());
     }
 
     #[test]

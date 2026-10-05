@@ -48,3 +48,11 @@ strip = true
 # glib 0.18.5 with the RUSTSEC-2024-0429 fix backported (Linux only); see patches/README.md.
 [patch.crates-io]
 glib = { path = "patches/glib-0.18.5" }
+
+# Returning focus to the app the quick-note box was opened over.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

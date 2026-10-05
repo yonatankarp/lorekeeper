@@ -25,3 +25,14 @@ jobs:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+
+  # Windows-only code (focus handling, installer) is otherwise first compiled at release time.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

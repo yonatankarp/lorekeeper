@@ -12,12 +12,15 @@ use std::{
     io::{Read, Write},
     net::{Ipv4Addr, Ipv6Addr, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{LazyLock, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD as B64},
+    Engine as _,
+};
 use ring::rand::SecureRandom as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -247,14 +250,60 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-fn page(title: &str, text: &str) -> String {
+/// The sign-in page's look: the app's Tome theme, or Dungeon when the OS is dark (tokens from src/styles.css).
+const PAGE_CSS: &str = r##":root{color-scheme:light;font-synthesis:none;--bg:#f1e6cc;--panel:#f8f0dc;--fg:#2b1d12;--muted:#5c4632;--line:#d8c59f;--rule:#b99a6a;--rubric:#7f1610;--initial:#8b1a14;--ok:#2f5d27;--fail:#8b1a14;--mark-ink:#fdf0d8;--vignette:rgb(122 80 30/.14);--shadow:rgb(60 32 10/.18);
+--grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g' x='0' y='0' width='1' height='1'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .36 0 0 0 0 .23 0 0 0 0 .09 0 0 0 .4 -.17'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23g)'/%3E%3C/svg%3E");
+--fleuron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 14'%3E%3Cg fill='%238b1a14'%3E%3Cpath d='M22 2.5 26.5 7 22 11.5 17.5 7z'/%3E%3Cpath d='M15.5 7C12.5 3.6 7.5 3.4 3 6.6c4.6 1.7 9 1.8 12.5.4zM28.5 7c3-3.4 8-3.6 12.5-.4-4.6 1.7-9 1.8-12.5.4z'/%3E%3Ccircle cx='1.6' cy='7' r='1'/%3E%3Ccircle cx='42.4' cy='7' r='1'/%3E%3C/g%3E%3C/svg%3E")}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#1d1b19;--panel:#27241f;--fg:#eadcbf;--muted:#b3a284;--line:#3b362f;--rule:#6b5a3e;--rubric:#e0b462;--initial:#f0c66e;--ok:#a6cf8f;--fail:#b13d2e;--mark-ink:#1d1b19;--vignette:rgb(0 0 0/.35);--shadow:rgb(0 0 0/.45);
+--grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g' x='0' y='0' width='1' height='1'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .62 0 0 0 0 .58 0 0 0 0 .52 0 0 0 .4 -.17'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23g)'/%3E%3C/svg%3E");
+--fleuron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 14'%3E%3Cg fill='%23d2a04a'%3E%3Cpath d='M22 2.5 26.5 7 22 11.5 17.5 7z'/%3E%3Cpath d='M15.5 7C12.5 3.6 7.5 3.4 3 6.6c4.6 1.7 9 1.8 12.5.4zM28.5 7c3-3.4 8-3.6 12.5-.4-4.6 1.7-9 1.8-12.5.4z'/%3E%3Ccircle cx='1.6' cy='7' r='1'/%3E%3Ccircle cx='42.4' cy='7' r='1'/%3E%3C/g%3E%3C/svg%3E")}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;background:var(--grain),radial-gradient(ellipse 110% 90% at 50% 40%,transparent 55%,var(--vignette)),var(--bg);color:var(--fg);font:18px/1.55 Bookinsanity,"Iowan Old Style",Georgia,serif}
+main{width:100%;max-width:440px;padding:36px 32px 30px;text-align:center;background:var(--grain),var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:inset 0 0 0 4px var(--panel),inset 0 0 0 5px var(--line),0 12px 32px var(--shadow)}
+.crest{position:relative;width:104px;margin:0 auto 10px}
+.crest img{display:block;width:104px;height:104px;filter:drop-shadow(0 4px 6px var(--shadow))}
+.mark{position:absolute;right:-4px;bottom:2px;width:36px;height:36px}
+.mark circle{stroke:var(--panel);stroke-width:2.5}
+.mark path{fill:none;stroke:var(--mark-ink);stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
+.ok circle{fill:var(--ok)}.fail circle{fill:var(--fail)}
+h1{margin:0;color:var(--rubric);font:400 34px/1.15 "Mr Eaves Small Caps","Iowan Old Style",Georgia,serif;letter-spacing:.02em}
+h1::first-letter{color:var(--initial);font:1.5em/1 "Solbera Imitation","Mr Eaves Small Caps",Georgia,serif}
+.fleuron{height:14px;margin:14px 0 18px;background:var(--fleuron) center/44px 14px no-repeat,linear-gradient(var(--rule),var(--rule)) left center/calc(50% - 30px) 1px no-repeat,linear-gradient(var(--rule),var(--rule)) right center/calc(50% - 30px) 1px no-repeat}
+p{margin:0 0 10px;overflow-wrap:anywhere}
+.close{margin:0;color:var(--muted);font-size:16px}"##;
+
+/// Everything before the per-answer part of the sign-in page, built once: the one-request server can't serve
+/// files, so the fonts and the app icon are inlined as data URIs.
+static PAGE_TOP: LazyLock<String> = LazyLock::new(|| {
+    let data = |mime: &str, bytes: &[u8]| format!("data:{mime};base64,{}", STANDARD.encode(bytes));
+    let font = |family: &str, bytes: &[u8]| format!("@font-face{{font-family:\"{family}\";src:url({}) format(\"woff2\")}}", data("font/woff2", bytes));
+    let icon = data("image/png", include_bytes!("../icons/128x128@2x.png"));
+    [
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Lorekeeper</title>",
+        &format!("<link rel=\"icon\" href=\"{}\">", data("image/png", include_bytes!("../icons/32x32.png"))),
+        "<style>",
+        &font("Bookinsanity", include_bytes!("../../src/fonts/bookinsanity-regular.woff2")),
+        &font("Mr Eaves Small Caps", include_bytes!("../../src/fonts/mr-eaves-small-caps.woff2")),
+        &font("Solbera Imitation", include_bytes!("../../src/fonts/solbera-imitation.woff2")),
+        PAGE_CSS,
+        "</style></head><body><main><div class=\"crest\">",
+        &format!("<img src=\"{icon}\" alt=\"Lorekeeper\" width=\"104\" height=\"104\">"),
+    ]
+    .concat()
+});
+
+/// The page the browser shows after signing in: `title` and `text` are escaped (the error text comes from the provider).
+pub(crate) fn page(ok: bool, title: &str, text: &str) -> String {
+    let mark = if ok {
+        r#"<svg class="mark ok" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16"/><path d="M11 18.5l4.8 4.8 9.2-10"/></svg>"#
+    } else {
+        r#"<svg class="mark fail" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16"/><path d="M12.5 12.5l11 11M23.5 12.5l-11 11"/></svg>"#
+    };
+    let text = if text.is_empty() { String::new() } else { format!("<p>{}</p>", html_escape(text)) };
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Lorekeeper</title>\
-         <style>body{{font:18px/1.5 system-ui,sans-serif;max-width:32em;margin:15vh auto;padding:0 1em;color:#2b2118;background:#f6f0e4}}\
-         @media (prefers-color-scheme:dark){{body{{color:#e8dcc8;background:#1d1915}}}}</style></head>\
-         <body><h1>{}</h1><p>{}</p></body></html>",
-        html_escape(title),
-        html_escape(text)
+        "{}{mark}</div><h1>{}</h1><div class=\"fleuron\"></div>{text}<p class=\"close\">You can close this tab and return to Lorekeeper.</p></main></body></html>",
+        *PAGE_TOP,
+        html_escape(title)
     )
 }
 
@@ -277,8 +326,8 @@ fn read_redirect(stream: &mut TcpStream, state: &str) -> Option<Result<String, S
 fn respond(mut stream: TcpStream, result: Option<&Result<String, String>>) {
     let (status, body) = match result {
         None => ("404 Not Found", String::new()),
-        Some(Ok(_)) => ("200 OK", page("You're signed in", "You can close this tab and return to Lorekeeper.")),
-        Some(Err(e)) => ("200 OK", page("Sign-in didn't finish", &format!("{e} You can close this tab and return to Lorekeeper."))),
+        Some(Ok(_)) => ("200 OK", page(true, "You're signed in", "")),
+        Some(Err(e)) => ("200 OK", page(false, "Sign-in didn't finish", e)),
     };
     let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
 }

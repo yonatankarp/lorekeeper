@@ -9,7 +9,7 @@ const rest = document.getElementById("rest");
 let names = [], query = null, matches = [], pick = 0, saving = false;
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const dismiss = () => { input.value = ""; suggest(); invoke("dismiss"); };
+const dismiss = () => { input.value = ""; suggest(); invoke("dismiss", { restoreFocus: true }); };
 
 // A page name being typed at the end of the box: "@Mir" or an unclosed "[[Mir".
 // ponytail: end of the box only, since a ghost mid-text would overlap what follows.
@@ -97,7 +97,7 @@ window.addEventListener("focus", () => {
   invoke("page_names").then((n) => { names = n; suggest(); });
 });
 // Clicking away hides the box but keeps the draft for next time.
-window.addEventListener("blur", () => invoke("dismiss"));
+window.addEventListener("blur", () => invoke("dismiss", { restoreFocus: false }));
 
 invoke("get_settings").then((s) => applyTheme(s.theme));
 listen("settings-changed", (e) => applyTheme(e.payload.theme));
