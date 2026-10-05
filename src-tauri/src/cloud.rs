@@ -535,9 +535,10 @@ pub fn prepare(p: Provider, account: &str, config_dir: &Path, vault: &Path, camp
     }
     let file = manifest_file(config_dir, p, campaign);
     let mut m = load_manifest(&file);
-    if m.account != account {
-        m = Manifest { account: account.into(), ..Manifest::default() };
+    if !m.account.is_empty() && m.account != account {
+        m = Manifest::default();
     }
+    m.account = account.into();
     Ok((file, m, local, skipped))
 }
 

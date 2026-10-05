@@ -68,7 +68,7 @@ Each campaign backs up on its own, so switching never overwrites or deletes anot
 - **Google Drive:** a `Lorekeeper - Strahd` folder.
 - **GitHub:** its own private repository, `lorekeeper-notes-strahd`.
 
-Campaign folders need different names, since the names keep their backups apart.
+Campaign folders need different names, since the names keep their backups apart. A folder you add later with the name of a removed campaign carries on that campaign's backups, which is what you want after moving a folder; otherwise rename the new folder first.
 
 ## Backups
 

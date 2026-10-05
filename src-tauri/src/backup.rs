@@ -169,7 +169,7 @@ pub fn check_campaigns(campaigns: &[String], main: &str) -> Result<(), String> {
     let named = |c: &String| c != main;
     for (i, a) in campaigns.iter().enumerate() {
         let name = campaign_name(a);
-        if named(a) && (is_snapshot(&name) || slug(&name).is_empty()) {
+        if named(a) && (Path::new(a).file_name().is_none() || is_snapshot(&name) || slug(&name).is_empty()) {
             return Err(format!("\"{name}\" can't be a campaign's folder name. Rename the folder first."));
         }
         let same = |b: &&String| campaign_name(b).to_lowercase() == name.to_lowercase() || (named(a) && named(b) && slug(&campaign_name(b)) == slug(&name));

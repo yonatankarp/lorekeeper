@@ -823,10 +823,12 @@ fn get_settings(app: AppHandle) -> Settings {
 /// Checks and applies every setting, saves them, then tells all windows. On error nothing changes.
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
-    let mut new = validate(settings)?;
+    // The open campaign only changes through switch_campaign (and the main one never), so a window
+    // that hasn't heard of a switch yet can't switch back or remove the campaign that's open now.
+    let active = app.state::<Mutex<Settings>>().lock().unwrap().clone();
+    let mut new = validate(Settings { vault_path: active.vault_path, main_campaign: active.main_campaign, ..settings })?;
     let old = current_settings(&app);
     new.github_user = old.github_user.clone();
-    new.main_campaign = old.main_campaign.clone();
     for p in cloud::ALL {
         new = new.with_cloud_user(p, old.cloud_user(p).clone());
     }
@@ -1350,6 +1352,7 @@ mod tests {
             Settings { campaigns: vec![tmp.clone(), "/x/My Strahd".into(), "/y/my-strahd".into()], ..ok.clone() },
             Settings { campaigns: vec![tmp.clone(), "/x/Lorekeeper backup 2026-03-07".into()], ..ok.clone() },
             Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_folder: "/x/Side/Backups".into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/".into()], ..ok.clone() },
         ];
         let strahd = std::env::temp_dir().join("Curse of Strahd").to_string_lossy().into_owned();
         let two = Settings { campaigns: vec![tmp.clone(), strahd], ..ok.clone() };
@@ -1517,6 +1520,13 @@ mod tests {
         fs::remove_file(side.join("Sessions/Session 1.md")).unwrap();
         assert_eq!(back_up(&side, &other), (vec![], vec!["Sessions/Session 1.md".to_string()]));
         assert_eq!(back_up(&lore, &main), (vec![], vec![]));
+
+        // A manifest is only started over for another account, never for one that names none.
+        fs::write(config.join("cloud-google.json"), r#"{"account":"","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
+        assert_eq!(prepare(Provider::Google, "me@x.com", &config, &lore, "").unwrap().1.files.len(), 1);
+        fs::write(config.join("cloud-google.json"), r#"{"account":"you@x.com","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
+        let (_, m, _, _) = prepare(Provider::Google, "me@x.com", &config, &lore, "").unwrap();
+        assert_eq!((m.account.as_str(), m.files.len()), ("me@x.com", 0));
 
         // Every destination differs; the main campaign's are exactly the ones from before campaigns.
         assert_eq!((dropbox::root(&main), dropbox::root(&other)), (String::new(), "/Campaigns/Side".to_string()));
