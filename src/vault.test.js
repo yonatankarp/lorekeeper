@@ -113,3 +113,18 @@ test("recently mentioned: pages linked from the last two sessions, most mentione
   assert.equal(recentlyMentioned(vault, 2).length, 2);
   assert.deepEqual(recentlyMentioned([]), []);
 });
+
+test("renaming a page rewrites the links to it, and only those", async () => {
+  const { renameLinks } = await import("./vault.js");
+  const md = "@[[Mirela]] met [[mirela|the elf]] about [[Mirela#Secrets]], ![[NPCs/Mirela]] ![[Mirela.md]]; not [[Older]] or [[Mirelas]] or [[Archive/NPCs/Mirela]]";
+  assert.equal(
+    renameLinks(md, "NPCs/Mirela.md", "NPCs/Mira.md", paths),
+    "@[[Mira]] met [[Mira|the elf]] about [[Mira#Secrets]], ![[NPCs/Mira]] ![[Mira.md]]; not [[Older]] or [[Mirelas]] or [[Archive/NPCs/Mirela]]",
+  );
+  // The archived copy: only links that resolve to it change.
+  assert.equal(renameLinks(md, "Archive/NPCs/Mirela.md", "Archive/NPCs/Old Mirela.md", paths), md.replace("[[Archive/NPCs/Mirela]]", "[[Archive/NPCs/Old Mirela]]"));
+  // Case-only rename, and a new name that a shorter path already has: the link keeps pointing at the renamed page.
+  assert.equal(renameLinks("[[mirela]] [[MIRELA|x]]", "NPCs/Mirela.md", "NPCs/mirela.md", paths), "[[mirela]] [[mirela|x]]");
+  assert.equal(renameLinks("[[Phandalin]]", "Locations/Phandalin.md", "Locations/Mirela.md", paths), "[[Locations/Mirela]]");
+  assert.equal(renameLinks("no links", "NPCs/Mirela.md", "NPCs/Mira.md", paths), "no links");
+});

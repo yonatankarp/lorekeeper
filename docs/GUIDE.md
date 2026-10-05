@@ -42,6 +42,7 @@ In the note box, `@Mir` or `[[Mir` suggests page names; Tab turns it into a link
 - **+ New page** (`⌘N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
 - **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
 - **Edit** (`⌘E`) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
+- **Rename** (`F2`) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
 - **Linked from** at the bottom of every page lists the sessions and pages that mention it.
 - `⌘K` searches, `⌘,` opens Settings, `⌘+` / `⌘−` zoom.
 
@@ -76,5 +77,5 @@ Backups run on each new session, every 30 minutes while notes change, once a day
 
 ## Limits
 
-- Renaming, moving and deleting pages, images and the graph view: use Obsidian or your file manager.
+- Moving pages to other folders, images and the graph view: use Obsidian or your file manager.
 - When saving a selection, the previous clipboard is restored as text only.

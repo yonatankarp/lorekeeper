@@ -145,3 +145,19 @@ export function badName(name) {
   if (name.trim().startsWith(".")) return "Names can't start with a dot.";
   return "";
 }
+
+/**
+ * Points the [[links]] to page `from` at its new path `to` (`paths`: the vault before the rename), keeping each link's
+ * alias, heading, embed and folder prefix. A bare new name that would land on another page gets its folder.
+ */
+export function renameLinks(md, from, to, paths) {
+  const after = paths.map((p) => (p === from ? to : p));
+  return md.replace(WIKILINK, (link, bang, target, heading = "", alias) => {
+    if (resolve(target, paths) !== from) return link;
+    const old = target.trim();
+    let name = old.slice(0, old.lastIndexOf("/") + 1) + baseName(to);
+    if (resolve(name, after) !== to) name = to.replace(/\.md$/i, "");
+    if (/\.md$/i.test(old)) name += ".md";
+    return `${bang}[[${target.replace(old, name)}${heading}${alias === undefined ? "" : `|${alias}`}]]`;
+  });
+}
