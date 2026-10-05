@@ -855,6 +855,11 @@ fn create_file(app: AppHandle, path: String, content: String) -> Result<(), Stri
 /// finds the same file on a case-insensitive disk, so it goes through a temporary name.
 fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let (src, dst) = (vault_file(root, from)?, vault_file(root, to)?);
+    // Hotkey notes find the current session by its "Session N" name, so sessions keep theirs.
+    let session = |rel: &str| rel.strip_prefix("Sessions/").and_then(session_number).is_some();
+    if session(from) || session(to) {
+        return Err("Sessions keep their \"Session N\" names, so hotkey notes find the current one.".into());
+    }
     let _guard = WRITE_LOCK.lock().unwrap();
     if !src.is_file() {
         return Err(format!("{from} doesn't exist."));
@@ -1472,6 +1477,8 @@ mod tests {
     #[test]
     fn rename_never_overwrites_but_changes_case() {
         let dir = temp_dir("rename");
+        assert!(rename_note(&dir, "Sessions/Session 3.md", "Sessions/Ambush.md").is_err());
+        assert!(rename_note(&dir, "Notes.md", "Sessions/Session 9.md").is_err());
         fs::create_dir_all(dir.join("NPCs")).unwrap();
         fs::write(dir.join("NPCs/mirela.md"), "m").unwrap();
         fs::write(dir.join("NPCs/Vex.md"), "v").unwrap();
