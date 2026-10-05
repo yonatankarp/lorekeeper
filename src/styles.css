@@ -393,6 +393,9 @@ main { display: flex; flex-direction: column; min-width: 0; height: 100vh; backg
 #view blockquote { margin: 12px 0; padding: 2px 14px; border-left: 3px solid var(--accent); font-style: italic; }
 #view code { font: 13px ui-monospace, Menlo, Consolas, monospace; background: var(--hover); padding: 1px 4px; border-radius: 4px; }
 #view pre { background: var(--hover); padding: 12px; border-radius: 8px; overflow: auto; }
+/* Maps and handouts from the vault; a missing one shows its name. */
+#view img, #backlinks img { max-width: 100%; height: auto; vertical-align: middle; border-radius: 4px; }
+#view .image-missing { color: var(--muted); font-style: italic; }
 #view pre code { background: none; padding: 0; }
 #view table { border-collapse: collapse; }
 #view th, #view td { border: 1px solid var(--line); padding: 4px 10px; }

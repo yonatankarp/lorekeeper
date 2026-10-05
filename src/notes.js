@@ -2,6 +2,7 @@
 // Hotkey notes look like "- 21:43 @Mirela the innkeeper"; the first character picks the section.
 // Hand-written bullets and paragraphs count too, so nothing typed in the editor is silently dropped.
 import { baseName, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
+import { IMAGE_EMBED } from "./images.js";
 
 export const SECTIONS = [
   ["event", "What happened"],
@@ -27,7 +28,7 @@ function* lines(md) {
     }
     let text = (bullet ? bullet[2] : line).trim();
     if (!text || /^(-{3,}|\*{3,})$/.test(text)) continue;
-    const kind = PREFIX[text[0]] ?? "event";
+    const kind = text.search(IMAGE_EMBED) === 0 ? "event" : PREFIX[text[0]] ?? "event"; // ![[map.png]] isn't a "!" quest
     if (kind !== "event" && kind !== "quote") text = text.slice(1).trim(); // quotes keep their marks
     if (text) yield { time: bullet?.[1] ?? "", kind, text, line: offset + i };
   }
@@ -76,17 +77,22 @@ export const escape = (s) =>
 const plainLink = (_, bang, target, heading, label) => label ?? target;
 export const stripLinks = (text) => text.replace(WIKILINK, plainLink);
 
+/** Groups without image embeds, which can't paste into D&D Beyond; a note that was only an image is left out. */
+const withoutImages = (groups) =>
+  Object.fromEntries(Object.entries(groups).map(([k, items]) => [k, items.map((t) => t.replace(IMAGE_EMBED, "").replace(/\s{2,}/g, " ").trim()).filter(Boolean)]));
+
 const filled = (groups) => SECTIONS.filter(([key]) => groups[key].length);
 
 /**
- * Escapes text and renders its [[links]] with `link(target, labelHtml)` (target raw, label escaped).
+ * Escapes text and renders its [[links]] with `link(target, labelHtml, match)` (target raw, label escaped; match[1]
+ * is "!" for an embed, match[4] the raw label).
  * Links are found before escaping, so names like "Old King's Road" or "Salt & Iron" survive.
  */
 export function linkify(text, link) {
   let html = "";
   let last = 0;
   for (const m of text.matchAll(WIKILINK)) {
-    html += escape(text.slice(last, m.index)) + link(m[2].trim(), escape((m[4] ?? m[2]).trim()));
+    html += escape(text.slice(last, m.index)) + link(m[2].trim(), escape((m[4] ?? m[2]).trim()), m);
     last = m.index + m[0].length;
   }
   return html + escape(text.slice(last));
@@ -97,6 +103,7 @@ export function linkify(text, link) {
  * the default writes the label only, so the journal never shows brackets.
  */
 export function toHtml({ title, groups }, link = (target, label) => label) {
+  groups = withoutImages(groups);
   const item = (t) => linkify(t, link);
   const head = title ? `<h2>${escape(stripLinks(title))}</h2>` : "";
   return head + filled(groups)
@@ -105,6 +112,7 @@ export function toHtml({ title, groups }, link = (target, label) => label) {
 }
 
 export function toText({ title, groups }) {
+  groups = withoutImages(groups);
   const parts = title ? [stripLinks(title)] : [];
   for (const [key, label] of filled(groups)) parts.push(`${label}\n${groups[key].map((t) => `• ${stripLinks(t)}`).join("\n")}`);
   return parts.join("\n\n");

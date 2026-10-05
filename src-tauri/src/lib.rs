@@ -221,6 +221,37 @@ fn vault_file(root: &Path, rel: &str) -> Result<PathBuf, String> {
     if ok { Ok(root.join(p)) } else { Err(format!("Not a note in the vault: {rel}")) }
 }
 
+/// Images the page view shows and the editor saves (pasted or dropped); the same list as isImage in images.js.
+const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+fn is_image(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| IMAGE_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
+/// vault_file for images: only plain relative paths with an image extension.
+fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let p = Path::new(rel);
+    let ok = is_image(p) && p.components().all(|c| matches!(c, Component::Normal(_)));
+    if ok { Ok(root.join(p)) } else { Err(format!("Not an image in the vault: {rel}")) }
+}
+
+/// Lets the page view load images from the notes folder through the asset protocol. Tauri's scope can only grow,
+/// so a folder you switch away from is forbidden instead (forbidding wins over allowing).
+// ponytail: switching back to a folder used earlier in this run shows its images only after a restart, and when one
+// folder holds the other the old one stays allowed. A custom URI scheme reading the current folder would fix both.
+fn allow_vault_images(app: &AppHandle, new: &str, old: Option<&str>) {
+    let scope = app.asset_protocol_scope();
+    if let Some(old) = old {
+        let canon = |p: &str| fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+        let (old_dir, new_dir) = (canon(old), canon(new));
+        if !old_dir.starts_with(&new_dir) && !new_dir.starts_with(&old_dir) {
+            let _ = scope.forbid_directory(old, true);
+        }
+    }
+    let _ = scope.allow_directory(new, true);
+}
+
 fn rel_path(root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or(path);
     rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
@@ -237,6 +268,8 @@ struct Note {
 struct Vault {
     folders: Vec<String>,
     notes: Vec<Note>,
+    /// Image files, for ![[map.png]] embeds.
+    images: Vec<String>,
     current_session: String,
     has_obsidian: bool,
     obsidian_installed: bool,
@@ -256,6 +289,8 @@ fn walk(root: &Path, dir: &Path, vault: &mut Vault) -> io::Result<()> {
             if let Ok(content) = fs::read_to_string(&path) {
                 vault.notes.push(Note { path: rel_path(root, &path), content });
             }
+        } else if is_image(&path) {
+            vault.images.push(rel_path(root, &path));
         }
     }
     Ok(())
@@ -888,6 +923,27 @@ fn rename_file(app: AppHandle, from: String, to: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Saves a pasted or dropped image (base64) into the vault, making its folder; never overwrites a file.
+#[tauri::command]
+fn save_image(app: AppHandle, path: String, data: String) -> Result<(), String> {
+    use base64::Engine as _;
+    let file = vault_image(&notes_dir(&app), &path)?;
+    if data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("Images can be at most 20 MB.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string())?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&file).map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => format!("{path} already exists."),
+        _ => e.to_string(),
+    })?;
+    f.write_all(&bytes).map_err(|e| e.to_string())?;
+    backup::mark_changed();
+    Ok(())
+}
+
 #[tauri::command]
 fn start_session(app: AppHandle) -> Result<String, String> {
     let root = notes_dir(&app);
@@ -972,6 +1028,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     }
     store_settings(&app, &new)?;
     if new.vault_path != old.vault_path {
+        allow_vault_images(&app, &new.vault_path, Some(&old.vault_path));
         emit_changed(&app);
     }
     if new.backup_folder != old.backup_folder {
@@ -1157,6 +1214,7 @@ pub fn run() {
             page_names,
             save_file,
             create_file,
+            save_image,
             delete_file,
             rename_file,
             start_session,
@@ -1199,6 +1257,7 @@ pub fn run() {
                 notify(handle, "Notes folder unavailable", &format!("{}: {e}", settings.vault_path));
             }
             app.manage(Mutex::new(settings.clone()));
+            allow_vault_images(handle, &settings.vault_path, None);
             build_tray(handle)?;
             // Windows are created here ("create": false in tauri.conf.json), after the state their
             // commands read. On Windows a page can call a command while Tauri is still building windows.
@@ -1503,6 +1562,32 @@ mod tests {
         assert!(names().contains(&"Mirela.md".to_string()) && !names().contains(&"mirela.md".to_string()));
         rename_note(&dir, "NPCs/Mirela.md", "NPCs/Mira.md").unwrap();
         assert_eq!(fs::read_to_string(dir.join("NPCs/Mira.md")).unwrap(), "m");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn image_paths_stay_in_the_vault() {
+        let root = Path::new("/vault");
+        for ok in ["Attachments/Pasted image 20261005143012.png", "map.JPG", "Maps/a.jpeg", "x.gif", "x.webp", "x.svg"] {
+            assert_eq!(vault_image(root, ok).unwrap(), root.join(ok));
+        }
+        for bad in ["../a.png", "Attachments/../../a.png", "/a.png", "a.md", "a.exe", "a.png.exe", "Attachments/", "", "png"] {
+            assert!(vault_image(root, bad).is_err(), "{bad} should be refused");
+        }
+        // Notes and images stay apart: neither check accepts the other's files.
+        assert!(vault_file(root, "map.png").is_err());
+
+        // The vault walk lists images next to notes, hidden folders still skipped.
+        let dir = temp_dir("images");
+        fs::create_dir_all(dir.join("Attachments")).unwrap();
+        fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        for f in ["Attachments/map.png", "Handout.JPG", "notes.txt", ".obsidian/icon.png"] {
+            fs::write(dir.join(f), "x").unwrap();
+        }
+        let mut vault = Vault::default();
+        walk(&dir, &dir, &mut vault).unwrap();
+        vault.images.sort();
+        assert_eq!(vault.images, ["Attachments/map.png", "Handout.JPG"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

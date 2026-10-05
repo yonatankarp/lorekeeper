@@ -9,8 +9,9 @@ import {
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
 import { icon } from "./icons.js";
+import { ATTACHMENTS, freeName, imageLabel, isImage, pastedName, resolveImage, safeName } from "./images.js";
 
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 const { platform } = document.documentElement.dataset; // set by platform.js
@@ -53,6 +54,7 @@ function ed() {
         syncCopy();
       },
       onFollowLink: followLink,
+      onImage: saveImage,
       pageNames: () => vault.notes.map((n) => baseName(n.path)),
     });
     editor.setFontSize(settings.editorFontSize);
@@ -80,10 +82,25 @@ function say(msg) {
 const linkHtml = (target, labelHtml) =>
   `<a class="wikilink${resolve(target, paths()) ? "" : " missing"}" data-target="${escape(target)}" href="#">${labelHtml}</a>`;
 
+/**
+ * A vault image (`target` as written in ![[target|label]] or ![label](target)) as an <img> served by the asset
+ * protocol, which only reaches the notes folder. Web images aren't loaded (the CSP blocks them): they show as a link.
+ */
+function imageHtml(target, label) {
+  const { alt, width, height } = imageLabel(label, target.split("/").pop());
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return `<a href="${escape(target)}">${escape(alt || target)}</a>`;
+  const path = resolveImage(target, vault.images ?? []);
+  if (!path) return `<span class="image-missing" title="Image not found">${escape(alt || target)}</span>`;
+  const root = settings.vaultPath ?? "";
+  const sep = root.includes("\\") ? "\\" : "/";
+  const src = convertFileSrc(root.replace(/[\\/]+$/, "") + sep + path.split("/").join(sep));
+  return `<img src="${escape(src)}" alt="${escape(alt)}"${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""} loading="lazy">`;
+}
+
 marked.use({
   gfm: true,
   breaks: true, // Obsidian shows single newlines as line breaks
-  renderer: { html: ({ text }) => escape(text) }, // raw HTML in notes is shown, not run
+  renderer: { html: ({ text }) => escape(text), image: ({ href, text }) => imageHtml(href, text) }, // raw HTML in notes is shown, not run
   extensions: [
     {
       name: "wikilink",
@@ -91,15 +108,15 @@ marked.use({
       start: (src) => src.match(/!?\[\[/)?.index,
       tokenizer(src) {
         const m = /^!?\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]*))?\]\]/.exec(src);
-        if (m) return { type: "wikilink", raw: m[0], target: m[1].trim(), label: (m[3] ?? m[1]).trim() };
+        if (m) return { type: "wikilink", raw: m[0], target: m[1].trim(), label: (m[3] ?? m[1]).trim(), embed: m[0][0] === "!" };
       },
-      renderer: (t) => linkHtml(t.target, escape(t.label)),
+      renderer: (t) => (t.embed && isImage(t.target) ? imageHtml(t.target, t.label) : linkHtml(t.target, escape(t.label))),
     },
   ],
 });
 
-/** Raw text with its [[links]] made clickable. */
-const inlineLinks = (text) => linkify(text, linkHtml);
+/** Raw text with its [[links]] made clickable and its ![[images]] shown. */
+const inlineLinks = (text) => linkify(text, (target, label, m) => (m[1] && isImage(target) ? imageHtml(target, m[4] ?? target) : linkHtml(target, label)));
 
 function propsHtml(props) {
   if (!props.length) return "";
@@ -342,7 +359,7 @@ function go(dir) {
 function followLink(target) {
   const path = resolve(target, paths());
   if (path) open(path);
-  else openNewDialog(target.split("/").pop());
+  else if (!isImage(target)) openNewDialog(target.split("/").pop()); // not a page to make
 }
 
 // ---------- saving ----------
@@ -381,6 +398,47 @@ async function save() {
       inConflict = true;
       $("conflict").hidden = false;
     } else say(`Not saved: ${err}`);
+  }
+}
+
+const MAX_IMAGE = 20 * 1024 * 1024; // lib.rs refuses bigger ones too
+
+/**
+ * Saves a pasted or dropped image into Attachments/ and returns the name to embed, or null when it wasn't saved.
+ * Pasted images get Obsidian's "Pasted image <time>" name, dropped ones keep theirs; either way a name no other image
+ * in the vault has, so ![[name]] finds this one.
+ */
+async function saveImage(file, pasted) {
+  if (file.size > MAX_IMAGE) {
+    say("Not saved: images can be at most 20 MB");
+    return null;
+  }
+  const own = safeName(file.name ?? "");
+  const wanted = !pasted && isImage(own) && !own.startsWith(".") ? own : pastedName(new Date(), file.type);
+  if (!wanted) {
+    say("Not saved: only PNG, JPG, GIF, WebP and SVG images");
+    return null;
+  }
+  const data = await new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result.slice(r.result.indexOf(",") + 1)); // base64 after "data:image/png;base64,"
+    r.onerror = () => fail(r.error);
+    r.readAsDataURL(file);
+  });
+  for (;;) {
+    const name = freeName(wanted, vault.images ?? []);
+    const path = `${ATTACHMENTS}/${name}`;
+    let err = null;
+    await invoke("save_image", { path, data }).catch((e) => (err = String(e)));
+    if (err && !err.endsWith("already exists.")) {
+      say(`Not saved: ${err}`);
+      return null;
+    }
+    vault.images = [...(vault.images ?? []), path]; // saved now, or made outside the app since the vault was read
+    if (!err) {
+      say(`Saved ${path}`);
+      return name;
+    }
   }
 }
 
@@ -492,6 +550,9 @@ document.addEventListener("click", (e) => {
   if (/^https?:/i.test(href)) invoke("open_url", { url: href }).catch(say);
   else if (href && !href.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/i.test(href)) followLink(decodeURIComponent(href));
 });
+
+// A file dropped outside the editor would replace the app in the window; the editor saves dropped images itself.
+for (const type of ["dragover", "drop"]) document.addEventListener(type, (e) => e.dataTransfer?.types.includes("Files") && e.preventDefault());
 
 $("tree").addEventListener("click", (e) => {
   const b = e.target.closest(".folder-new");

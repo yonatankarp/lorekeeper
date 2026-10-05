@@ -45,6 +45,7 @@ If the current session's last note is over 12 hours old, the box offers the next
 - **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
 - **Edit** (`⌘E`) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
 - **Rename** (`F2`) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
+- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and embedded as `![[Pasted image 20261005143012.png]]`, the way Obsidian does it; the page shows the image. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB. **Copy for D&D Beyond** leaves images out: upload them there yourself.
 - **Linked from** at the bottom of every page lists the sessions and pages that mention it.
 - `⌘K` searches, `⌘,` opens Settings, `⌘+` / `⌘−` zoom.
 
@@ -81,5 +82,5 @@ Backups run on each new session, every 30 minutes while notes change, once a day
 
 ## Limits
 
-- Moving pages to other folders, images and the graph view: use Obsidian or your file manager.
+- Moving pages to other folders and the graph view: use Obsidian or your file manager.
 - When saving a selection, the previous clipboard is restored as text only.
