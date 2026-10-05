@@ -31,19 +31,27 @@
     </header>
 
     <section class="panel" role="tabpanel" id="panel-general" aria-labelledby="tab-general">
-      <h2>Notes folder</h2>
+      <h2>Campaigns</h2>
       <div class="card">
-        <div class="row">
-          <span>Location</span>
+        <div class="row" id="campaign-add">
+          <span>Each campaign has its own notes folder</span>
           <div class="actions">
-            <button type="button" class="ghost" id="choose">Choose…</button>
+            <button type="button" class="ghost" id="choose">Add campaign…</button>
             <button type="button" class="ghost" id="reveal">Show in <span class="file-manager">Finder</span></button>
           </div>
-          <p class="path" id="vaultPath"></p>
-          <p class="error" id="vaultPath-error" role="alert"></p>
+          <p class="error" id="campaigns-error" role="alert"></p>
         </div>
       </div>
-      <p class="hint">Existing notes stay where they are. Move them in <span class="file-manager">Finder</span> if you want them in the new folder. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
+      <p class="hint">Switch campaigns at the top of the sidebar or from the tray menu. Remove only forgets a campaign here: its notes and backups stay where they are. Each campaign backs up separately; see the guide for where. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
+      <template id="campaign-row">
+        <div class="row campaign">
+          <div class="row-label">
+            <span class="campaign-name"></span>
+            <p class="sub path campaign-path"></p>
+          </div>
+          <button type="button" class="ghost campaign-remove">Remove<span class="sr-only campaign-sr"></span></button>
+        </div>
+      </template>
 
       <h2>Startup &amp; notifications</h2>
       <div class="card">

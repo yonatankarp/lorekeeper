@@ -130,6 +130,79 @@ pub fn backup_to_folder(vault: &Path, folder: &Path, today: NaiveDate) -> Result
     Ok(())
 }
 
+// ---------- campaigns: each backs up to places of its own ----------
+
+/// A campaign's name: its notes folder's name.
+pub fn campaign_name(vault: &str) -> String {
+    Path::new(vault).file_name().map_or_else(|| vault.to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// The name as lowercase ASCII letters, digits and dashes, for GitHub repository and file names.
+/// Other letters become their hex code, so a name in any script gets one.
+pub fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        match c {
+            c if c.is_ascii_alphanumeric() => out.push(c.to_ascii_lowercase()),
+            c if c.is_ascii() => out.push('-'),
+            c => out.push_str(&format!("-{:x}-", c as u32)),
+        }
+    }
+    out.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
+}
+
+/// Where a campaign's backups go: "" for the main campaign (the notes folder from before there were
+/// campaigns), which keeps backing up exactly where it always did; any other campaign's name, which
+/// gives it places of its own. So a backup of one campaign never overwrites or deletes another's.
+pub fn backup_name(s: &Settings, vault: &str) -> String {
+    if vault == s.main_campaign { String::new() } else { campaign_name(vault) }
+}
+
+/// The GitHub repository: the main campaign's, or "lorekeeper-notes-<slug>" for another campaign.
+pub fn campaign_repo(repo: &str, name: &str) -> String {
+    if name.is_empty() { repo.to_string() } else { format!("{repo}-{}", slug(name)) }
+}
+
+/// Campaign names must differ (ignoring case, as Dropbox does), and so must the slugs of those that
+/// name their backups (all but the main campaign). A dated copy's name would be pruned by the folder backup.
+pub fn check_campaigns(campaigns: &[String], main: &str) -> Result<(), String> {
+    let named = |c: &String| c != main;
+    for (i, a) in campaigns.iter().enumerate() {
+        let name = campaign_name(a);
+        if named(a) && (is_snapshot(&name) || slug(&name).is_empty()) {
+            return Err(format!("\"{name}\" can't be a campaign's folder name. Rename the folder first."));
+        }
+        let same = |b: &&String| campaign_name(b).to_lowercase() == name.to_lowercase() || (named(a) && named(b) && slug(&campaign_name(b)) == slug(&name));
+        if let Some(b) = campaigns[i + 1..].iter().find(same) {
+            return Err(format!("You already have a campaign called \"{}\". Rename one of the folders so each has its own backups.", campaign_name(b)));
+        }
+    }
+    Ok(())
+}
+
+/// A campaign's folder backup: the main campaign's dated copies go straight into the backup folder
+/// as always, another campaign's into a folder named after it there.
+pub fn backup_campaign_to_folder(vault: &Path, folder: &Path, name: &str, today: NaiveDate) -> Result<(), String> {
+    if name.is_empty() {
+        return backup_to_folder(vault, folder, today);
+    }
+    // Only inside a backup folder that's there, as in backup_to_folder.
+    if folder.is_dir() {
+        let _ = fs::create_dir(folder.join(name));
+    }
+    backup_to_folder(vault, &folder.join(name), today)
+}
+
+/// Campaigns switched away from, backed up once more so their last changes aren't left behind.
+static LEFT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn left(vault: &str) {
+    let mut left = LEFT.lock().unwrap();
+    if !left.iter().any(|v| v == vault) {
+        left.push(vault.to_string());
+    }
+}
+
 // ---------- status and scheduling ----------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -276,17 +349,28 @@ fn run(app: &AppHandle, force: bool) {
     }
     STATUS.lock().unwrap().running = true;
     publish(app);
-    let vault = Path::new(&settings.vault_path);
+    let mut vaults: Vec<String> = LEFT.lock().unwrap().drain(..).filter(|v| *v != settings.vault_path).collect();
+    vaults.push(settings.vault_path.clone());
     for kind in due {
-        let result = match kind {
-            Kind::Folder => backup_to_folder(vault, Path::new(&settings.backup_folder), today).map(|()| String::new()),
-            Kind::Github => github::load_token().and_then(|token| github::backup(&token, &settings.github_user, &settings.github_repo, vault)),
-            Kind::Cloud(p) => app
-                .path()
-                .app_config_dir()
-                .map_err(|e| e.to_string())
-                .and_then(|dir| cloud::backup(p, settings.cloud_user(p), &dir, vault)),
-        };
+        // Every campaign is tried; the first failure is the one reported.
+        let mut result = Ok(String::new());
+        for v in &vaults {
+            let (vault, name) = (Path::new(v), backup_name(&settings, v));
+            let r = match kind {
+                Kind::Folder => backup_campaign_to_folder(vault, Path::new(&settings.backup_folder), &name, today).map(|()| String::new()),
+                Kind::Github => github::load_token()
+                    .and_then(|token| github::backup(&token, &settings.github_user, &campaign_repo(&settings.github_repo, &name), vault)),
+                Kind::Cloud(p) => app
+                    .path()
+                    .app_config_dir()
+                    .map_err(|e| e.to_string())
+                    .and_then(|dir| cloud::backup(p, settings.cloud_user(p), &dir, vault, &name)),
+            };
+            result = match (result, r) {
+                (Err(e), _) | (Ok(_), Err(e)) => Err(e),
+                (Ok(a), Ok(b)) => Ok(if a.is_empty() { b } else { a }),
+            };
+        }
         finish(app, kind, version, result);
     }
     STATUS.lock().unwrap().running = false;

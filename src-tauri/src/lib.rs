@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
@@ -225,6 +225,12 @@ struct Settings {
     capture: String,
     /// Empty in older files; load_settings fills in the default folder.
     vault_path: String,
+    /// Every campaign's notes folder, vault_path (the active one) among them. Older files have none;
+    /// load_settings makes vault_path the only one.
+    campaigns: Vec<String>,
+    /// The campaign that backs up where Lorekeeper always did (see backup::backup_name): the notes
+    /// folder from before there were campaigns. The settings window can't change it.
+    main_campaign: String,
     theme: String,
     editor_font_size: u32,
     session_view: String,
@@ -252,6 +258,8 @@ impl Default for Settings {
             quick_note: "CmdOrCtrl+Alt+N".into(),
             capture: "CmdOrCtrl+Shift+S".into(),
             vault_path: String::new(),
+            campaigns: Vec::new(),
+            main_campaign: String::new(),
             theme: "system".into(),
             editor_font_size: 15,
             session_view: "timeline".into(),
@@ -310,6 +318,10 @@ fn load_settings(file: &Path, default_vault: &Path) -> Result<Settings, String> 
     if s.vault_path.is_empty() {
         s.vault_path = default_vault.to_string_lossy().into_owned();
     }
+    if s.campaigns.is_empty() {
+        s.campaigns = vec![s.vault_path.clone()];
+        s.main_campaign = s.vault_path.clone();
+    }
     // 0.3.0 had Tome and Dungeon next to plain Light and Dark; now they are the light and dark themes.
     match s.theme.as_str() {
         "tome" => s.theme = "light".into(),
@@ -346,6 +358,13 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     if !Path::new(&s.vault_path).is_absolute() {
         return Err(format!("The notes folder must be a full path, not \"{}\".", s.vault_path));
     }
+    if let Some(c) = s.campaigns.iter().find(|c| !Path::new(c).is_absolute()) {
+        return Err(format!("A campaign's folder must be a full path, not \"{c}\"."));
+    }
+    if !s.campaigns.contains(&s.vault_path) {
+        return Err("The campaign you're in can't be removed. Switch to another one first.".into());
+    }
+    backup::check_campaigns(&s.campaigns, &s.main_campaign)?;
     if !THEMES.contains(&s.theme.as_str()) {
         return Err(format!("Unknown theme \"{}\".", s.theme));
     }
@@ -356,7 +375,9 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
         if !Path::new(&s.backup_folder).is_absolute() {
             return Err(format!("The backup folder must be a full path, not \"{}\".", s.backup_folder));
         }
-        backup::check_folder(Path::new(&s.vault_path), Path::new(&s.backup_folder))?;
+        for vault in &s.campaigns {
+            backup::check_folder(Path::new(vault), Path::new(&s.backup_folder))?;
+        }
     }
     let repo_ok = |r: &str| !r.is_empty() && r != "." && r != ".." && r.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
     if !repo_ok(&s.github_repo) {
@@ -805,6 +826,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     let mut new = validate(settings)?;
     let old = current_settings(&app);
     new.github_user = old.github_user.clone();
+    new.main_campaign = old.main_campaign.clone();
     for p in cloud::ALL {
         new = new.with_cloud_user(p, old.cloud_user(p).clone());
     }
@@ -844,8 +866,46 @@ fn store_settings(app: &AppHandle, new: &Settings) -> Result<(), String> {
     write_settings(&file, new).map_err(|e| format!("Couldn't save settings: {e}"))?;
     *app.state::<Mutex<Settings>>().lock().unwrap() = new.clone();
     let _ = app.emit("settings-changed", new);
+    fill_campaign_menu(app);
     Ok(())
 }
+
+/// Makes another campaign the active one: the notes, hotkey notes and backups all follow. The main
+/// window calls it once the page it has open is saved, so no edit lands in the other campaign.
+#[tauri::command]
+fn switch_campaign(app: AppHandle, path: String) -> Result<(), String> {
+    let old = current_settings(&app);
+    if path == old.vault_path {
+        return Ok(());
+    }
+    if !old.campaigns.contains(&path) {
+        return Err(format!("{path} isn't one of your campaigns."));
+    }
+    create_vault_folders(Path::new(&path)).map_err(|e| format!("{}: {e}", backup::campaign_name(&path)))?;
+    store_settings(&app, &Settings { vault_path: path, ..old.clone() })?;
+    backup::left(&old.vault_path); // its last changes still get backed up
+    emit_changed(&app);
+    backup::request(false);
+    Ok(())
+}
+
+/// The tray's Campaign menu: every campaign, the active one checked.
+fn fill_campaign_menu(app: &AppHandle) {
+    let Some(menu) = app.try_state::<Submenu<tauri::Wry>>() else { return };
+    let s = app.state::<Mutex<Settings>>().lock().unwrap().clone();
+    for item in menu.items().unwrap_or_default() {
+        let _ = menu.remove(&item);
+    }
+    for path in &s.campaigns {
+        let id = format!("{CAMPAIGN_ITEM}{path}");
+        if let Ok(item) = CheckMenuItem::with_id(app, id, backup::campaign_name(path), true, *path == s.vault_path, None::<&str>) {
+            let _ = menu.append(&item);
+        }
+    }
+}
+
+/// Tray menu ids of the campaigns: this followed by the folder.
+const CAMPAIGN_ITEM: &str = "campaign:";
 
 #[tauri::command]
 fn open_settings(app: AppHandle) {
@@ -954,9 +1014,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let update = MenuItem::with_id(app, "update", "Check for Updates…", true, None::<&str>)?;
     let login = CheckMenuItem::with_id(app, "login", "Launch at Login", true, autostart, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let campaigns = Submenu::with_id(app, "campaigns", "Campaign", true)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&review, &new, &folder, &sep, &settings, &update, &login, &quit])?;
+    let menu = Menu::with_items(app, &[&review, &new, &folder, &campaigns, &sep, &settings, &update, &login, &quit])?;
     app.manage(login); // for set_launch_at_login
+    app.manage(campaigns); // for fill_campaign_menu
+    fill_campaign_menu(app);
 
     // macOS menu bar: monochrome template icon that follows light/dark. Elsewhere: the colored app icon,
     // since a black icon would vanish on Windows' dark taskbar.
@@ -985,7 +1048,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app.emit("settings-changed", current_settings(app));
             }
             "quit" => app.exit(0),
-            _ => {}
+            // The main window saves the page it has open first, then switches (see switch_campaign).
+            id => {
+                if let Some(path) = id.strip_prefix(CAMPAIGN_ITEM) {
+                    let _ = app.emit_to("main", "switch-campaign", path);
+                    fill_campaign_menu(app); // the click toggled the item's check mark
+                }
+            }
         })
         .build(app)?;
     Ok(())
@@ -1023,6 +1092,7 @@ pub fn run() {
             open_settings,
             pick_folder,
             open_vault_folder,
+            switch_campaign,
             backup_now,
             backup_status,
             github_sign_in_start,
@@ -1042,7 +1112,9 @@ pub fn run() {
             let vault = default_vault(handle);
             let settings = load_settings(&settings_file(handle)?, &vault).unwrap_or_else(|e| {
                 notify(handle, "Using default settings", &format!("{e}. Fix the file, or change a setting to replace it."));
-                Settings { vault_path: vault.to_string_lossy().into_owned(), ..Settings::default() }
+                // No main campaign: defaults never take over the backups of the folder in the broken file.
+                let vault = vault.to_string_lossy().into_owned();
+                Settings { vault_path: vault.clone(), campaigns: vec![vault], ..Settings::default() }
             });
             // A folder on an unplugged drive shouldn't stop the app from starting.
             if let Err(e) = create_vault_folders(Path::new(&settings.vault_path)) {
@@ -1190,7 +1262,8 @@ mod tests {
 
         // First run: defaults, pointing at the default vault, written to the config folder.
         let s = load_settings(&config, &vault).unwrap();
-        assert_eq!(s, Settings { vault_path: vault_path.clone(), ..Settings::default() });
+        let one = Settings { vault_path: vault_path.clone(), campaigns: vec![vault_path.clone()], main_campaign: vault_path.clone(), ..Settings::default() };
+        assert_eq!(s, one);
         assert_eq!((s.theme.as_str(), s.editor_font_size, s.session_view.as_str(), s.notifications), ("system", 15, "timeline", true));
         let written = fs::read_to_string(&config).unwrap();
         assert!(written.contains("\"editorFontSize\": 15") && !written.contains("launchAtLogin"));
@@ -1201,6 +1274,17 @@ mod tests {
         assert_eq!((s.theme.as_str(), s.editor_font_size, s.quick_note.as_str()), ("dark", 18, "CmdOrCtrl+Alt+N"));
         assert!(s.auto_update, "files from before automatic updates turn them on");
         assert_eq!(s.vault_path, vault_path);
+
+        // A file from before campaigns: its notes folder becomes the only campaign, and the main one,
+        // which keeps backing up where it always did.
+        let old_file = r#"{"vaultPath":"/old/Lore","dropboxUser":"me@x.com"}"#;
+        fs::write(&config, old_file).unwrap();
+        let s = load_settings(&config, &vault).unwrap();
+        assert_eq!((s.campaigns, s.main_campaign.as_str(), s.dropbox_user.as_str()), (vec!["/old/Lore".to_string()], "/old/Lore", "me@x.com"));
+        assert_eq!(fs::read_to_string(&config).unwrap(), old_file, "loading never rewrites the file");
+        fs::write(&config, r#"{"vaultPath":"/b/Side","campaigns":["/old/Lore","/b/Side"],"mainCampaign":"/old/Lore"}"#).unwrap();
+        let s = load_settings(&config, &vault).unwrap();
+        assert_eq!((s.campaigns.len(), s.main_campaign.as_str(), s.vault_path.as_str()), (2, "/old/Lore", "/b/Side"));
 
         // Tome and Dungeon from 0.3.0 become Light and Dark; anything else is left for validate to judge.
         for (old, new) in [("tome", "light"), ("dungeon", "dark"), ("purple", "purple")] {
@@ -1233,7 +1317,8 @@ mod tests {
 
     #[test]
     fn settings_validation() {
-        let ok = Settings { vault_path: std::env::temp_dir().to_string_lossy().into_owned(), ..Settings::default() };
+        let tmp = std::env::temp_dir().to_string_lossy().into_owned();
+        let ok = Settings { vault_path: tmp.clone(), campaigns: vec![tmp.clone()], ..Settings::default() };
         assert_eq!(validate(ok.clone()).unwrap(), ok);
         assert_eq!(validate(Settings { editor_font_size: 99, ..ok.clone() }).unwrap().editor_font_size, 24);
         assert_eq!(validate(Settings { editor_font_size: 2, ..ok.clone() }).unwrap().editor_font_size, 11);
@@ -1258,7 +1343,21 @@ mod tests {
             Settings { new_session: "CmdOrCtrl+Nope".into(), ..ok.clone() },
             Settings { new_session: ok.capture.clone(), ..ok.clone() },
             Settings { new_session: "Ctrl+Alt+CmdOrCtrl+S".into(), new_page: "Ctrl+Alt+CmdOrCtrl+S".into(), ..ok.clone() },
+            // Campaigns: the active one can't be removed, paths are full, and names (and slugs) differ.
+            Settings { campaigns: vec!["/x/Other".into()], ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "Side".into()], ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Strahd".into(), "/y/strahd".into()], ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/My Strahd".into(), "/y/my-strahd".into()], ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Lorekeeper backup 2026-03-07".into()], ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_folder: "/x/Side/Backups".into(), ..ok.clone() },
         ];
+        let strahd = std::env::temp_dir().join("Curse of Strahd").to_string_lossy().into_owned();
+        let two = Settings { campaigns: vec![tmp.clone(), strahd], ..ok.clone() };
+        assert_eq!(validate(two.clone()).unwrap(), two);
+        // The main campaign's name names no backups, so an odd one never blocks saving settings.
+        let restored = std::env::temp_dir().join("Lorekeeper backup 2026-03-07").to_string_lossy().into_owned();
+        let odd = Settings { vault_path: restored.clone(), campaigns: vec![restored.clone()], main_campaign: restored, ..ok.clone() };
+        assert_eq!(validate(odd.clone()).unwrap(), odd);
         for s in bad {
             assert!(validate(s.clone()).is_err(), "{s:?} should be refused");
         }
@@ -1369,6 +1468,77 @@ mod tests {
         // Nothing uploaded yet: everything goes up, nothing is deleted.
         let first = diff(&files, &[], &Default::default());
         assert_eq!((first.upload.len(), first.delete.len()), (3, 0));
+    }
+
+    #[test]
+    fn switching_campaigns_never_deletes_the_others_backup() {
+        use cloud::{diff, prepare, Provider, Uploaded};
+        let dir = temp_dir("campaign-switch");
+        let (config, lore, side) = (dir.join("config"), dir.join("Lore"), dir.join("Side"));
+        for (vault, notes) in [(&lore, ["NPCs/Vex.md", "Sessions/Session 1.md"]), (&side, ["NPCs/Bob.md", "Sessions/Session 1.md"])] {
+            for rel in notes {
+                fs::create_dir_all(vault.join(rel).parent().unwrap()).unwrap();
+                fs::write(vault.join(rel), format!("{} {rel}", vault.display())).unwrap();
+            }
+        }
+        fs::create_dir_all(&config).unwrap();
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+        let s = Settings { vault_path: path(&lore), campaigns: vec![path(&lore), path(&side)], main_campaign: path(&lore), ..Settings::default() };
+        let (main, other) = (backup::backup_name(&s, &path(&lore)), backup::backup_name(&s, &path(&side)));
+        assert_eq!((main.as_str(), other.as_str()), ("", "Side"));
+
+        // Back up a campaign as a run would, recording every upload in its manifest.
+        let back_up = |vault: &Path, name: &str| {
+            let (file, mut m, local, skipped) = prepare(Provider::Dropbox, "me@x.com", &config, vault, name).unwrap();
+            let plan = diff(&local, &skipped, &m.files);
+            let deleted = plan.delete.clone();
+            let uploaded: Vec<String> = plan.upload.iter().map(|f| f.rel.clone()).collect();
+            for f in &plan.upload {
+                m.files.insert(f.rel.clone(), Uploaded { hash: f.hash.clone(), id: String::new() });
+            }
+            fs::write(file, serde_json::to_string(&m).unwrap()).unwrap();
+            (uploaded, deleted)
+        };
+        // The main campaign keeps its manifest from before campaigns, so nothing is uploaded again.
+        assert_eq!(back_up(&lore, &main).0.len(), 2);
+        let before = fs::read_to_string(config.join("cloud-dropbox.json")).unwrap();
+        assert_eq!(back_up(&lore, &main), (vec![], vec![]));
+
+        // Switch: the other campaign has its own manifest, so the main one's files never look deleted,
+        // and it uploads to its own place.
+        let (up, deleted) = back_up(&side, &other);
+        assert_eq!((up.len(), deleted.len()), (2, 0));
+        assert_eq!(fs::read_to_string(config.join("cloud-dropbox.json")).unwrap(), before, "the main campaign's manifest is untouched");
+        assert!(config.join("cloud-dropbox-side.json").exists());
+        // Switch back: still nothing to upload or delete for either.
+        assert_eq!(back_up(&lore, &main), (vec![], vec![]));
+        assert_eq!(back_up(&side, &other), (vec![], vec![]));
+        // Deleting a note in one campaign only ever deletes that campaign's copy.
+        fs::remove_file(side.join("Sessions/Session 1.md")).unwrap();
+        assert_eq!(back_up(&side, &other), (vec![], vec!["Sessions/Session 1.md".to_string()]));
+        assert_eq!(back_up(&lore, &main), (vec![], vec![]));
+
+        // Every destination differs; the main campaign's are exactly the ones from before campaigns.
+        assert_eq!((dropbox::root(&main), dropbox::root(&other)), (String::new(), "/Campaigns/Side".to_string()));
+        assert_eq!((gdrive::top_folder(&main), gdrive::top_folder(&other)), ("Lorekeeper".to_string(), "Lorekeeper - Side".to_string()));
+        let repo = |name: &str| backup::campaign_repo("lorekeeper-notes", name);
+        assert_eq!((repo(&main), repo(&other), repo("Curse of Strahd!")), ("lorekeeper-notes".into(), "lorekeeper-notes-side".into(), "lorekeeper-notes-curse-of-strahd".into()));
+        assert_eq!(backup::slug("Café Ω"), "caf-e9-3a9");
+
+        // Folder backup: each campaign's dated copy survives the other's backup.
+        let (folder, day) = (dir.join("Backups"), chrono::NaiveDate::from_ymd_opt(2026, 3, 7).unwrap());
+        fs::create_dir_all(&folder).unwrap();
+        backup::backup_campaign_to_folder(&lore, &folder, &main, day).unwrap();
+        backup::backup_campaign_to_folder(&side, &folder, &other, day).unwrap();
+        let snap = backup::snapshot_name(day);
+        assert!(folder.join(&snap).join("NPCs/Vex.md").exists() && !folder.join(&snap).join("NPCs/Bob.md").exists());
+        assert!(folder.join("Side").join(&snap).join("NPCs/Bob.md").exists());
+        backup::backup_campaign_to_folder(&lore, &folder, &main, day).unwrap();
+        assert!(folder.join("Side").join(&snap).join("NPCs/Bob.md").exists(), "the main campaign's backup leaves the other's folder alone");
+        // A backup folder that isn't there is never created, not even the campaign's folder inside it.
+        assert!(backup::backup_campaign_to_folder(&side, &dir.join("Unplugged"), &other, day).is_err());
+        assert!(!dir.join("Unplugged").exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

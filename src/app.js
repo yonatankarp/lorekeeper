@@ -267,7 +267,7 @@ function homeHtml() {
       <p class="home-actions"><button type="button" class="seal" data-action="newSession">+ New session</button>
       <button type="button" class="ghost" data-action="newPage">+ New page</button></p></div>`;
   }
-  const campaign = settings.vaultPath?.split(/[\\/]/).filter(Boolean).pop() || "Your campaign";
+  const campaign = campaignName(settings.vaultPath);
   return `<h1 class="home-title">${escape(campaign)}</h1><div class="home-grid">${cards.join("")}</div>`;
 }
 
@@ -917,7 +917,39 @@ function applySettings(next) {
   if (settings.sessionView !== prev.sessionView) sessionView = settings.sessionView;
   if (prev.vaultPath !== undefined && settings.vaultPath !== prev.vaultPath) refresh();
   else render();
+  $("campaign").textContent = campaignName(settings.vaultPath);
 }
+
+// ---------- campaigns: one notes folder each ----------
+
+/** A campaign is named after its notes folder. */
+function campaignName(path) {
+  return path?.split(/[\\/]/).filter(Boolean).pop() || "Your campaign";
+}
+
+/** Saves the open page into the campaign it belongs to, then switches; Home shows the new campaign. */
+async function switchCampaign(path) {
+  if (path === settings.vaultPath) return;
+  await flush();
+  if (inConflict) return say("Keep your version or load theirs before switching campaigns.");
+  try {
+    await invoke("switch_campaign", { path });
+  } catch (err) {
+    return say(String(err));
+  }
+  open(null);
+}
+
+$("campaign").addEventListener("click", () => {
+  const Menu = window.__TAURI__.menu?.Menu;
+  if (!Menu) return;
+  const items = (settings.campaigns ?? []).map((path) =>
+    ({ text: campaignName(path), checked: path === settings.vaultPath, action: () => switchCampaign(path) }));
+  const manage = { text: "Add or Remove Campaigns…", action: () => run("settings", "menu") };
+  Menu.new({ items: [...items, { item: "Separator" }, manage] }).then((m) => m.popup()).catch(say);
+});
+// From the tray menu and from Settings after adding a campaign.
+listen("switch-campaign", (e) => switchCampaign(e.payload));
 
 $("home").insertAdjacentHTML("afterbegin", icon("home"));
 $("back").innerHTML = icon("back");

@@ -295,6 +295,9 @@ kbd {
 #home { width: auto; margin: 0 6px 6px; padding-left: 8px; font: 17px/1.75 var(--font-display); letter-spacing: 0.03em; color: var(--accent-text); }
 #home .icon { margin-right: 0.4em; }
 #home.active { color: var(--selected-text); }
+/* The campaign switcher, above Home. */
+#campaign { margin: 0 12px 6px; padding: 2px 8px; border: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+#campaign::after { content: " ▾"; }
 #tree details { margin: 0; }
 #tree summary {
   list-style: none;

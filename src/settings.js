@@ -1,7 +1,7 @@
 import { applyTheme } from "./theme.js";
 
 const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+const { listen, emitTo } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 const isMac = navigator.userAgent.includes("Mac");
 let current = null, recording = null, saves = Promise.resolve(), statusTimer;
@@ -133,7 +133,7 @@ function render(s) {
     if (recording?.dataset.record !== key) $(`${key}-keys`).textContent = s[key] ? readable(s[key]) : "Not set";
   }
   for (const button of document.querySelectorAll("[data-clear]")) button.disabled = !s[button.dataset.clear];
-  $("vaultPath").textContent = s.vaultPath;
+  renderCampaigns(s);
   for (const el of document.querySelectorAll("[data-setting]")) {
     const value = s[el.dataset.setting];
     if (el.type === "checkbox") el.checked = value;
@@ -175,9 +175,31 @@ for (const el of document.querySelectorAll("[data-setting]")) {
 }
 $("editorFontSize").addEventListener("input", (e) => { $("editorFontSize-value").textContent = `${e.target.value} px`; });
 
+// ---------- campaigns: one row each, above the Add row ----------
+
+const campaignName = (path) => path.split(/[\\/]/).filter(Boolean).pop() || path;
+
+function renderCampaigns(s) {
+  for (const row of document.querySelectorAll(".campaign")) row.remove();
+  for (const path of s.campaigns) {
+    const row = $("campaign-row").content.firstElementChild.cloneNode(true);
+    const name = campaignName(path), active = path === s.vaultPath;
+    row.querySelector(".campaign-name").textContent = active ? `${name} (open now)` : name;
+    row.querySelector(".campaign-path").textContent = path;
+    row.querySelector(".campaign-sr").textContent = ` ${name}`;
+    const remove = row.querySelector(".campaign-remove");
+    remove.disabled = active; // switch to another campaign first
+    remove.addEventListener("click", () => save({ campaigns: current.campaigns.filter((c) => c !== path) }));
+    $("campaign-add").before(row);
+  }
+}
+
+// Adding a campaign opens it: the main window saves the page it has open, then switches.
 $("choose").addEventListener("click", async () => {
-  const path = await invoke("pick_folder", { title: "Choose a notes folder", start: current.vaultPath });
-  if (path) save({ vaultPath: path });
+  const path = await invoke("pick_folder", { title: "Choose the new campaign's notes folder", start: "" });
+  if (!path) return;
+  if (!current.campaigns.includes(path)) save({ campaigns: [...current.campaigns, path] });
+  saves = saves.then(() => { if (current.campaigns.includes(path)) emitTo("main", "switch-campaign", path).catch(() => {}); });
 });
 $("reveal").addEventListener("click", () => invoke("open_vault_folder"));
 

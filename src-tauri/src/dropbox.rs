@@ -37,10 +37,17 @@ pub fn header_json(v: &Value) -> String {
     out
 }
 
-pub fn push(token: &str, plan: &Plan, m: &mut Manifest) -> Result<(), String> {
+/// Where a campaign's notes go: the app folder itself for the main campaign (""), else
+/// Campaigns/<name> in it.
+pub fn root(campaign: &str) -> String {
+    if campaign.is_empty() { String::new() } else { format!("/Campaigns/{campaign}") }
+}
+
+/// `root` from root(): every path is `{root}/{rel}`.
+pub fn push(token: &str, plan: &Plan, m: &mut Manifest, root: &str) -> Result<(), String> {
     // Deletions first: Dropbox ignores case, so a rename from "vex.md" to "Vex.md" must not delete the new upload.
     for rel in &plan.delete {
-        let (status, v) = rpc(token, "files/delete_v2", &json!({ "path": format!("/{rel}") }))?;
+        let (status, v) = rpc(token, "files/delete_v2", &json!({ "path": format!("{root}/{rel}") }))?;
         let gone = status == 409 && v["error_summary"].as_str().is_some_and(|s| s.starts_with("path_lookup/not_found"));
         if !gone {
             ok(P, (status, v))?;
@@ -49,7 +56,7 @@ pub fn push(token: &str, plan: &Plan, m: &mut Manifest) -> Result<(), String> {
     }
     for f in &plan.upload {
         let (bytes, hash) = cloud::read(f)?;
-        let arg = header_json(&json!({ "path": format!("/{}", f.rel), "mode": "overwrite", "mute": true }));
+        let arg = header_json(&json!({ "path": format!("{root}/{}", f.rel), "mode": "overwrite", "mute": true }));
         ok(P, call(P, || {
             AGENT.post("https://content.dropboxapi.com/2/files/upload")
                 .header("Authorization", bearer(token))

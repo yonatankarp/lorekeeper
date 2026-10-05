@@ -2,8 +2,9 @@
 //!
 //! Sign-in opens the browser (OAuth authorization code with PKCE, no client secret) and receives the
 //! code on a one-request web server at 127.0.0.1. The refresh token lives in the OS credential store.
-//! A manifest per provider (cloud-<provider>.json in the config folder) records what was uploaded,
-//! so each backup sends only new and changed files and removes the ones deleted here.
+//! A manifest per provider and campaign (cloud-<provider>.json in the config folder for the main
+//! campaign, cloud-<provider>-<campaign>.json for the others) records what was uploaded, so each
+//! backup sends only new and changed files and removes the ones deleted here.
 
 use std::{
     borrow::Cow,
@@ -420,7 +421,7 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
         return Err(CANCELLED.into());
     }
     save_token(p, &refresh)?;
-    let file = manifest_file(config_dir, p);
+    let file = manifest_file(config_dir, p, "");
     if load_manifest(&file).account != account {
         let _ = fs::remove_file(&file);
     }
@@ -467,8 +468,12 @@ pub struct Manifest {
     pub folders: BTreeMap<String, String>,
 }
 
-fn manifest_file(config_dir: &Path, p: Provider) -> PathBuf {
-    config_dir.join(format!("cloud-{}.json", p.key()))
+/// `campaign` is "" for the main campaign; see backup::backup_name.
+fn manifest_file(config_dir: &Path, p: Provider, campaign: &str) -> PathBuf {
+    match campaign {
+        "" => config_dir.join(format!("cloud-{}.json", p.key())),
+        _ => config_dir.join(format!("cloud-{}-{}.json", p.key(), crate::backup::slug(campaign))),
+    }
 }
 
 fn load_manifest(file: &Path) -> Manifest {
@@ -519,22 +524,32 @@ fn size(bytes: u64) -> String {
     format!("{} MB", bytes >> 20)
 }
 
-/// One backup run. What finished is recorded even when the run fails partway, so the next one
-/// carries on from there. Returns a warning for the status line ("" if none).
-pub fn backup(p: Provider, account: &str, config_dir: &Path, vault: &Path) -> Result<String, String> {
+/// What a campaign's backup starts from: the vault's files and that campaign's own manifest, so
+/// another campaign's files never look deleted. A manifest from another account starts over.
+/// Returns (manifest file, manifest, files, skipped files).
+pub fn prepare(p: Provider, account: &str, config_dir: &Path, vault: &Path, campaign: &str) -> Result<(PathBuf, Manifest, Vec<Local>, Vec<String>), String> {
     // Read the vault first: a missing folder must never turn into deleting everything.
     let (local, skipped) = scan(vault, p.max_file())?;
     if local.is_empty() {
         return Err("The notes folder is empty, so there's nothing to back up.".into());
     }
-    let token = access_token(p)?;
-    let file = manifest_file(config_dir, p);
+    let file = manifest_file(config_dir, p, campaign);
     let mut m = load_manifest(&file);
-    m.account = account.into();
+    if m.account != account {
+        m = Manifest { account: account.into(), ..Manifest::default() };
+    }
+    Ok((file, m, local, skipped))
+}
+
+/// One backup run of a campaign ("" = the main one). What finished is recorded even when the run
+/// fails partway, so the next one carries on from there. Returns a warning for the status line ("" if none).
+pub fn backup(p: Provider, account: &str, config_dir: &Path, vault: &Path, campaign: &str) -> Result<String, String> {
+    let (file, mut m, local, skipped) = prepare(p, account, config_dir, vault, campaign)?;
+    let token = access_token(p)?;
     let plan = diff(&local, &skipped, &m.files);
     let result = match p {
-        Provider::Dropbox => dropbox::push(&token, &plan, &mut m),
-        Provider::Google => gdrive::push(&token, &plan, &mut m),
+        Provider::Dropbox => dropbox::push(&token, &plan, &mut m, &dropbox::root(campaign)),
+        Provider::Google => gdrive::push(&token, &plan, &mut m, &gdrive::top_folder(campaign)),
     };
     let _ = fs::write(&file, serde_json::to_string_pretty(&m).unwrap_or_default());
     result?;

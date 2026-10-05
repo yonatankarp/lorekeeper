@@ -50,7 +50,14 @@ fn start_over(m: &mut Manifest) -> String {
     "A Lorekeeper folder in Google Drive was removed. The next backup will upload all your notes again.".into()
 }
 
-pub fn push(token: &str, plan: &Plan, m: &mut Manifest) -> Result<(), String> {
+/// The folder in My Drive a campaign's notes go in: "Lorekeeper" for the main campaign (""), else
+/// "Lorekeeper - <name>".
+pub fn top_folder(campaign: &str) -> String {
+    if campaign.is_empty() { "Lorekeeper".into() } else { format!("Lorekeeper - {campaign}") }
+}
+
+/// `top` from top_folder(): the name of the folder "" when it has to be created.
+pub fn push(token: &str, plan: &Plan, m: &mut Manifest, top: &str) -> Result<(), String> {
     // Moved to the Drive trash, never deleted for good. Files without an id were never uploaded.
     for rel in &plan.delete {
         let id = m.files.get(rel).map(|u| u.id.clone()).unwrap_or_default();
@@ -65,7 +72,7 @@ pub fn push(token: &str, plan: &Plan, m: &mut Manifest) -> Result<(), String> {
     }
     for f in &plan.upload {
         for dir in missing_folders(&f.rel, &m.folders) {
-            let name = dir.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("Lorekeeper");
+            let name = dir.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or(top);
             let mut meta = json!({ "name": name, "mimeType": FOLDER });
             if !dir.is_empty() {
                 meta["parents"] = json!([m.folders[parent(&dir)]]);

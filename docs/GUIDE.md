@@ -57,6 +57,19 @@ Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Templates/
 
 **Obsidian:** open the notes folder as a vault (or put it inside an existing vault) and the **Obsidian** button opens pages there. Until then the button shows how.
 
+## Campaigns
+
+Running more than one game? Give each campaign its own notes folder: **Settings > General > Add campaign…**. Switch with the campaign name at the top of the sidebar or the tray's **Campaign** menu. The window, the hotkey notes and the backups all follow the campaign you switch to. **Remove** only forgets a campaign in Lorekeeper; its notes folder and backups stay.
+
+Each campaign backs up on its own, so switching never overwrites or deletes another campaign's backup. Your first campaign (the notes folder you had before adding campaigns) keeps backing up exactly where it always did. Every other campaign, named after its folder (say `Strahd`), goes to:
+
+- **Folder backup:** a `Strahd` folder inside your backup folder.
+- **Dropbox:** `Apps/Lorekeeper/Campaigns/Strahd`.
+- **Google Drive:** a `Lorekeeper - Strahd` folder.
+- **GitHub:** its own private repository, `lorekeeper-notes-strahd`.
+
+Campaign folders need different names, since the names keep their backups apart.
+
 ## Backups
 
 **Settings > Backups**, any of these:
@@ -69,7 +82,7 @@ Backups run on each new session, every 30 minutes while notes change, once a day
 
 ## Settings
 
-- **General:** notes folder, launch at login, "saved" notifications, updates.
+- **General:** campaigns (notes folders), launch at login, "saved" notifications, updates.
 - **Hotkeys:** record new shortcuts; a shortcut another app already uses is refused and the old one keeps working.
 - **Appearance:** Light (Tome), Dark (Dungeon) or System, editor font size, Timeline or Journal by default.
 - **Backups:** see above.
