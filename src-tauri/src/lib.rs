@@ -20,8 +20,12 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, Short
 use tauri_plugin_notification::NotificationExt;
 
 mod backup;
+mod cloud;
+mod dropbox;
+mod gdrive;
 mod github;
 mod obsidian;
+mod onedrive;
 mod updater;
 
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
@@ -233,6 +237,10 @@ struct Settings {
     github_repo: String,
     /// Set by signing in to GitHub, cleared by signing out; the settings window can't change it.
     github_user: String,
+    /// The Dropbox, Google and Microsoft accounts backed up to; set and cleared like github_user.
+    dropbox_user: String,
+    google_user: String,
+    onedrive_user: String,
     /// Check GitHub Releases for a new version at launch and once a day (see updater.rs).
     auto_update: bool,
     /// Optional global shortcuts; "" = off.
@@ -254,10 +262,32 @@ impl Default for Settings {
             backup_folder: String::new(),
             github_repo: "lorekeeper-notes".into(),
             github_user: String::new(),
+            dropbox_user: String::new(),
+            google_user: String::new(),
+            onedrive_user: String::new(),
             auto_update: true,
             new_session: String::new(),
             new_page: String::new(),
         }
+    }
+}
+
+impl Settings {
+    fn cloud_user(&self, p: cloud::Provider) -> &String {
+        match p {
+            cloud::Provider::Dropbox => &self.dropbox_user,
+            cloud::Provider::Google => &self.google_user,
+            cloud::Provider::Onedrive => &self.onedrive_user,
+        }
+    }
+
+    fn with_cloud_user(mut self, p: cloud::Provider, account: String) -> Self {
+        *match p {
+            cloud::Provider::Dropbox => &mut self.dropbox_user,
+            cloud::Provider::Google => &mut self.google_user,
+            cloud::Provider::Onedrive => &mut self.onedrive_user,
+        } = account;
+        self
     }
 }
 
@@ -729,6 +759,9 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     let mut new = validate(settings)?;
     let old = current_settings(&app);
     new.github_user = old.github_user.clone();
+    for p in cloud::ALL {
+        new = new.with_cloud_user(p, old.cloud_user(p).clone());
+    }
     // Existing notes stay in the old folder; the new one gets the standard folders and templates.
     if new.vault_path != old.vault_path {
         create_vault_folders(Path::new(&new.vault_path)).map_err(|e| format!("Notes folder: {e}"))?;
@@ -754,7 +787,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         emit_changed(&app);
     }
     if new.backup_folder != old.backup_folder {
-        backup::reset(&app, false); // a new place: back up there right away
+        backup::reset(&app, backup::Kind::Folder); // a new place: back up there right away
     }
     Ok(new)
 }
@@ -784,7 +817,7 @@ async fn pick_folder(app: AppHandle, window: tauri::WebviewWindow, title: String
     Some(path.to_string_lossy().into_owned())
 }
 
-// ---------- backups (see backup.rs and github.rs) ----------
+// ---------- backups (see backup.rs, github.rs and cloud.rs) ----------
 
 #[tauri::command]
 fn backup_now() {
@@ -818,7 +851,7 @@ async fn github_sign_in_wait(app: AppHandle) -> Result<String, String> {
     })
     .await?;
     store_settings(&app, &Settings { github_user: login.clone(), ..current_settings(&app) })?;
-    backup::reset(&app, true); // first backup right away
+    backup::reset(&app, backup::Kind::Github); // first backup right away
     Ok(login)
 }
 
@@ -831,7 +864,31 @@ fn github_sign_in_cancel() {
 async fn github_sign_out(app: AppHandle) -> Result<(), String> {
     off_main(github::delete_token).await?;
     store_settings(&app, &Settings { github_user: String::new(), ..current_settings(&app) })?;
-    backup::reset(&app, true);
+    backup::reset(&app, backup::Kind::Github);
+    Ok(())
+}
+
+/// Signs in to Dropbox, Google or Microsoft in the browser and returns the account. Resolves once
+/// the browser comes back, or fails when cancelled or after 5 minutes.
+#[tauri::command]
+async fn cloud_sign_in(app: AppHandle, provider: cloud::Provider) -> Result<String, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let account = off_main(move || cloud::sign_in(provider, &dir)).await?;
+    store_settings(&app, &current_settings(&app).with_cloud_user(provider, account.clone()))?;
+    backup::reset(&app, backup::Kind::Cloud(provider)); // first backup right away
+    Ok(account)
+}
+
+#[tauri::command]
+fn cloud_sign_in_cancel() {
+    cloud::cancel_sign_in();
+}
+
+#[tauri::command]
+async fn cloud_sign_out(app: AppHandle, provider: cloud::Provider) -> Result<(), String> {
+    off_main(move || cloud::delete_token(provider)).await?;
+    store_settings(&app, &current_settings(&app).with_cloud_user(provider, String::new()))?;
+    backup::reset(&app, backup::Kind::Cloud(provider));
     Ok(())
 }
 
@@ -920,6 +977,9 @@ pub fn run() {
             github_sign_in_wait,
             github_sign_in_cancel,
             github_sign_out,
+            cloud_sign_in,
+            cloud_sign_in_cancel,
+            cloud_sign_out,
             updater::check_for_updates
         ])
         .setup(|app| {
@@ -1192,6 +1252,88 @@ mod tests {
         assert!(matches!(parse_poll(&json!({"error": "access_denied"})), Poll::Failed(e) if e.contains("cancelled")));
         assert!(matches!(parse_poll(&json!({"error": "device_flow_disabled"})), Poll::Failed(e) if e.contains("isn't set up")));
         assert!(matches!(parse_poll(&json!(null)), Poll::Failed(_)));
+    }
+
+    #[test]
+    fn pkce_challenge_matches_rfc_7636() {
+        assert_eq!(cloud::pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        let (a, b) = (cloud::random_token(), cloud::random_token());
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 43, "32 bytes, inside PKCE's 43..128 characters");
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn loopback_redirects() {
+        use cloud::parse_redirect;
+        let req = |target: &str| format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:5000\r\n\r\n");
+        assert_eq!(parse_redirect(&req("/?code=4%2F0Ab_c&state=s1&scope=x"), "s1"), Some(Ok("4/0Ab_c".into())));
+        // Not the redirect: keep waiting.
+        for other in [req("/favicon.ico"), req("/?state=s1"), "".into(), "POST /?code=a&state=s1 HTTP/1.1".into(), "GET http://evil/?code=a&state=s1 HTTP/1.1".into()] {
+            assert_eq!(parse_redirect(&other, "s1"), None, "{other:?}");
+        }
+        // Wrong or missing state, even with a code.
+        assert!(parse_redirect(&req("/?code=a&state=s2"), "s1").unwrap().unwrap_err().contains("security check"));
+        assert!(parse_redirect(&req("/?code=a"), "s1").unwrap().is_err());
+        assert!(parse_redirect(&req("/?error=access_denied&state=s1"), "s1").unwrap().unwrap_err().contains("cancelled"));
+        let err = parse_redirect(&req("/?error=server_error&error_description=Try+later&state=s1"), "s1").unwrap().unwrap_err();
+        assert_eq!(err, "Sign-in failed: Try later");
+        assert!(parse_redirect(&req("/?code=&state=s1"), "s1").unwrap().is_err());
+    }
+
+    #[test]
+    fn cloud_manifest_diff() {
+        use cloud::{diff, Local, Uploaded};
+        let local = |rel: &str, hash: &str| Local { rel: rel.into(), path: PathBuf::from(rel), hash: hash.into() };
+        let up = |hash: &str| Uploaded { hash: hash.into(), id: String::new() };
+        let files = [local("Same.md", "a"), local("NPCs/Changed.md", "b2"), local("New.md", "c")];
+        let done = [("Same.md", up("a")), ("NPCs/Changed.md", up("b1")), ("Gone.md", up("d")), ("Big.png", up("e"))].map(|(k, v)| (k.to_string(), v)).into();
+        let plan = diff(&files, &["Big.png".to_string()], &done);
+        let up: Vec<&str> = plan.upload.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(up, ["NPCs/Changed.md", "New.md"]);
+        assert_eq!(plan.delete, ["Gone.md"], "a file too big to upload now still exists, so its old copy stays");
+        // Nothing uploaded yet: everything goes up, nothing is deleted.
+        let first = diff(&files, &[], &Default::default());
+        assert_eq!((first.upload.len(), first.delete.len()), (3, 0));
+    }
+
+    #[test]
+    fn cloud_scan_skips_hidden_and_big_files() {
+        let dir = temp_dir("cloud-scan");
+        fs::create_dir_all(dir.join("NPCs")).unwrap();
+        fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        fs::write(dir.join("NPCs/Vex.md"), "# Vex").unwrap();
+        fs::write(dir.join("map.png"), vec![0u8; 2000]).unwrap();
+        fs::write(dir.join(".obsidian/app.json"), "{}").unwrap();
+        let (files, skipped) = cloud::scan(&dir, 1000).unwrap();
+        assert_eq!(files.iter().map(|f| f.rel.as_str()).collect::<Vec<_>>(), ["NPCs/Vex.md"]);
+        assert_eq!(files[0].hash, github::git_blob_sha(b"# Vex"));
+        assert_eq!(skipped, ["map.png"]);
+        assert!(cloud::scan(&dir.join("missing"), 1000).is_err(), "a missing vault must never look empty");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn drive_folders_to_create() {
+        use gdrive::{missing_folders, parent};
+        use std::collections::BTreeMap;
+        assert_eq!((parent("Top.md"), parent("NPCs/Villains/Vex.md")), ("", "NPCs/Villains"));
+        let none = BTreeMap::new();
+        assert_eq!(missing_folders("Top.md", &none), [""]);
+        assert_eq!(missing_folders("NPCs/Villains/Vex.md", &none), ["", "NPCs", "NPCs/Villains"]);
+        let known: BTreeMap<String, String> = [("", "root"), ("NPCs", "n1")].map(|(k, v)| (k.into(), v.into())).into();
+        assert_eq!(missing_folders("NPCs/Villains/Vex.md", &known), ["NPCs/Villains"]);
+        assert!(missing_folders("NPCs/Mirela.md", &known).is_empty());
+    }
+
+    #[test]
+    fn dropbox_header_and_graph_paths() {
+        use serde_json::json;
+        assert_eq!(dropbox::header_json(&json!({"path": "/NPCs/Vex.md"})), r#"{"path":"/NPCs/Vex.md"}"#);
+        // Non-ASCII becomes \uXXXX, outside the basic plane as a surrogate pair.
+        assert_eq!(dropbox::header_json(&json!({"path": "/Café 🐉.md"})), r#"{"path":"/Caf\u00e9 \ud83d\udc09.md"}"#);
+        assert_eq!(onedrive::encode_path("NPCs/Mirela & co #1.md"), "NPCs/Mirela%20%26%20co%20%231.md");
+        assert_eq!(onedrive::encode_path("Café.md"), "Caf%C3%A9.md");
     }
 
     #[test]

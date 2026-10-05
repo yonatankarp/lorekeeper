@@ -2470,6 +2470,7 @@ dependencies = [
  "chrono",
  "enigo",
  "keyring",
+ "ring",
  "serde",
  "serde_json",
  "sha1_smol",

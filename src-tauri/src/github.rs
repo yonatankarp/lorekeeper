@@ -21,7 +21,8 @@ const NOT_SET_UP: &str = "GitHub backup isn't set up in this build yet.";
 const CANCELLED: &str = "Sign-in cancelled.";
 const MAX_FILE: u64 = 50 * 1024 * 1024;
 
-static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+/// Shared with the cloud backups (cloud.rs). Replies of any status come back as Ok.
+pub(crate) static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::Agent::config_builder()
         .http_status_as_error(false)
         .user_agent("Lorekeeper")
@@ -33,23 +34,24 @@ static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
 
 // ---------- token in the OS credential store ----------
 
-fn keychain() -> Result<keyring::Entry, String> {
-    keyring::Entry::new("com.yonatankarp.dndnotes", "github").map_err(|e| format!("Can't use the system's password storage: {e}"))
+/// One entry per account ("github", "dropbox", "google", "onedrive") under the app's identifier.
+pub(crate) fn keychain(account: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new("com.yonatankarp.dndnotes", account).map_err(|e| format!("Can't use the system's password storage: {e}"))
 }
 
 pub fn save_token(token: &str) -> Result<(), String> {
-    keychain()?.set_password(token).map_err(|e| format!("Couldn't save the GitHub sign-in: {e}"))
+    keychain("github")?.set_password(token).map_err(|e| format!("Couldn't save the GitHub sign-in: {e}"))
 }
 
 pub fn load_token() -> Result<String, String> {
-    keychain()?.get_password().map_err(|e| match e {
+    keychain("github")?.get_password().map_err(|e| match e {
         keyring::Error::NoEntry => "You're signed out of GitHub. Sign in again in Settings.".into(),
         e => format!("Couldn't read the GitHub sign-in: {e}"),
     })
 }
 
 pub fn delete_token() -> Result<(), String> {
-    match keychain()?.delete_credential() {
+    match keychain("github")?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(format!("Couldn't remove the GitHub sign-in: {e}")),
     }

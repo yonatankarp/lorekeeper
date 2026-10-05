@@ -166,3 +166,6 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 /* Platform-specific wording in hints. */
 :root:not([data-platform="macos"]) .mac-only,
 :root[data-platform="macos"] .other-only { display: none; }
+/* The browser sign-in step: text left, Cancel right. */
+.row > p.cloud-step { grid-column: auto; margin: 0; }
+#clouds .cloud-help { margin: 8px 8px 0; }

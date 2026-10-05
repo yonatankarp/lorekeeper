@@ -177,6 +177,41 @@
       </div>
       <p class="hint">Pick a folder inside Google Drive, Dropbox, OneDrive or iCloud Drive (their desktop apps upload it for you), or a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days.</p>
 
+      <div id="clouds"></div>
+      <!-- One per provider (Dropbox, Google Drive, OneDrive); settings.js fills in the names. -->
+      <template id="cloud-card">
+        <h2></h2>
+        <div class="card">
+          <div class="row cloud-out">
+            <div class="row-label">
+              <span class="cloud-label"></span>
+              <p class="sub cloud-where"></p>
+            </div>
+            <button type="button" class="ghost cloud-sign-in"></button>
+            <p class="hint cloud-unavailable" hidden></p>
+          </div>
+          <div class="row cloud-flow" hidden>
+            <p class="cloud-step" role="status">Finish signing in in your browser…</p>
+            <button type="button" class="ghost cloud-cancel">Cancel<span class="sr-only cloud-sr"></span></button>
+          </div>
+          <div class="row cloud-in" hidden>
+            <div class="row-label">
+              <p class="gh-step">Signed in as <strong class="cloud-user"></strong>.</p>
+              <p class="sub cloud-dest"></p>
+            </div>
+            <div class="actions">
+              <button type="button" class="ghost cloud-again" hidden>Sign in again</button>
+              <button type="button" class="ghost cloud-now">Back up now<span class="sr-only cloud-sr"></span></button>
+              <button type="button" class="ghost cloud-sign-out">Sign out<span class="sr-only cloud-sr"></span></button>
+            </div>
+            <p class="backup-status cloud-status" role="status"></p>
+            <p class="error cloud-run-error" role="alert"></p>
+          </div>
+          <p class="error cloud-error" role="alert"></p>
+        </div>
+        <p class="hint cloud-help"></p>
+      </template>
+
       <h2>Back up to GitHub</h2>
       <div class="card">
         <div class="row" id="gh-signed-out">

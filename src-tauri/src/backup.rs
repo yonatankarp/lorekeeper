@@ -1,5 +1,6 @@
-//! Backups: a dated copy of the vault in a folder of your choice, and/or a commit to GitHub
-//! (see github.rs). One background thread runs them, so two never overlap.
+//! Backups: a dated copy of the vault in a folder of your choice, a commit to GitHub (github.rs)
+//! and uploads to Dropbox, Google Drive or OneDrive (cloud.rs). One background thread runs them,
+//! so two never overlap.
 
 use std::{
     fs, io,
@@ -16,7 +17,7 @@ use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{github, notify, Settings};
+use crate::{cloud, github, notify, Settings};
 
 const SNAPSHOT_PREFIX: &str = "Lorekeeper backup ";
 const KEEP: usize = 30;
@@ -152,10 +153,40 @@ pub struct Target {
 pub struct Status {
     folder: Target,
     github: Target,
+    dropbox: Target,
+    google: Target,
+    onedrive: Target,
     #[serde(skip_deserializing)]
     running: bool,
+    /// Whether this build has the app IDs each sign-in needs.
     #[serde(skip_deserializing)]
     github_available: bool,
+    #[serde(skip_deserializing)]
+    dropbox_available: bool,
+    #[serde(skip_deserializing)]
+    google_available: bool,
+    #[serde(skip_deserializing)]
+    onedrive_available: bool,
+}
+
+/// Where a backup goes.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Kind {
+    Folder,
+    Github,
+    Cloud(cloud::Provider),
+}
+
+impl Status {
+    fn target(&mut self, kind: Kind) -> &mut Target {
+        match kind {
+            Kind::Folder => &mut self.folder,
+            Kind::Github => &mut self.github,
+            Kind::Cloud(cloud::Provider::Dropbox) => &mut self.dropbox,
+            Kind::Cloud(cloud::Provider::Google) => &mut self.google,
+            Kind::Cloud(cloud::Provider::Onedrive) => &mut self.onedrive,
+        }
+    }
 }
 
 static STATUS: LazyLock<Mutex<Status>> = LazyLock::new(Mutex::default);
@@ -178,6 +209,9 @@ pub fn request(force: bool) {
 pub fn status() -> Status {
     let mut s = STATUS.lock().unwrap().clone();
     s.github_available = !github::GITHUB_CLIENT_ID.is_empty();
+    s.dropbox_available = !cloud::DROPBOX_APP_KEY.is_empty();
+    s.google_available = !cloud::GOOGLE_CLIENT_ID.is_empty();
+    s.onedrive_available = !cloud::ONEDRIVE_CLIENT_ID.is_empty();
     s
 }
 
@@ -193,11 +227,8 @@ fn publish(app: &AppHandle) {
 }
 
 /// Forgets a target's history (new backup folder, signed out or in) and runs what's due.
-pub fn reset(app: &AppHandle, github: bool) {
-    {
-        let mut s = STATUS.lock().unwrap();
-        *(if github { &mut s.github } else { &mut s.folder }) = Target::default();
-    }
+pub fn reset(app: &AppHandle, kind: Kind) {
+    *STATUS.lock().unwrap().target(kind) = Target::default();
     publish(app);
     request(false);
 }
@@ -206,9 +237,9 @@ fn ran_today(t: &Target, today: NaiveDate) -> bool {
     DateTime::parse_from_rfc3339(&t.last_ok).is_ok_and(|d| d.with_timezone(&Local).date_naive() == today)
 }
 
-fn finish(app: &AppHandle, github: bool, version: u64, result: Result<String, String>) {
+fn finish(app: &AppHandle, kind: Kind, version: u64, result: Result<String, String>) {
     let mut s = STATUS.lock().unwrap();
-    let t = if github { &mut s.github } else { &mut s.folder };
+    let t = s.target(kind);
     let first_failure = match result {
         Ok(warning) => {
             *t = Target { last_ok: Local::now().to_rfc3339(), warning, done: version, ..Target::default() };
@@ -224,7 +255,12 @@ fn finish(app: &AppHandle, github: bool, version: u64, result: Result<String, St
     drop(s);
     // Failures always notify, once per streak.
     if let Some(e) = first_failure {
-        notify(app, if github { "Couldn't back up to GitHub" } else { "Couldn't back up to your folder" }, &e);
+        let title = match kind {
+            Kind::Folder => "Couldn't back up to your folder".to_string(),
+            Kind::Github => "Couldn't back up to GitHub".to_string(),
+            Kind::Cloud(p) => format!("Couldn't back up to {}", p.name()),
+        };
+        notify(app, &title, &e);
     }
 }
 
@@ -232,24 +268,31 @@ fn finish(app: &AppHandle, github: bool, version: u64, result: Result<String, St
 fn run(app: &AppHandle, force: bool) {
     let settings = app.state::<Mutex<Settings>>().lock().unwrap().clone();
     let (version, today) = (VERSION.load(Relaxed), Local::now().date_naive());
-    let (folder_due, github_due) = {
-        let s = STATUS.lock().unwrap();
-        let due = |t: &Target| force || t.done != version || !ran_today(t, today);
-        (!settings.backup_folder.is_empty() && due(&s.folder), !settings.github_user.is_empty() && due(&s.github))
+    let on = [(Kind::Folder, &settings.backup_folder), (Kind::Github, &settings.github_user)]
+        .into_iter()
+        .chain(cloud::ALL.map(|p| (Kind::Cloud(p), settings.cloud_user(p))))
+        .filter(|(_, setting)| !setting.is_empty());
+    let due: Vec<Kind> = {
+        let mut s = STATUS.lock().unwrap();
+        on.map(|(kind, _)| kind).filter(|k| force || s.target(*k).done != version || !ran_today(s.target(*k), today)).collect()
     };
-    if !folder_due && !github_due {
+    if due.is_empty() {
         return;
     }
     STATUS.lock().unwrap().running = true;
     publish(app);
     let vault = Path::new(&settings.vault_path);
-    if folder_due {
-        let result = backup_to_folder(vault, Path::new(&settings.backup_folder), today).map(|()| String::new());
-        finish(app, false, version, result);
-    }
-    if github_due {
-        let result = github::load_token().and_then(|token| github::backup(&token, &settings.github_user, &settings.github_repo, vault));
-        finish(app, true, version, result);
+    for kind in due {
+        let result = match kind {
+            Kind::Folder => backup_to_folder(vault, Path::new(&settings.backup_folder), today).map(|()| String::new()),
+            Kind::Github => github::load_token().and_then(|token| github::backup(&token, &settings.github_user, &settings.github_repo, vault)),
+            Kind::Cloud(p) => app
+                .path()
+                .app_config_dir()
+                .map_err(|e| e.to_string())
+                .and_then(|dir| cloud::backup(p, settings.cloud_user(p), &dir, vault)),
+        };
+        finish(app, kind, version, result);
     }
     STATUS.lock().unwrap().running = false;
     publish(app);

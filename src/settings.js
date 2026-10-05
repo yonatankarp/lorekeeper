@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 const isMac = navigator.userAgent.includes("Mac");
 let current = null, recording = null, saves = Promise.resolve(), statusTimer;
 let backup = null, signingIn = false, signInAttempt = 0;
+let cloudSigningIn = null, cloudAttempt = 0; // the provider whose browser sign-in is open
 
 // ---------- platform and tabs ----------
 
@@ -144,6 +145,8 @@ function render(s) {
   $("gh-login").textContent = `@${s.githubUser}`;
   $("gh-repo").textContent = `${s.githubUser}/${s.githubRepo}`;
   showGithub();
+  for (const p in CLOUDS) cloudEl(p, "cloud-user").textContent = s[`${p}User`];
+  showClouds();
   renderBackup(backup);
 }
 
@@ -216,6 +219,17 @@ function renderBackup(status) {
   $("backup-now").disabled ||= !current.backupFolder;
   $("gh-unavailable").hidden = status.githubAvailable;
   $("gh-sign-in").disabled = !status.githubAvailable;
+  for (const p in CLOUDS) {
+    const user = current[`${p}User`], t = status[p] ?? {};
+    cloudEl(p, "cloud-status").textContent = targetStatus(t, user);
+    cloudEl(p, "cloud-run-error").textContent = user ? t.lastError ?? "" : "";
+    const again = !!user && /Sign in again\.$/.test(t.lastError ?? "");
+    cloudEl(p, "cloud-again").hidden = !again;
+    cloudEl(p, "cloud-now").hidden = again; // it can't work until then
+    cloudEl(p, "cloud-now").disabled = status.running;
+    cloudEl(p, "cloud-unavailable").hidden = status[`${p}Available`];
+    cloudEl(p, "cloud-sign-in").disabled = !status[`${p}Available`];
+  }
 }
 
 function showGithub() {
@@ -271,6 +285,83 @@ $("gh-cancel").addEventListener("click", () => {
 $("gh-sign-out").addEventListener("click", () => {
   invoke("github_sign_out").catch((err) => { $("github-error").textContent = String(err); });
 });
+
+// ---------- Dropbox, Google Drive and OneDrive: sign-in happens in the browser ----------
+
+const CLOUDS = {
+  dropbox: { name: "Dropbox", account: "Dropbox", where: "Apps/Lorekeeper in your Dropbox",
+    help: "Only new and changed notes are uploaded. A note you delete here is deleted there too, and Dropbox keeps deleted files for 30 days or more, so you can restore them." },
+  google: { name: "Google Drive", account: "Google", where: "the Lorekeeper folder in your Google Drive",
+    help: "Only new and changed notes are uploaded. A note you delete here moves to the Google Drive trash, where you can restore it for 30 days." },
+  onedrive: { name: "OneDrive", account: "Microsoft", where: "Apps/Lorekeeper in your OneDrive",
+    help: "Only new and changed notes are uploaded. A note you delete here moves to the OneDrive recycle bin, where you can restore it for 30 days." },
+};
+const cloudCards = {};
+const cloudEl = (p, cls) => cloudCards[p].querySelector(`.${cls}`);
+
+for (const [p, c] of Object.entries(CLOUDS)) {
+  const card = document.createElement("div");
+  card.append($("cloud-card").content.cloneNode(true));
+  cloudCards[p] = card;
+  $("clouds").append(card);
+  card.querySelector("h2").textContent = `Back up to ${c.name}`;
+  cloudEl(p, "cloud-label").textContent = `${c.account} account`;
+  cloudEl(p, "cloud-where").textContent = `Notes go to ${c.where}. Lorekeeper can only see that folder.`;
+  cloudEl(p, "cloud-dest").textContent = `Notes go to ${c.where}.`;
+  cloudEl(p, "cloud-sign-in").textContent = `Sign in with ${c.account}`;
+  cloudEl(p, "cloud-unavailable").textContent = `${c.name} backup isn't set up in this build yet.`;
+  for (const el of card.querySelectorAll(".cloud-sr")) el.textContent = ` ${c.name}`;
+  cloudEl(p, "cloud-help").textContent = c.help;
+  cloudEl(p, "cloud-sign-in").addEventListener("click", () => cloudSignIn(p));
+  cloudEl(p, "cloud-again").addEventListener("click", () => cloudSignIn(p));
+  cloudEl(p, "cloud-now").addEventListener("click", () => invoke("backup_now"));
+  cloudEl(p, "cloud-cancel").addEventListener("click", () => {
+    cloudSigningIn = null; // set first, so the sign-in's "cancelled" error isn't shown
+    invoke("cloud_sign_in_cancel");
+    showClouds();
+    cloudEl(p, current[`${p}User`] ? "cloud-again" : "cloud-sign-in").focus();
+  });
+  cloudEl(p, "cloud-sign-out").addEventListener("click", async () => {
+    try {
+      await invoke("cloud_sign_out", { provider: p });
+      current = { ...current, [`${p}User`]: "" }; // settings-changed may come a moment later
+      showClouds();
+      cloudEl(p, "cloud-sign-in").focus();
+    } catch (err) {
+      cloudEl(p, "cloud-error").textContent = String(err);
+    }
+  });
+}
+
+function showClouds() {
+  if (!current) return;
+  for (const p in CLOUDS) {
+    const user = current[`${p}User`], flow = cloudSigningIn === p;
+    cloudEl(p, "cloud-out").hidden = flow || !!user;
+    cloudEl(p, "cloud-flow").hidden = !flow;
+    cloudEl(p, "cloud-in").hidden = flow || !user;
+  }
+}
+
+// Starting another provider's sign-in cancels this one (one browser sign-in at a time).
+async function cloudSignIn(p) {
+  const attempt = ++cloudAttempt;
+  for (const q in CLOUDS) cloudEl(q, "cloud-error").textContent = "";
+  cloudSigningIn = p;
+  showClouds();
+  cloudEl(p, "cloud-cancel").focus();
+  try {
+    const account = await invoke("cloud_sign_in", { provider: p });
+    current = { ...current, [`${p}User`]: account }; // settings-changed may come a moment later
+    cloudEl(p, "cloud-user").textContent = account;
+  } catch (err) {
+    if (attempt === cloudAttempt && cloudSigningIn === p) cloudEl(p, "cloud-error").textContent = String(err);
+  }
+  if (attempt !== cloudAttempt) return; // cancelled, or another sign-in started meanwhile
+  cloudSigningIn = null;
+  showClouds();
+  cloudEl(p, current[`${p}User`] ? "cloud-now" : "cloud-sign-in").focus();
+}
 
 listen("backup-changed", (e) => renderBackup(e.payload));
 invoke("backup_status").then(renderBackup);
