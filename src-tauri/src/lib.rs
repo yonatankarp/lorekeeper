@@ -191,7 +191,7 @@ fn merge_save(disk: &str, base: &str, content: &str) -> Option<String> {
 
 // ---------- settings.json (in the app's config folder) ----------
 
-const THEMES: [&str; 3] = ["system", "light", "dark"];
+const THEMES: [&str; 5] = ["system", "light", "dark", "tome", "dungeon"];
 const SESSION_VIEWS: [&str; 2] = ["timeline", "journal"];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1027,6 +1027,9 @@ mod tests {
         // Optional shortcuts: off by default, any distinct valid combination when set.
         let extra = Settings { new_session: "Ctrl+Alt+CmdOrCtrl+S".into(), new_page: "Ctrl+Alt+CmdOrCtrl+P".into(), ..ok.clone() };
         assert_eq!(validate(extra.clone()).unwrap(), extra);
+        for theme in ["tome", "dungeon"] {
+            assert_eq!(validate(Settings { theme: theme.into(), ..ok.clone() }).unwrap().theme, theme);
+        }
         let bad = [
             Settings { theme: "purple".into(), ..ok.clone() },
             Settings { session_view: "grid".into(), ..ok.clone() },

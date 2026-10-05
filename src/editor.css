@@ -59,3 +59,9 @@
 #editor .cm-tooltip-autocomplete ul li { padding: 3px 10px; }
 #editor .cm-tooltip-autocomplete ul li[aria-selected] { background: var(--accent-soft); color: var(--link); }
 #editor .cm-completionMatchedText { text-decoration: none; font-weight: 600; }
+
+/* Tome and Dungeon: book type, set a little larger since Garamond reads small at the same pixel size. */
+[data-ornate] #editor { font-family: var(--font-body); }
+[data-ornate] #editor .cm-content { font-size: calc(var(--editor-font-size, 15px) * 1.12); }
+[data-ornate] .editor-toolbar button { font-size: 14px; }
+[data-ornate] :is(.cm-md-h1, .cm-md-h2, .cm-md-h3) { font-family: var(--font-display); font-weight: 600; }

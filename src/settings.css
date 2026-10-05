@@ -168,3 +168,13 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 /* Platform-specific wording in hints. */
 :root:not([data-platform="macos"]) .mac-only,
 :root[data-platform="macos"] .other-only { display: none; }
+
+/* ---------- Tome and Dungeon (tokens and fonts in styles.css): the tab bar is the leather or stone of the main sidebar ---------- */
+:root[data-ornate] .tabbar { background: var(--surface-side); border-bottom-color: var(--side-edge); }
+[data-ornate] .tab { font-size: 13.5px; }
+[data-ornate] h2 { margin-top: 18px; font: 600 12.5px var(--font-display); letter-spacing: 0.08em; color: var(--accent-text); }
+[data-ornate] .card { background: var(--surface-panel); }
+[data-ornate] .card button, [data-ornate] select, [data-ornate] .backup-status { font-size: 15px; }
+[data-ornate] :is(.hint, .sub, .error, output, #saved-status) { font-size: 14px; }
+[data-ornate] .path { font-size: 12px; }
+[data-theme="dungeon"] input[role="switch"]:checked::before { background: var(--bg); }

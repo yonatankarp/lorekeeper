@@ -44,6 +44,16 @@ jobs:
         with:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
+      # The update dialog shows the start of these notes (about 400 characters): keep "What's new" first.
+      - name: Release notes
+        id: notes
+        shell: bash
+        run: |
+          {
+            echo 'body<<NOTES_EOF'
+            cat RELEASE_NOTES.md
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,11 +63,6 @@ jobs:
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', '__VERSION__') }}
           releaseName: Lorekeeper __VERSION__
-          releaseBody: |
-            Downloads: macOS `.dmg` (Apple Silicon and Intel), Windows `-setup.exe`, Linux `.AppImage`. Lorekeeper 0.2.0 and later update themselves; the `.tar.gz`, `.sig` and `latest.json` files are for that.
-
-            The builds are not code-signed yet:
-            - macOS: if it says the app is damaged or can't be opened, run `xattr -dr com.apple.quarantine /Applications/Lorekeeper.app`, or right-click → Open.
-            - Windows: SmartScreen may warn; choose More info → Run anyway.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           args: ${{ matrix.args }}

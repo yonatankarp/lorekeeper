@@ -3,7 +3,8 @@ import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
 import { escape, parse, timeline, toHtml, toText } from "./notes.js";
 import { backlinks, badName, baseName, buildTree, fillTemplate, folderFor, resolve, search, splitFrontmatter } from "./vault.js";
-import { applyTheme } from "./theme.js";
+import { applyTheme, nativeTheme } from "./theme.js";
+import { icon } from "./icons.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -163,16 +164,16 @@ function selectResult(i) {
 // ---------- page ----------
 
 const legendHtml =
-  `<dl class="prefix-legend">${Object.values(KINDS).map(([k, label]) => `<dt><kbd>${escape(k)}</kbd></dt><dd>${label}</dd>`).join("")}</dl>`;
+  `<dl class="prefix-legend">${Object.entries(KINDS).map(([kind, [k, label]]) => `<dt><kbd>${escape(k)}</kbd></dt><dd>${icon(kind)}${label}</dd>`).join("")}</dl>`;
 
-const emptySessionHtml = `<div class="empty-state"><h2>No notes yet</h2>
+const emptySessionHtml = `<div class="empty-state">${icon("session")}<h2>No notes yet</h2>
   <p>Press <kbd>⌘⌥N</kbd> for a quick note, or <kbd>⌘⇧S</kbd> to save selected text (or the clipboard).</p>
   <p>Notes appear here live during the game. Start a note with a symbol to file it:</p>${legendHtml}</div>`;
 
 const timelineHtml = (items) =>
   `<ol class="timeline">${items
     .map(({ time, kind, text }) => {
-      const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${KINDS[kind][1]}</span>` : "";
+      const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${icon(kind)}${KINDS[kind][1]}</span>` : "";
       return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(escape(text))}</span></li>`;
     })
     .join("")}</ol>`;
@@ -180,14 +181,14 @@ const timelineHtml = (items) =>
 function sessionHtml(content) {
   const session = parse(content);
   const items = timeline(content);
-  const title = `<h1>${session.title ? inlineLinks(escape(session.title)) : escape(baseName(current))}</h1>`;
+  const title = `<h1 class="session-title">${session.title ? inlineLinks(escape(session.title)) : escape(baseName(current))}</h1>`;
   if (!items.length) return title + emptySessionHtml;
   const pressed = (v) => `aria-pressed="${sessionView === v}"`;
   const views = `<div class="view-switch" role="group" aria-label="Session view">
     <button type="button" data-view="timeline" ${pressed("timeline")}>Timeline</button>
     <button type="button" data-view="journal" ${pressed("journal")}>Journal</button></div>`;
   return views + title + (sessionView === "journal"
-    ? toHtml({ ...session, title: "" }, (t, label) => linkHtml(unescape(t.trim()), label)) +
+    ? `<div class="journal">${toHtml({ ...session, title: "" }, (t, label) => linkHtml(unescape(t.trim()), label))}</div>` +
       `<p class="session-note">This is what “Copy for D&amp;D Beyond” pastes. Click Edit to see every line.</p>`
     : timelineHtml(items));
 }
@@ -210,7 +211,7 @@ function render() {
   $("view").hidden = editing && !!n;
 
   if (!n) {
-    $("view").innerHTML = `<div class="welcome"><p>No page open.</p>
+    $("view").innerHTML = `<div class="welcome">${icon("session")}<p>No page open.</p>
       <p>Press <kbd>⌘⌥N</kbd> during a game to jot a note, or create a page with <kbd>+ New page</kbd>.</p></div>`;
     $("backlinks").innerHTML = "";
     return;
@@ -605,12 +606,15 @@ function applySettings(next) {
   settings = { ...settings, ...next };
   applyTheme(settings.theme);
   // Native appearance follows too (the sidebar material, title bar, menus); on macOS this is app-wide.
-  tauriWindow?.setTheme(settings.theme === "light" || settings.theme === "dark" ? settings.theme : null).catch(() => {});
+  tauriWindow?.setTheme(nativeTheme(settings.theme)).catch(() => {});
   editor?.setFontSize(settings.editorFontSize);
   if (settings.sessionView !== prev.sessionView) sessionView = settings.sessionView;
   if (prev.vaultPath !== undefined && settings.vaultPath !== prev.vaultPath) refresh();
   else render();
 }
+
+$("editor-hint").innerHTML = Object.entries(KINDS)
+  .map(([kind, [k, label]]) => `<span>${escape(k)} ${icon(kind)}${label}</span>`).join(" · ");
 
 // Hotkey notes and edits made in Obsidian show up here without a manual reload.
 listen("vault-changed", refresh);
