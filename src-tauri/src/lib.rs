@@ -26,18 +26,23 @@ mod updater;
 
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
 //   Sessions/Session N.md   written by the hotkeys
-//   PCs/ NPCs/ Locations/ Items/ Factions/   your pages
+//   PCs/ NPCs/ Locations/ Items/ Factions/ Quests/   your pages
 //   Templates/   starting text for "New page" (Obsidian's {{title}} / {{date}} syntax)
+//   Templates/.seeded   the default templates written so far, one name per line
 
-const VAULT_FOLDERS: [&str; 7] = ["Sessions", "PCs", "NPCs", "Locations", "Items", "Factions", "Templates"];
+const VAULT_FOLDERS: [&str; 8] = ["Sessions", "PCs", "NPCs", "Locations", "Items", "Factions", "Quests", "Templates"];
 
-const TEMPLATES: [(&str, &str); 5] = [
+const TEMPLATES: [(&str, &str); 6] = [
     ("PC", "---\ntype: pc\nplayer:\nclass:\nrace:\nlevel:\n---\n# {{title}}\n\n## Backstory\n\n## Notes\n"),
     ("NPC", "---\ntype: npc\nrace:\nrole:\nlocation:\nstatus: alive\nfirst-met: {{date}}\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
     ("Location", "---\ntype: location\nregion:\n---\n# {{title}}\n\n## Description\n\n## Notable people\n\n## Notes\n"),
     ("Item", "---\ntype: item\nrarity:\nowner:\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
     ("Faction", "---\ntype: faction\nleader:\nbase:\n---\n# {{title}}\n\n## Goals\n\n## Members\n\n## Notes\n"),
+    ("Quest", "---\ntype: quest\nstatus: open\ngiver:\nlocation:\nreward:\nstarted: {{date}}\n---\n# {{title}}\n\n## Objective\n\n## Leads\n\n## Log\n"),
 ];
+
+/// The templates every vault had before Templates/.seeded existed.
+const FIRST_TEMPLATES: [&str; 5] = ["PC", "NPC", "Location", "Item", "Faction"];
 
 /// Passed by the launch-at-login entry so a login start doesn't pop the window open.
 const LOGIN_ARG: &str = "--from-login";
@@ -55,15 +60,31 @@ fn default_vault(app: &AppHandle) -> PathBuf {
     base.expect("no home directory").join("Lorekeeper")
 }
 
-/// Creates the standard folders. Default templates are written only when Templates/ is new,
-/// so a template you delete stays deleted.
+/// Creates the standard folders and writes each default template at most once ever (recorded in
+/// Templates/.seeded), so a template you delete stays deleted and new defaults still reach old vaults.
 fn create_vault_folders(dir: &Path) -> io::Result<()> {
     let fresh_templates = !dir.join("Templates").exists();
     VAULT_FOLDERS.iter().try_for_each(|f| fs::create_dir_all(dir.join(f)))?;
-    if fresh_templates {
-        for (name, body) in TEMPLATES {
-            fs::write(dir.join("Templates").join(format!("{name}.md")), body)?;
+    let record = dir.join("Templates/.seeded");
+    let mut seeded: Vec<String> = match fs::read_to_string(&record) {
+        Ok(text) => text.lines().map(str::to_owned).collect(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound && !fresh_templates => FIRST_TEMPLATES.map(String::from).to_vec(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    let before = seeded.len();
+    for (name, body) in TEMPLATES {
+        if seeded.iter().any(|s| s == name) {
+            continue;
         }
+        let file = dir.join("Templates").join(format!("{name}.md"));
+        if !file.exists() {
+            fs::write(file, body)?; // never over a template of your own with the same name
+        }
+        seeded.push(name.to_owned());
+    }
+    if seeded.len() != before || !record.exists() {
+        fs::write(&record, seeded.join("\n") + "\n")?;
     }
     Ok(())
 }
@@ -979,6 +1000,46 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dnd-notes-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn default_templates_are_written_once_ever() {
+        let names = |dir: &Path| {
+            let mut v: Vec<String> = fs::read_dir(dir.join("Templates")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        // A fresh vault gets all six, and Quests/.
+        let fresh = temp_dir("seed-fresh");
+        create_vault_folders(&fresh).unwrap();
+        assert_eq!(names(&fresh), [".seeded", "Faction.md", "Item.md", "Location.md", "NPC.md", "PC.md", "Quest.md"]);
+        assert!(fresh.join("Quests").is_dir());
+        assert!(fs::read_to_string(fresh.join("Templates/Quest.md")).unwrap().starts_with("---\ntype: quest\nstatus: open\n"));
+
+        // A deleted template is not recreated.
+        fs::remove_file(fresh.join("Templates/Quest.md")).unwrap();
+        create_vault_folders(&fresh).unwrap();
+        assert!(!fresh.join("Templates/Quest.md").exists(), "deleted template must stay deleted");
+
+        // A vault from before the record: the original five count as seeded, so only Quest is added.
+        // One of them deleted and one edited earlier stay that way; a Quest.md of your own is kept too.
+        let old = temp_dir("seed-old");
+        fs::create_dir_all(old.join("Templates")).unwrap();
+        for name in ["NPC", "Location", "Item", "Faction"] {
+            fs::write(old.join(format!("Templates/{name}.md")), format!("# my {name}")).unwrap();
+        }
+        create_vault_folders(&old).unwrap();
+        assert_eq!(names(&old), [".seeded", "Faction.md", "Item.md", "Location.md", "NPC.md", "Quest.md"]);
+        assert_eq!(fs::read_to_string(old.join("Templates/NPC.md")).unwrap(), "# my NPC");
+        assert_eq!(fs::read_to_string(old.join("Templates/.seeded")).unwrap(), "PC\nNPC\nLocation\nItem\nFaction\nQuest\n");
+        let mine = temp_dir("seed-mine");
+        fs::create_dir_all(mine.join("Templates")).unwrap();
+        fs::write(mine.join("Templates/Quest.md"), "# my quest").unwrap();
+        create_vault_folders(&mine).unwrap();
+        assert_eq!(fs::read_to_string(mine.join("Templates/Quest.md")).unwrap(), "# my quest");
+        for dir in [fresh, old, mine] {
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

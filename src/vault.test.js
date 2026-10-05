@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backlinks, badName, buildTree, fillTemplate, folderFor, resolve, search, splitFrontmatter } from "./vault.js";
+import { backlinks, badName, buildTree, fillTemplate, folderFor, openQuests, questStatus, resolve, search, splitFrontmatter } from "./vault.js";
 
 const notes = [
   { path: "Sessions/Session 2.md", content: "# Session 2\n- 20:15 @[[Mirela]] again\n- 20:30 went to [[Locations/Phandalin|town]]" },
@@ -58,4 +58,22 @@ test("frontmatter, search, templates, names", () => {
   assert.ok(badName("a/b"));
   assert.ok(badName("[[x]]"));
   assert.ok(badName("  "));
+});
+
+test("quest status and the open quest list", () => {
+  assert.equal(questStatus("---\ntype: quest\nstatus: done\n---\n# A"), "done");
+  assert.equal(questStatus('---\nStatus: "Failed"\n---\n'), "failed");
+  assert.equal(questStatus("---\nstatus:\n---\n"), "open"); // empty
+  assert.equal(questStatus("# No properties"), "open");
+  const quests = [
+    { path: "Quests/Find the caravan.md", content: "---\nstatus: done\n---\n" },
+    { path: "Quests/Rescue Sildar.md", content: "---\nstatus: Open\n---\n" },
+    { path: "Quests/Quest 10.md", content: "# no status" },
+    { path: "Quests/Quest 2.md", content: "---\nstatus: 'open'\n---\n" },
+    { path: "Quests/Slay the dragon.md", content: "---\nstatus: failed\n---\n" },
+    { path: "Quests/Later.md", content: "---\nstatus: on hold\n---\n" },
+    { path: "NPCs/Mirela.md", content: "---\nstatus: open\n---\n" }, // not a quest page
+  ];
+  assert.deepEqual(openQuests(quests), ["Quests/Quest 2.md", "Quests/Quest 10.md", "Quests/Rescue Sildar.md"]);
+  assert.deepEqual(openQuests([]), []);
 });

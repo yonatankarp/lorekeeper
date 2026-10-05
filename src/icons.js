@@ -10,10 +10,23 @@ const PATHS = {
   mystery: `<path d="M1.5 8c1.8-3 4-4.5 6.5-4.5s4.7 1.5 6.5 4.5c-1.8 3-4 4.5-6.5 4.5S3.3 11 1.5 8z"/><circle cx="8" cy="8" r="2.3"/><circle cx="8" cy="8" r=".8" fill="currentColor"/>`,
   // quill
   quote: `<path d="M14 2c-4.6.2-7.9 3.2-8.9 8.4l.6.6c1.8-.3 3.4-1 4.7-2.2l-1.6-.3 2.5-1.3C12.6 5.7 13.6 4 14 2z"/><path d="M2 14l6.5-6.5"/>`,
+  // short sword, point up
+  pc: `<path d="M13.5 2.5h-2.6L5.6 7.8l2.6 2.6 5.3-5.3z"/><path d="M3.8 7.6l4.6 4.6M5.4 10.6 2.6 13.4"/>`,
+  // crenellated tower with a door
+  location: `<path d="M3.5 14.5V2.5H5.5V4.5h1.5v-2h2v2h1.5v-2h2v12z"/><path d="M6.8 14.5v-2.8a1.2 1.2 0 0 1 2.4 0v2.8"/>`,
+  // round potion flask
+  item: `<path d="M6.3 1.5h3.4M7 1.5v4.1a4.5 4.5 0 1 0 2 0V1.5"/><path d="M4 10.5h8"/>`,
+  // pennant on a pole
+  faction: `<path d="M3.5 14.5v-13M3.5 2.5h9l-2 3 2 3h-9"/>`,
+  // page with a folded corner
+  note: `<path d="M3.5 1.5h6l3 3v10h-9z"/><path d="M9.5 1.5v3h3M5.5 8h5M5.5 10.5h5"/>`,
+  // quest outcomes in the sidebar
+  done: `<path d="M3 8.5l3 3 7-7"/>`,
+  failed: `<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>`,
   // d20, face on
   session: `<path d="M8 1.5l5.6 3.25v6.5L8 14.5l-5.6-3.25v-6.5z"/><path d="M8 4.75l3.1 5.35H4.9z"/><path d="M2.4 4.75 8 4.75l5.6 0M4.9 10.1l-2.5 1.15M11.1 10.1l2.5 1.15M4.9 10.1 8 14.5l3.1-4.4M8 1.5v3.25"/>`,
 };
 
-/** `<svg>` markup for a kind ("npc", "loot", "quest", "mystery", "quote") or "session", hidden from screen readers. */
+/** `<svg>` markup for a name above (note kinds, page types, "session", "done", "failed"), hidden from screen readers. */
 export const icon = (name) =>
   `<svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${PATHS[name] ?? ""}</svg>`;

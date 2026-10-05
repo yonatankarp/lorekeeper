@@ -1,8 +1,8 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
-import { escape, parse, timeline, toHtml, toText } from "./notes.js";
-import { backlinks, badName, baseName, buildTree, fillTemplate, folderFor, resolve, search, splitFrontmatter } from "./vault.js";
+import { escape, linkify, parse, timeline, toHtml, toText } from "./notes.js";
+import { backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, questStatus, resolve, search, splitFrontmatter } from "./vault.js";
 import { applyTheme, nativeTheme } from "./theme.js";
 import { icon } from "./icons.js";
 
@@ -35,7 +35,6 @@ const paths = () => vault.notes.map((n) => n.path);
 const isSession = (path) => path?.startsWith("Sessions/");
 const dirty = () => saveTimer !== null || saving !== null;
 const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD
-const unescape = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[e]);
 
 /** The Markdown editor, created the first time it's needed. */
 function ed() {
@@ -91,36 +90,36 @@ marked.use({
   ],
 });
 
-const inlineLinks = (escapedText) =>
-  escapedText.replace(/!?\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]*))?\]\]/g, (_, target, heading, label) =>
-    linkHtml(unescape(target.trim()), (label ?? target).trim()),
-  );
+/** Raw text with its [[links]] made clickable. */
+const inlineLinks = (text) => linkify(text, linkHtml);
 
 function propsHtml(props) {
   if (!props.length) return "";
-  const rows = props.map(([k, v]) => `<dt>${escape(k)}</dt><dd>${inlineLinks(escape(v.replace(/^["']|["']$/g, "")))}</dd>`);
+  const rows = props.map(([k, v]) => `<dt>${escape(k)}</dt><dd>${inlineLinks(v.replace(/^["']|["']$/g, ""))}</dd>`);
   return `<dl class="props">${rows.join("")}</dl>`;
 }
 
 // ---------- sidebar ----------
-
-/** The template whose pages live in `folder`, or "". */
-const templateFor = (folder) => templates.map((t) => baseName(t.path)).find((t) => folderFor(t, vault.folders) === folder) ?? "";
 
 function treeHtml(node) {
   const dirs = node.dirs
     .map((d) => {
       const n = d.files.length;
       const count = n ? `<span class="sr-only">, </span>${n}<span class="sr-only"> page${n === 1 ? "" : "s"}</span>` : "";
-      const tpl = templateFor(d.path);
-      const empty = `<button type="button" class="folder-new" data-template="${escape(tpl)}" data-folder="${escape(d.path)}">+ New ${escape(tpl || "page")}</button>`;
+      const empty = `<button type="button" class="folder-new" data-folder="${escape(d.path)}">+ New ${escape(typeFor(d.path) || "page")}</button>`;
       return `<details data-folder="${escape(d.path)}"${closedFolders.has(d.path) ? "" : " open"}>
         <summary>${escape(d.name)}<span class="count">${count}</span></summary>
         <div class="children">${treeHtml(d) || empty}</div></details>`;
     })
     .join("");
   const files = node.files
-    .map((p) => `<button class="file${p === current ? " active" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">${escape(baseName(p))}</button>`)
+    .map((p) => {
+      // Finished quests: dimmed, with a check or a cross, and the outcome in the accessible name.
+      const status = p.startsWith("Quests/") ? questStatus(note(p)?.content ?? "") : "";
+      const ended = status === "done" || status === "failed";
+      return `<button class="file${p === current ? " active" : ""}${ended ? " quest-ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
+        `${ended ? icon(status) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
+    })
     .join("");
   return dirs + files;
 }
@@ -168,27 +167,36 @@ const legendHtml =
 
 const emptySessionHtml = `<div class="empty-state">${icon("session")}<h2>No notes yet</h2>
   <p>Press <kbd>⌘⌥N</kbd> for a quick note, or <kbd>⌘⇧S</kbd> to save selected text (or the clipboard).</p>
-  <p>Notes appear here live during the game. Start a note with a symbol to file it:</p>${legendHtml}</div>`;
+  <p>Notes appear here live during the game. Start a note with a symbol to file it:</p>${legendHtml}
+  <p class="legend-note">A <kbd>!</kbd> note goes in this session's Quests section. To follow a quest across sessions, make a Quest page with + New page: open ones are listed at the top of every session.</p></div>`;
 
 const timelineHtml = (items) =>
   `<ol class="timeline">${items
     .map(({ time, kind, text }) => {
       const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${icon(kind)}${KINDS[kind][1]}</span>` : "";
-      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(escape(text))}</span></li>`;
+      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}</span></li>`;
     })
     .join("")}</ol>`;
+
+/** The Quests/ pages still open, at the top of every session; nothing when there are none. */
+function openQuestsHtml() {
+  const quests = openQuests(vault.notes);
+  if (!quests.length) return "";
+  const items = quests.map((p) => `<li><a data-path="${escape(p)}" href="#">${icon("quest")}${escape(baseName(p))}</a></li>`);
+  return `<section class="open-quests" aria-labelledby="open-quests-title"><h2 id="open-quests-title">Open quests</h2><ul>${items.join("")}</ul></section>`;
+}
 
 function sessionHtml(content) {
   const session = parse(content);
   const items = timeline(content);
-  const title = `<h1 class="session-title">${session.title ? inlineLinks(escape(session.title)) : escape(baseName(current))}</h1>`;
-  if (!items.length) return title + emptySessionHtml;
+  const title = `<h1 class="session-title">${session.title ? inlineLinks(session.title) : escape(baseName(current))}</h1>`;
+  if (!items.length) return title + openQuestsHtml() + emptySessionHtml;
   const pressed = (v) => `aria-pressed="${sessionView === v}"`;
   const views = `<div class="view-switch" role="group" aria-label="Session view">
     <button type="button" data-view="timeline" ${pressed("timeline")}>Timeline</button>
     <button type="button" data-view="journal" ${pressed("journal")}>Journal</button></div>`;
-  return views + title + (sessionView === "journal"
-    ? `<div class="journal">${toHtml({ ...session, title: "" }, (t, label) => linkHtml(unescape(t.trim()), label))}</div>` +
+  return views + title + openQuestsHtml() + (sessionView === "journal"
+    ? `<div class="journal">${toHtml({ ...session, title: "" }, linkHtml)}</div>` +
       `<p class="session-note">This is what “Copy for D&amp;D Beyond” pastes. Click Edit to see every line.</p>`
     : timelineHtml(items));
 }
@@ -224,7 +232,7 @@ function render() {
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length
     ? `<ul>${links
         .map((b) => `<li><a data-path="${escape(b.path)}" href="#">${escape(baseName(b.path))}</a>
-          ${b.lines.map((l) => `<div class="snip">${inlineLinks(escape(l.replace(/^[-*+] (\d{1,2}:\d{2} )?/, "")))}</div>`).join("")}</li>`)
+          ${b.lines.map((l) => `<div class="snip">${inlineLinks(l.replace(/^[-*+] (\d{1,2}:\d{2} )?/, ""))}</div>`).join("")}</li>`)
         .join("")}</ul>`
     : `<p class="none">No pages link here yet. Link to it with [[${escape(baseName(current))}]].</p>`);
 }
@@ -276,6 +284,7 @@ async function save() {
     base = written;
     const n = note(path);
     if (n) n.content = written;
+    if (path.startsWith("Quests/")) renderTree(); // a changed status moves the check mark
     // Notes added by the hotkeys while editing were kept on disk; show them in the editor too.
     if (written !== content && written.startsWith(content) && path === current) ed().append(written.slice(content.length));
     say("Saved");
@@ -306,43 +315,76 @@ async function refresh() {
 
 // ---------- new page ----------
 
-/** `template` / `folder` preselect the dialog (e.g. from an empty folder); otherwise it guesses from the open page. */
-function openNewDialog(name = "", { template, folder } = {}) {
-  const names = templates.map((n) => baseName(n.path));
-  const folderOfCurrent = current?.includes("/") ? current.split("/").slice(0, -1).join("/") : "";
-  const guess = template ?? names.find((t) => folderFor(t, vault.folders) === folderOfCurrent && folderOfCurrent) ?? "";
-  $("new-template").innerHTML = `<option value="">Blank</option>` +
-    names.map((t) => `<option${t === guess ? " selected" : ""}>${escape(t)}</option>`).join("");
-  $("new-folder").innerHTML = `<option value="">(vault root)</option>` +
-    vault.folders.map((f) => `<option>${escape(f)}</option>`).join("");
-  $("new-folder").value = folder ?? (guess ? folderFor(guess, vault.folders) : (isSession(current) || !folderOfCurrent ? "" : folderOfCurrent));
+const TYPES = ["NPC", "PC", "Location", "Item", "Faction", "Quest"]; // built in: the vault gets their templates and folders
+let lastType = "Note"; // what "+ New page" offers first: the type last created, until restart
+let newFrom = ""; // the folder the dialog was opened from, where a Note goes
+
+/** What "New page" can make: the built-in types, your own templates in Templates/, then Note (blank, or Templates/Note.md). */
+function newTypes() {
+  const known = [...TYPES, "Note"].map((t) => t.toLowerCase());
+  const own = [...new Set(templates.map((t) => baseName(t.path)))].filter((t) => !known.includes(t.toLowerCase()));
+  return [...TYPES, ...own.sort((a, b) => a.localeCompare(b)), "Note"];
+}
+
+/** The type whose pages live in `folder` ("NPCs" holds NPC pages), or "". */
+const typeFor = (folder) => newTypes().find((t) => t !== "Note" && folderFor(t, [folder])) ?? "";
+
+/** Where a new page goes: its type's plural folder (created for a built-in type), else the vault root; a Note goes where the dialog was opened. */
+const folderOf = (type) => (type === "Note" ? newFrom : folderFor(type, vault.folders) || (TYPES.includes(type) ? `${type}s` : ""));
+
+const templateOf = (type) => templates.find((t) => baseName(t.path).toLowerCase() === type.toLowerCase());
+const chosenType = () => $("new-chips").querySelector("input:checked")?.value ?? "Note";
+const syncNewTitle = () => ($("new-title").textContent = chosenType() === "Note" ? "New note" : `New ${chosenType()}`);
+
+/**
+ * Asks what you're making and its name; the type picks the template and the folder. From a folder (its empty-folder
+ * button, "New Page Here") that folder's type is preselected; from a broken link the name is filled in and focus starts
+ * on the type.
+ */
+function openNewDialog(name = "", { folder = "" } = {}) {
+  newFrom = folder;
+  const types = newTypes();
+  const pick = folder ? typeFor(folder) || "Note" : types.includes(lastType) ? lastType : "Note";
+  $("new-chips").innerHTML = types
+    .map((t) => `<label class="chip"><input type="radio" name="new-type" value="${escape(t)}"${t === pick ? " checked" : ""} />` +
+      `${icon(TYPES.includes(t) ? t.toLowerCase() : "note")}<span>${escape(t)}</span></label>`)
+    .join("");
+  syncNewTitle();
   $("new-name").value = name;
   $("new-error").textContent = "";
   $("new-dialog").showModal();
-  $("new-name").focus();
+  (name ? $("new-chips").querySelector("input:checked") : $("new-name")).focus();
 }
 
-$("new-template").addEventListener("change", () => {
-  const t = $("new-template").value;
-  if (t) $("new-folder").value = folderFor(t, vault.folders);
+$("new-chips").addEventListener("change", syncNewTitle);
+// Arrow keys move between the chips natively (they're radios); Enter creates from there too, as it does from the name.
+$("new-chips").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  $("new-form").requestSubmit($("new-create"));
 });
+$("new-cancel").addEventListener("click", () => $("new-dialog").close());
 
 $("new-form").addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "create") return;
   e.preventDefault();
   const name = $("new-name").value.trim();
   const problem = badName(name);
-  if (problem) return ($("new-error").textContent = problem);
-  const folder = $("new-folder").value;
-  const template = $("new-template").value;
+  if (problem) {
+    $("new-error").textContent = problem;
+    return $("new-name").focus();
+  }
+  const type = chosenType();
+  const folder = folderOf(type);
   const path = folder ? `${folder}/${name}.md` : `${name}.md`;
-  const tpl = template && templates.find((n) => n.path === `Templates/${template}.md`);
+  const tpl = templateOf(type);
   const content = tpl ? fillTemplate(tpl.content, name, today()) : `# ${name}\n\n`;
   try {
-    await invoke("create_file", { path, content });
+    await invoke("create_file", { path, content }); // makes the folder when it's missing
   } catch (err) {
     return ($("new-error").textContent = err);
   }
+  lastType = type;
   $("new-dialog").close();
   await refresh();
   open(path, { edit: true });
@@ -363,7 +405,7 @@ document.addEventListener("click", (e) => {
 
 $("tree").addEventListener("click", (e) => {
   const b = e.target.closest(".folder-new");
-  if (b) openNewDialog("", { template: b.dataset.template, folder: b.dataset.folder });
+  if (b) openNewDialog("", { folder: b.dataset.folder });
 });
 
 $("view").addEventListener("click", (e) => {
@@ -589,7 +631,7 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
       ]
-    : [{ text: "New Page Here…", action: () => openNewDialog("", { template: templateFor(folder), folder }) }];
+    : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];
   // ponytail: one small menu resource per right-click is never closed; call close() after popup if that ever matters.
   Menu.new({ items }).then((m) => m.popup()).catch(say);
 });

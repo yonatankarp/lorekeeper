@@ -54,11 +54,25 @@ const stripLinks = (text) => text.replace(WIKILINK, plainLink);
 const filled = (groups) => SECTIONS.filter(([key]) => groups[key].length);
 
 /**
- * HTML for D&D Beyond. `link(target, label)` renders [[links]] (inputs already escaped);
+ * Escapes text and renders its [[links]] with `link(target, labelHtml)` (target raw, label escaped).
+ * Links are found before escaping, so names like "Old King's Road" or "Salt & Iron" survive.
+ */
+export function linkify(text, link) {
+  let html = "";
+  let last = 0;
+  for (const m of text.matchAll(WIKILINK)) {
+    html += escape(text.slice(last, m.index)) + link(m[2].trim(), escape((m[4] ?? m[2]).trim()));
+    last = m.index + m[0].length;
+  }
+  return html + escape(text.slice(last));
+}
+
+/**
+ * HTML for D&D Beyond. `link(target, labelHtml)` renders [[links]];
  * the default writes the label only, so the journal never shows brackets.
  */
 export function toHtml({ title, groups }, link = (target, label) => label) {
-  const item = (t) => escape(t).replace(WIKILINK, (_, bang, target, heading, label) => link(target, label ?? target));
+  const item = (t) => linkify(t, link);
   const head = title ? `<h2>${escape(stripLinks(title))}</h2>` : "";
   return head + filled(groups)
     .map(([key, label]) => `<h3>${label}</h3><ul>${groups[key].map((t) => `<li>${item(t)}</li>`).join("")}</ul>`)

@@ -90,6 +90,19 @@ export const fillTemplate = (template, title, date) =>
 export const folderFor = (templateName, folders) =>
   folders.find((f) => f.toLowerCase() === `${templateName}s`.toLowerCase()) ?? "";
 
+/** A quest page's `status` property, lowercased and unquoted; missing or empty counts as "open". */
+export function questStatus(content) {
+  const value = splitFrontmatter(content).props.find(([k]) => k.toLowerCase() === "status")?.[1] ?? "";
+  return value.replace(/^["']|["']$/g, "").trim().toLowerCase() || "open";
+}
+
+/** Paths of the pages in Quests/ that are still open, sorted by name. */
+export const openQuests = (notes) =>
+  notes
+    .filter((n) => n.path.startsWith("Quests/") && questStatus(n.content) === "open")
+    .map((n) => n.path)
+    .sort((a, b) => naturally(baseName(a), baseName(b)));
+
 /** Characters that break Obsidian links or file names. Returns an error message, or "" when fine. */
 export function badName(name) {
   if (!name.trim()) return "Give the page a name.";

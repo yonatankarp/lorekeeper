@@ -41,15 +41,17 @@
       </div>
     </main>
 
-    <dialog id="new-dialog">
-      <form id="new-form" method="dialog">
-        <h2>New page</h2>
-        <label>Name <input id="new-name" required autocomplete="off" /></label>
-        <label>Template <select id="new-template"></select></label>
-        <label>Folder <select id="new-folder"></select></label>
+    <dialog id="new-dialog" aria-labelledby="new-title">
+      <form id="new-form" method="dialog" novalidate>
+        <h2 id="new-title">New page</h2>
+        <fieldset id="new-types" role="radiogroup" aria-labelledby="new-types-label">
+          <legend id="new-types-label">What are you making?</legend>
+          <div id="new-chips" class="chips"></div>
+        </fieldset>
+        <label>Name <input id="new-name" aria-required="true" autocomplete="off" /></label>
         <p id="new-error" role="alert"></p>
         <div class="dialog-actions">
-          <button value="cancel" formnovalidate class="ghost">Cancel</button>
+          <button type="button" id="new-cancel" class="ghost">Cancel</button>
           <button id="new-create" value="create">Create</button>
         </div>
       </form>

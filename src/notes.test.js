@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parse, timeline, toHtml, toText } from "./notes.js";
+import { linkify, parse, timeline, toHtml, toText } from "./notes.js";
 
 const md = `---
 session: 14
@@ -76,4 +76,14 @@ test("timeline keeps every note in file order with time and kind", () => {
     assert.deepEqual(items.filter((i) => i.kind === kind).map((i) => i.text), texts);
   }
   assert.deepEqual(timeline("# Empty\n"), []);
+});
+
+test("links with apostrophes and ampersands survive escaping", () => {
+  const a = (target, label) => `<a data-target="${target}">${label}</a>`;
+  assert.equal(
+    linkify("East along the [[Old King's Road]] & [[Salt & Iron|the guild]] <b>", a),
+    `East along the <a data-target="Old King's Road">Old King&#39;s Road</a> &amp; <a data-target="Salt & Iron">the guild</a> &lt;b&gt;`,
+  );
+  assert.equal(linkify("[[Mirela#Secrets|she]] lied", a), '<a data-target="Mirela">she</a> lied');
+  assert.equal(toHtml(parse("- 19:40 Took the [[Old King's Road]]")), "<h3>What happened</h3><ul><li>Took the Old King&#39;s Road</li></ul>");
 });
