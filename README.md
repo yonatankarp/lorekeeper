@@ -55,9 +55,38 @@ Open **Settings…** from the tray menu (or `⌘,` in the Lorekeeper window). Ch
 - **Hotkeys:** press **Record**, then the new combination (Esc cancels). If another app already uses it, the old shortcut stays and the window says so.
 - **Notes folder:** where notes are kept (default `Documents/Lorekeeper`). **Choose…** picks another folder and adds the standard folders and templates there. Existing notes are not moved; move them in Finder if you want them in the new folder. A folder inside your Obsidian vault or iCloud Drive works well.
 - **Appearance:** theme (System, Light, Dark), editor font size, and whether sessions open as Timeline or Journal.
+- **Backups:** back up to a folder, to GitHub, or both. See [Backups](#backups).
 - **Startup & notifications:** Launch at login (same as the tray item), and whether a notification appears when a note is saved. Errors always show.
 
 Settings are stored in `settings.json` in the app's config folder (macOS: `~/Library/Application Support/com.yonatankarp.dndnotes/`, Windows: `%APPDATA%\com.yonatankarp.dndnotes\`, Linux: `~/.config/com.yonatankarp.dndnotes/`). An older `Documents/Lorekeeper/settings.json` is moved there on first start. If the file can't be read, the app reports it and uses the defaults without overwriting it; changing a setting in the window replaces it.
+
+## Backups
+
+Turn backups on in **Settings > Backups**. You can use one option or both.
+
+**What gets backed up:** everything in your notes folder (sessions, pages, templates, images), except hidden files like `.obsidian`, `.git` and `.DS_Store`. A backup runs when you start a new session, every 30 minutes if Lorekeeper changed a note, once a day anyway (so edits made in Obsidian are included), and when you press **Back up now**. If a backup fails you get one notification, and the reason shows in Settings.
+
+### Back up to a folder
+
+Press **Choose…** and pick a folder inside Google Drive, Dropbox, OneDrive or iCloud Drive (their desktop apps upload it for you), or on a USB drive. Each day gets its own copy, `Lorekeeper backup 2026-10-05`, and the last 30 days are kept. Older dated copies are deleted; nothing else in that folder is touched. The backup folder can't be inside your notes folder.
+
+**To restore:** open the backup folder, find the day you want, and copy the notes you need back into your notes folder. To use a whole day's copy as your notes folder, first copy that dated folder somewhere else (for example to Documents), then pick the copy in **Settings > Notes folder > Choose…**. Lorekeeper won't use a dated folder in place, because backups replace and clean up those folders.
+
+### Back up to GitHub
+
+Every backup is saved as a version, so you can see or restore your notes from any point in time. You need a free [GitHub](https://github.com) account.
+
+1. Press **Sign in with GitHub**. A short code appears.
+2. Press **Copy code**, then **Open github.com**, paste the code and approve.
+3. Lorekeeper creates a private repository called `lorekeeper-notes` in your account and backs up to it.
+
+You never type your GitHub password into Lorekeeper. The sign-in is kept in your system's password storage (macOS Keychain, Windows Credential Manager, or the Secret Service keyring on Linux), not in a file. **Sign out** removes it. Files over 50 MB are skipped, and the status line lists them.
+
+**To restore:** open the repository on github.com (the link is in Settings). **Code > Download ZIP** gives you all notes as they were at the last backup. To get an older version of one note, open the file and press **History**, pick a version, then view or download it.
+
+### Or keep your notes folder in the cloud
+
+You can also put the notes folder itself inside Google Drive, iCloud Drive, Dropbox or OneDrive (**Settings > Notes folder > Choose…**). Your notes are then synced to your other computers, and Obsidian on your phone can open them. Sync is not a backup, though: if a note is deleted or overwritten by mistake, the mistake syncs too. Use it together with one of the backups above.
 
 ## Develop
 
@@ -98,9 +127,13 @@ These can't be tested automatically:
 - [ ] Neither shortcut clashes with Discord or the VTT. If one does, a "Shortcut unavailable" notification appears at launch.
 - [ ] Pasting into the D&D Beyond journal keeps the headings and bullet points.
 - [ ] Launch at Login (tray menu) survives a restart, and the tray item and the Settings checkbox stay in step.
+- [ ] Backups: choosing a backup folder makes `Lorekeeper backup <today>` there right away; pulling out a USB drive used as the backup folder shows one failure notification.
+- [ ] GitHub: with a real client ID in `src-tauri/src/github.rs`, sign in, approve on github.com, and check that the private `lorekeeper-notes` repo gets a commit; edit a note, press **Back up now**, and check for a second commit; delete a note and check it disappears from the repo.
 - [ ] Settings: recording a new hotkey works right away; a shortcut used by another app shows an error and the old one keeps working. Theme changes apply to every window.
 
 ## Known limits
 
+- GitHub backup needs a GitHub OAuth app with **Enable Device Flow** ticked; put its client ID in `GITHUB_CLIENT_ID` in `src-tauri/src/github.rs`. Without it the Settings window says GitHub backup isn't set up.
+- The first GitHub backup of a very large vault (thousands of files) can take several runs, because GitHub limits how many files can be uploaded per hour.
 - When capturing, the app restores your previous clipboard as text only. An image on the clipboard is lost.
 - Open quests are not carried over between sessions.

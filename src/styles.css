@@ -81,7 +81,7 @@ button {
   border: 1px solid transparent;
   background: var(--accent);
   color: #fff;
-  cursor: pointer;
+  cursor: default;
 }
 button.ghost { background: transparent; color: var(--fg); border-color: var(--control-border); }
 button.ghost:hover { background: var(--hover); }
@@ -142,9 +142,7 @@ kbd {
   gap: 6px;
   padding: 3px 8px;
   border-radius: 6px;
-  cursor: pointer;
   font-weight: 600;
-  user-select: none;
 }
 #tree summary::-webkit-details-marker { display: none; }
 #tree summary::before { content: "▸"; color: var(--muted); font-size: 11px; width: 10px; }
@@ -167,7 +165,7 @@ kbd {
   text-overflow: ellipsis;
 }
 .file:hover { background: var(--hover); }
-.file.active { background: var(--accent-soft); color: var(--link); font-weight: 600; }
+.file.active { background: var(--selected, var(--accent-soft)); color: var(--selected-text, var(--link)); font-weight: 600; }
 .empty { padding: 3px 8px 3px 24px; color: var(--muted); font-size: 12px; font-style: italic; }
 .folder-new {
   display: block;
@@ -183,7 +181,7 @@ kbd {
 }
 .folder-new:hover, .folder-new:focus-visible { background: var(--hover); color: var(--accent-text); }
 #results .file { padding-left: 10px; white-space: normal; }
-#results .file.selected, #results .file:focus-visible { background: var(--accent-soft); color: var(--link); }
+#results .file.selected, #results .file:focus-visible { background: var(--selected, var(--accent-soft)); color: var(--selected-text, var(--link)); }
 #results .where { display: block; color: var(--muted); font-size: 12px; }
 #results .snip { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 #results mark { background: var(--accent-soft); color: inherit; border-radius: 2px; }
@@ -332,6 +330,31 @@ dialog input, dialog select {
 }
 #new-error { color: var(--accent-text); min-height: 1.2em; margin: 0 0 8px; font-size: 13px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------- native feel ---------- */
+/* Chrome behaves like app chrome: no text selection or I-beam, and no focus ring after a mouse click (keyboard focus keeps it). */
+#sidebar, #bar, .side-foot, button, summary { -webkit-user-select: none; user-select: none; cursor: default; }
+input, select, textarea { -webkit-user-select: text; user-select: text; } /* WebKit inherits user-select into the search box */
+:focus:not(:focus-visible) { outline: none; }
+
+/* macOS: the title bar overlays the window (tauri.conf.json titleBarStyle "Overlay"). The traffic lights sit in the
+   sidebar's top strip; trafficLightPosition.y centres them in it, so change both together. */
+:root { --titlebar: 52px; }
+[data-platform="macos"] #sidebar { padding-top: var(--titlebar); }
+[data-platform="macos"] #search { margin-top: 0; }
+[data-platform="macos"] #bar { min-height: var(--titlebar); padding-top: 4px; padding-bottom: 4px; }
+
+/* Translucent sidebar over the window material (macOS "sidebar" vibrancy, Windows 11 Mica); the page stays opaque.
+   The tint is the theme's own sidebar colour, and app.js sets the window appearance to the theme so the material matches. */
+[data-platform="macos"] body, [data-mica] body { background: transparent; }
+[data-platform="macos"] main, [data-mica] main { background: var(--bg); }
+[data-platform="macos"] #sidebar, [data-mica] #sidebar { background: color-mix(in srgb, var(--side) 55%, transparent); }
+
+/* macOS system accent for the selected row. Text stays --fg: a 24% tint of any accent keeps it above 4.5:1 in both themes,
+   while accent-coloured text would not (yellow, graphite). Focus rings keep --accent-text for a guaranteed 3:1. */
+@supports (color: AccentColor) {
+  [data-platform="macos"] { --selected: color-mix(in srgb, AccentColor 24%, var(--panel)); --selected-text: var(--fg); }
+}
 
 /* ---------- narrow window / 200% zoom ---------- */
 @media (max-width: 640px) {

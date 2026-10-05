@@ -19,6 +19,9 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
+mod backup;
+mod github;
+
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
 //   Sessions/Session N.md   written by the hotkeys
 //   PCs/ NPCs/ Locations/ Items/ Factions/   your pages
@@ -201,6 +204,11 @@ struct Settings {
     notifications: bool,
     /// Kept by the OS (autostart), never in the file; see current_settings.
     launch_at_login: bool,
+    /// Where dated copies of the vault go; "" = off.
+    backup_folder: String,
+    github_repo: String,
+    /// Set by signing in to GitHub, cleared by signing out; the settings window can't change it.
+    github_user: String,
 }
 
 impl Default for Settings {
@@ -214,6 +222,9 @@ impl Default for Settings {
             session_view: "timeline".into(),
             notifications: true,
             launch_at_login: false,
+            backup_folder: String::new(),
+            github_repo: "lorekeeper-notes".into(),
+            github_user: String::new(),
         }
     }
 }
@@ -269,6 +280,16 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     }
     if !SESSION_VIEWS.contains(&s.session_view.as_str()) {
         return Err(format!("Unknown session view \"{}\".", s.session_view));
+    }
+    if !s.backup_folder.is_empty() {
+        if !Path::new(&s.backup_folder).is_absolute() {
+            return Err(format!("The backup folder must be a full path, not \"{}\".", s.backup_folder));
+        }
+        backup::check_folder(Path::new(&s.vault_path), Path::new(&s.backup_folder))?;
+    }
+    let repo_ok = |r: &str| !r.is_empty() && r != "." && r != ".." && r.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if !repo_ok(&s.github_repo) {
+        return Err(format!("\"{}\" isn't a valid GitHub repository name.", s.github_repo));
     }
     s.editor_font_size = s.editor_font_size.clamp(11, 24);
     Ok(s)
@@ -461,7 +482,9 @@ fn dismiss(app: AppHandle) {
     }
 }
 
+/// After the app writes notes: tells the windows and marks the vault as needing a backup.
 fn emit_changed(app: &AppHandle) {
+    backup::mark_changed();
     let _ = app.emit("vault-changed", ());
 }
 
@@ -495,6 +518,7 @@ fn save_file(app: AppHandle, path: String, content: String, base: String) -> Res
     let disk = fs::read_to_string(&file).unwrap_or_else(|_| base.clone()); // deleted elsewhere: recreate
     let merged = merge_save(&disk, &base, &content).ok_or("conflict")?;
     fs::write(&file, &merged).map_err(|e| e.to_string())?;
+    backup::mark_changed();
     Ok(merged)
 }
 
@@ -509,7 +533,9 @@ fn create_file(app: AppHandle, path: String, content: String) -> Result<(), Stri
         io::ErrorKind::AlreadyExists => format!("{path} already exists."),
         _ => e.to_string(),
     })?;
-    f.write_all(content.as_bytes()).map_err(|e| e.to_string())
+    f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    backup::mark_changed();
+    Ok(())
 }
 
 #[tauri::command]
@@ -517,6 +543,7 @@ fn start_session(app: AppHandle) -> Result<String, String> {
     let root = notes_dir(&app);
     let path = new_session(&root).map_err(|e| e.to_string())?;
     emit_changed(&app);
+    backup::request(false); // captures the session that just ended
     Ok(rel_path(&root, &path))
 }
 
@@ -556,11 +583,15 @@ fn get_settings(app: AppHandle) -> Settings {
 /// Checks and applies every setting, saves them, then tells all windows. On error nothing changes.
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
-    let new = validate(settings)?;
+    let mut new = validate(settings)?;
     let old = current_settings(&app);
+    new.github_user = old.github_user.clone();
     // Existing notes stay in the old folder; the new one gets the standard folders and templates.
     if new.vault_path != old.vault_path {
         create_vault_folders(Path::new(&new.vault_path)).map_err(|e| format!("Notes folder: {e}"))?;
+    }
+    if new.backup_folder != old.backup_folder && !new.backup_folder.is_empty() {
+        fs::create_dir_all(&new.backup_folder).map_err(|e| format!("Backup folder: {e}"))?;
     }
     if (&new.quick_note, &new.capture) != (&old.quick_note, &old.capture) {
         let gs = app.global_shortcut();
@@ -575,14 +606,23 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     if new.launch_at_login != old.launch_at_login {
         set_launch_at_login(&app, new.launch_at_login)?;
     }
-    let file = settings_file(&app).map_err(|e| e.to_string())?;
-    write_settings(&file, &new).map_err(|e| format!("Couldn't save settings: {e}"))?;
-    *app.state::<Mutex<Settings>>().lock().unwrap() = new.clone();
-    let _ = app.emit("settings-changed", &new);
+    store_settings(&app, &new)?;
     if new.vault_path != old.vault_path {
         emit_changed(&app);
     }
+    if new.backup_folder != old.backup_folder {
+        backup::reset(&app, false); // a new place: back up there right away
+    }
     Ok(new)
+}
+
+/// Saves settings as they are (no checks) and tells every window.
+fn store_settings(app: &AppHandle, new: &Settings) -> Result<(), String> {
+    let file = settings_file(app).map_err(|e| e.to_string())?;
+    write_settings(&file, new).map_err(|e| format!("Couldn't save settings: {e}"))?;
+    *app.state::<Mutex<Settings>>().lock().unwrap() = new.clone();
+    let _ = app.emit("settings-changed", new);
+    Ok(())
 }
 
 #[tauri::command]
@@ -592,10 +632,64 @@ fn open_settings(app: AppHandle) {
 
 /// None when cancelled. Async because the blocking dialog must not run on the main thread.
 #[tauri::command]
-async fn pick_vault_folder(app: AppHandle, window: tauri::WebviewWindow) -> Option<String> {
-    let dialog = app.dialog().file().set_title("Choose a notes folder").set_directory(notes_dir(&app));
+async fn pick_folder(app: AppHandle, window: tauri::WebviewWindow, title: String, start: String) -> Option<String> {
+    let mut dialog = app.dialog().file().set_title(title);
+    if !start.is_empty() {
+        dialog = dialog.set_directory(start);
+    }
     let path = dialog.set_parent(&window).blocking_pick_folder()?.into_path().ok()?;
     Some(path.to_string_lossy().into_owned())
+}
+
+// ---------- backups (see backup.rs and github.rs) ----------
+
+#[tauri::command]
+fn backup_now() {
+    backup::request(true);
+}
+
+#[tauri::command]
+fn backup_status() -> backup::Status {
+    backup::status()
+}
+
+/// Runs blocking work (network, credential store) off the main thread.
+async fn off_main<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+/// Step 1: a code to enter on github.com.
+#[tauri::command]
+async fn github_sign_in_start() -> Result<github::DeviceCode, String> {
+    off_main(github::start_sign_in).await
+}
+
+/// Step 2: waits for approval, keeps the token in the credential store and returns the GitHub login.
+#[tauri::command]
+async fn github_sign_in_wait(app: AppHandle) -> Result<String, String> {
+    let login = off_main(|| {
+        let token = github::wait_sign_in()?;
+        let login = github::user_login(&token)?;
+        github::save_token(&token)?;
+        Ok(login)
+    })
+    .await?;
+    store_settings(&app, &Settings { github_user: login.clone(), ..current_settings(&app) })?;
+    backup::reset(&app, true); // first backup right away
+    Ok(login)
+}
+
+#[tauri::command]
+fn github_sign_in_cancel() {
+    github::cancel_sign_in();
+}
+
+#[tauri::command]
+async fn github_sign_out(app: AppHandle) -> Result<(), String> {
+    off_main(github::delete_token).await?;
+    store_settings(&app, &Settings { github_user: String::new(), ..current_settings(&app) })?;
+    backup::reset(&app, true);
+    Ok(())
 }
 
 #[tauri::command]
@@ -635,6 +729,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "new" => match new_session(&notes_dir(app)) {
                 Ok(p) => {
                     emit_changed(app);
+                    backup::request(false);
                     notify_saved(app, "New session started", &p.file_name().unwrap().to_string_lossy());
                 }
                 Err(e) => notify(app, "Couldn't start session", &e.to_string()),
@@ -677,8 +772,14 @@ pub fn run() {
             get_settings,
             save_settings,
             open_settings,
-            pick_vault_folder,
-            open_vault_folder
+            pick_folder,
+            open_vault_folder,
+            backup_now,
+            backup_status,
+            github_sign_in_start,
+            github_sign_in_wait,
+            github_sign_in_cancel,
+            github_sign_out
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon.
@@ -696,6 +797,7 @@ pub fn run() {
             }
             app.manage(Mutex::new(settings.clone()));
             build_tray(handle)?;
+            backup::start(handle.clone());
             for keys in register_shortcuts(handle, &settings) {
                 notify(handle, "Shortcut unavailable", &format!("{keys} couldn't be registered. Change it in Settings."));
             }
@@ -835,6 +937,10 @@ mod tests {
             Settings { quick_note: "CmdOrCtrl+Nope".into(), ..ok.clone() },
             Settings { capture: "Alt+Shift+S".into(), ..ok.clone() },
             Settings { capture: ok.quick_note.clone(), ..ok.clone() },
+            Settings { backup_folder: "Backups".into(), ..ok.clone() },
+            Settings { backup_folder: format!("{}/Backups", ok.vault_path), ..ok.clone() },
+            Settings { github_repo: "my notes".into(), ..ok.clone() },
+            Settings { github_repo: "".into(), ..ok.clone() },
         ];
         for s in bad {
             assert!(validate(s.clone()).is_err(), "{s:?} should be refused");
@@ -867,5 +973,115 @@ mod tests {
         assert_eq!(merge_save(disk, base, "# S1\n- 20:00 A").unwrap(), "# S1\n- 20:00 A\n- 20:05 b\n");
         // Edited elsewhere (e.g. in Obsidian): refuse.
         assert_eq!(merge_save("# S1\n- 20:00 changed\n", base, "mine"), None);
+    }
+
+    #[test]
+    fn git_blob_shas() {
+        assert_eq!(github::git_blob_sha(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+        assert_eq!(github::git_blob_sha(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");
+    }
+
+    #[test]
+    fn device_flow_poll_replies() {
+        use github::{parse_poll, Poll};
+        use serde_json::json;
+        assert!(matches!(parse_poll(&json!({"error": "authorization_pending"})), Poll::Wait));
+        assert!(matches!(parse_poll(&json!({"error": "slow_down", "interval": 10})), Poll::SlowDown));
+        assert!(matches!(parse_poll(&json!({"access_token": "gho_abc", "token_type": "bearer", "scope": "repo"})), Poll::Token(t) if t == "gho_abc"));
+        assert!(matches!(parse_poll(&json!({"error": "expired_token"})), Poll::Failed(e) if e.contains("expired")));
+        assert!(matches!(parse_poll(&json!({"error": "access_denied"})), Poll::Failed(e) if e.contains("cancelled")));
+        assert!(matches!(parse_poll(&json!({"error": "device_flow_disabled"})), Poll::Failed(e) if e.contains("isn't set up")));
+        assert!(matches!(parse_poll(&json!(null)), Poll::Failed(_)));
+    }
+
+    #[test]
+    fn backup_snapshot_names_and_retention() {
+        use backup::{is_snapshot, old_snapshots, snapshot_name};
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 3, 7).unwrap();
+        assert_eq!(snapshot_name(day), "Lorekeeper backup 2026-03-07");
+        assert!(is_snapshot("Lorekeeper backup 2026-03-07"));
+        let others = ["Lorekeeper backup 2026-3-7", "Lorekeeper backup 2026-02-30", "Lorekeeper backup 2026-03-07 copy", "lorekeeper backup 2026-03-07", "Photos", ".Lorekeeper backup 2026-03-07.partial"];
+        assert!(others.iter().all(|n| !is_snapshot(n)));
+        // 35 dated folders across a year end, in any order, plus unrelated ones: only the 5 oldest dated ones go.
+        let dated: Vec<String> = (0..35).map(|i| snapshot_name(day - chrono::Days::new(120 - i * 3))).collect();
+        let mut names: Vec<String> = others.iter().map(|n| n.to_string()).chain(dated.iter().rev().cloned()).collect();
+        names.swap(3, 20);
+        let mut gone = old_snapshots(names);
+        gone.sort();
+        assert_eq!(gone, dated[..5]);
+        assert!(old_snapshots(dated[..30].to_vec()).is_empty());
+    }
+
+    #[test]
+    fn backup_folder_inside_the_vault_is_refused() {
+        let vault = Path::new("/x/Lore");
+        assert!(backup::check_folder(vault, Path::new("/x/Lore")).is_err());
+        assert!(backup::check_folder(vault, Path::new("/x/Lore/Backups")).is_err());
+        assert!(backup::check_folder(vault, Path::new("/x/Lorekeeper")).is_ok(), "a name that only starts the same is fine");
+        assert!(backup::check_folder(vault, Path::new("/x")).is_ok(), "the vault may sit inside the backup folder");
+        // ...but not inside one of the dated copies, which backups replace and prune.
+        assert!(backup::check_folder(Path::new("/b/Lorekeeper backup 2026-09-01"), Path::new("/b")).is_err());
+        assert!(backup::check_folder(Path::new("/b/Lorekeeper backup 2026-09-01/sub"), Path::new("/b")).is_err());
+        assert!(backup::check_folder(Path::new("/b/Restored/Lorekeeper backup 2026-09-01"), Path::new("/b")).is_ok());
+        // Through a symlink (macOS: /var -> /private/var), with a backup folder that doesn't exist yet.
+        let dir = temp_dir("backup-inside");
+        fs::create_dir_all(&dir).unwrap();
+        let real = fs::canonicalize(&dir).unwrap();
+        assert!(backup::check_folder(&real, &dir.join("not yet/Backups")).is_err());
+        assert!(backup::check_folder(&dir, &real.join("Backups")).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn folder_backup_round_trip() {
+        use backup::{backup_to_folder, snapshot_name};
+        let dir = temp_dir("backup-roundtrip");
+        let (vault, folder) = (dir.join("vault"), dir.join("Drive"));
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 3, 7).unwrap();
+        fs::create_dir_all(vault.join("NPCs/Villains")).unwrap();
+        fs::create_dir_all(vault.join("Items")).unwrap();
+        fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        fs::write(vault.join("NPCs/Villains/Vex.md"), "# Vex").unwrap();
+        fs::write(vault.join("Gone.md"), "soon deleted").unwrap();
+        fs::write(vault.join(".obsidian/app.json"), "{}").unwrap();
+        fs::write(vault.join(".DS_Store"), "").unwrap();
+
+        // Refused: a backup folder that isn't there (never created at backup time), a missing vault,
+        // a folder inside the vault.
+        assert!(backup_to_folder(&vault, &folder, day).is_err());
+        fs::create_dir_all(&folder).unwrap();
+        assert!(backup_to_folder(&dir.join("missing"), &folder, day).is_err());
+        fs::create_dir_all(vault.join("Backups")).unwrap();
+        assert!(backup_to_folder(&vault, &vault.join("Backups"), day).is_err());
+        fs::remove_dir(vault.join("Backups")).unwrap();
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
+
+        backup_to_folder(&vault, &folder, day).unwrap();
+        let snap = folder.join("Lorekeeper backup 2026-03-07");
+        assert_eq!(fs::read_to_string(snap.join("NPCs/Villains/Vex.md")).unwrap(), "# Vex");
+        assert!(snap.join("Gone.md").exists() && snap.join("Items").is_dir());
+        assert!(!snap.join(".obsidian").exists() && !snap.join(".DS_Store").exists());
+
+        // Same day again: today's copy is replaced, not merged, and no temp folders are left behind.
+        fs::remove_file(vault.join("Gone.md")).unwrap();
+        fs::write(vault.join("NPCs/Villains/Vex.md"), "# Vex v2").unwrap();
+        backup_to_folder(&vault, &folder, day).unwrap();
+        assert_eq!(fs::read_to_string(snap.join("NPCs/Villains/Vex.md")).unwrap(), "# Vex v2");
+        assert!(!snap.join("Gone.md").exists());
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+
+        // Pruning keeps the newest 30 dated copies and never touches anything else.
+        fs::create_dir_all(folder.join("Photos")).unwrap();
+        fs::write(folder.join("Lorekeeper backup 2020-01-01"), "a file, not a backup").unwrap();
+        for i in 1..=31 {
+            fs::create_dir_all(folder.join(snapshot_name(day - chrono::Days::new(i)))).unwrap();
+        }
+        backup_to_folder(&vault, &folder, day).unwrap();
+        let left: Vec<String> = fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left.len(), 32, "{left:?}"); // 30 copies + Photos + the file
+        assert!(left.contains(&"Photos".to_string()) && left.contains(&"Lorekeeper backup 2020-01-01".to_string()));
+        assert!(left.contains(&snapshot_name(day)) && left.contains(&snapshot_name(day - chrono::Days::new(29))));
+        assert!(!left.contains(&snapshot_name(day - chrono::Days::new(30))));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

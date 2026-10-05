@@ -1,44 +1,166 @@
 /* Layout for settings.html; colors and controls come from styles.css. */
-body { display: block; overflow-y: auto; }
-.settings { max-width: 520px; margin: 0 auto; padding: 18px 24px 28px; }
-.settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-h1 { margin: 0 0 8px; font-size: 20px; }
-#saved-status { margin: 0; color: var(--muted); font-size: 13px; }
-section { padding: 14px 0 10px; border-top: 1px solid var(--line); }
-h2 {
-  margin: 0 0 10px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---------- tab bar: macOS toolbar (icon above label), plain strip elsewhere ---------- */
+.tabbar {
+  position: relative;
+  flex: none;
+  padding: 8px 16px;
+  background: var(--side);
+  border-bottom: 1px solid var(--line);
 }
-.row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; margin: 6px 0; }
-.row select { grid-column: 2 / -1; justify-self: end; }
-.row kbd { font-size: 13px; padding: 3px 8px; min-width: 6ch; text-align: center; }
-.row kbd.recording { border-color: var(--accent-text); color: var(--accent-text); }
-.check { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.tabs { display: flex; justify-content: center; gap: 4px; }
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 80px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+}
+.tab svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tab .teeth { stroke-width: 3; stroke-dasharray: 3.34 3.34; stroke-linecap: butt; }
+.tab:hover { color: var(--fg); }
+.tab[aria-selected="true"] { background: var(--hover); color: var(--fg); }
+.tab[aria-selected="true"] svg { color: var(--accent-text); }
+#saved-status {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+:root:not([data-platform="macos"]) .tabbar { padding: 0 16px; background: var(--bg); }
+:root:not([data-platform="macos"]) .tabs { justify-content: flex-start; gap: 0; }
+:root:not([data-platform="macos"]) .tab {
+  min-width: 0;
+  margin-bottom: -1px;
+  padding: 8px 16px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+:root:not([data-platform="macos"]) .tab svg { display: none; }
+:root:not([data-platform="macos"]) .tab[aria-selected="true"] {
+  background: transparent;
+  border-bottom-color: var(--accent-text);
+  font-weight: 600;
+}
+:root:not([data-platform="macos"]) .tab:hover { background: var(--hover); }
+/* Inset ring: the strip touches the window edge, which would clip an outside one. */
+:root:not([data-platform="macos"]) .tab:focus-visible { outline-offset: -4px; }
+
+/* ---------- panels: each scrolls on its own, so Backups' position doesn't leak into other tabs ---------- */
+.panel { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 24px; }
+h2 { margin: 16px 0 8px 8px; font-size: 13px; font-weight: 600; }
+.card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.panel > .hint { margin: 8px 8px 0; }
+
+/* A row: label left, control right; errors, status and help span the full width below. */
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 16px;
+  min-height: 40px;
+  padding: 8px 16px;
+}
+.row + .row { border-top: 1px solid var(--line); }
+.row > p:not(.backup-status), .row > p.backup-status:not(:first-child) { grid-column: 1 / -1; }
+.row-label { min-width: 0; }
+.row-label > span { display: block; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.card button { padding: 4px 12px; font-size: 13px; }
+
+/* Kept in the page while empty so screen readers announce new text; no gaps while empty. */
+.error { margin: 0; color: var(--accent-text); font-size: 13px; }
+.row > .error:not(:empty) { margin-top: 8px; }
+.card > .error:not(:empty) { padding: 0 16px 8px; }
+.hint { margin: 0; color: var(--muted); font-size: 12px; }
+.row > .hint { margin-top: 8px; }
+.path, .sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.path { margin-top: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.backup-status { margin: 0; font-size: 13px; }
+.row > .backup-status:not(:first-child):not(:empty) { margin-top: 8px; }
+.gh-step { margin: 0; }
+/* The device code needs the full width; its buttons go below it. */
+#gh-flow { grid-template-columns: minmax(0, 1fr); }
+#gh-flow .actions { justify-content: flex-start; margin-top: 8px; }
+.gh-code {
+  margin: 4px 0 0;
+  font: 600 24px/32px ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  user-select: all;
+}
+
+/* ---------- controls ---------- */
+kbd { font-size: 13px; padding: 2px 8px; min-width: 6ch; text-align: center; }
+kbd.recording { border-color: var(--accent-text); color: var(--accent-text); }
 select {
-  padding: 5px 8px;
+  padding: 4px 8px;
   border: 1px solid var(--control-border);
   border-radius: 7px;
   background: var(--panel);
   color: var(--fg);
   font: inherit;
+  font-size: 13px;
 }
-input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
-input[type="checkbox"] { width: 16px; height: 16px; margin: 0; }
-output { min-width: 4ch; color: var(--muted); font-variant-numeric: tabular-nums; }
-.path {
-  margin: 0 0 8px;
-  padding: 6px 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--panel);
-  font: 12px ui-monospace, Menlo, Consolas, monospace;
-  overflow-wrap: anywhere;
+input[type="range"] { width: 160px; margin: 0; accent-color: var(--accent); }
+output { min-width: 5ch; color: var(--muted); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+input[role="switch"] {
+  appearance: none;
+  position: relative;
+  width: 32px;
+  height: 20px;
+  margin: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 10px;
+  background: var(--hover);
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
 }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
-/* Kept in the page while empty so screen readers announce new text. */
-.error { margin: 0; color: var(--accent-text); font-size: 13px; }
-.error:not(:empty) { margin: 2px 0 6px; }
+input[role="switch"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--control-border);
+  transition: transform 0.15s;
+}
+input[role="switch"]:checked { background: var(--accent); border-color: var(--accent-text); }
+input[role="switch"]:checked::before { transform: translateX(12px); background: #fff; }
+@media (prefers-reduced-motion: reduce) {
+  input[role="switch"], input[role="switch"]::before { transition: none; }
+}

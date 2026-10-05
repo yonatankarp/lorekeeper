@@ -7,46 +7,89 @@
     <link rel="stylesheet" href="settings.css" />
   </head>
   <body>
-    <div class="settings">
-      <header class="settings-head">
-        <h1>Settings</h1>
-        <p id="saved-status" role="status"></p>
-      </header>
+    <h1 class="sr-only">Settings</h1>
+    <header class="tabbar">
+      <div class="tabs" id="tabs" role="tablist" aria-label="Settings">
+        <button type="button" class="tab" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.5" /><circle cx="12" cy="12" r="2.5" /><circle class="teeth" cx="12" cy="12" r="8.5" /></svg>
+          <span>General</span>
+        </button>
+        <button type="button" class="tab" role="tab" id="tab-hotkeys" aria-controls="panel-hotkeys" aria-selected="false" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 9.5h1M9.5 9.5h1M13 9.5h1M16.5 9.5h1M6 12h1M17 12h1M8 14.5h8" /></svg>
+          <span>Hotkeys</span>
+        </button>
+        <button type="button" class="tab" role="tab" id="tab-appearance" aria-controls="panel-appearance" aria-selected="false" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" /></svg>
+          <span>Appearance</span>
+        </button>
+        <button type="button" class="tab" role="tab" id="tab-backups" aria-controls="panel-backups" aria-selected="false" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5" /><path d="M3.5 4v4.5H8" /><path d="M12 7.5V12l3 2" /></svg>
+          <span>Backups</span>
+        </button>
+      </div>
+      <p id="saved-status" role="status"></p>
+    </header>
 
-      <section aria-labelledby="h-hotkeys">
-        <h2 id="h-hotkeys">Hotkeys</h2>
+    <section class="panel" role="tabpanel" id="panel-general" aria-labelledby="tab-general">
+      <h2>Notes folder</h2>
+      <div class="card">
+        <div class="row">
+          <span>Location</span>
+          <div class="actions">
+            <button type="button" class="ghost" id="choose">Choose…</button>
+            <button type="button" class="ghost" id="reveal">Show in <span class="file-manager">Finder</span></button>
+          </div>
+          <p class="path" id="vaultPath"></p>
+          <p class="error" id="vaultPath-error" role="alert"></p>
+        </div>
+      </div>
+      <p class="hint">Existing notes stay where they are. Move them in <span class="file-manager">Finder</span> if you want them in the new folder. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
+
+      <h2>Startup &amp; notifications</h2>
+      <div class="card">
+        <div class="row">
+          <label for="launchAtLogin">Launch at login</label>
+          <input type="checkbox" role="switch" id="launchAtLogin" data-setting="launchAtLogin" />
+          <p class="error" id="launchAtLogin-error" role="alert"></p>
+        </div>
+        <div class="row">
+          <label for="notifications">Show a notification when a note is saved</label>
+          <input type="checkbox" role="switch" id="notifications" data-setting="notifications" />
+          <p class="error" id="notifications-error" role="alert"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" role="tabpanel" id="panel-hotkeys" aria-labelledby="tab-hotkeys" hidden>
+      <h2>Global shortcuts</h2>
+      <div class="card">
         <div class="row">
           <span id="quickNote-label">Quick note</span>
-          <kbd id="quickNote-keys"></kbd>
-          <button type="button" class="ghost" data-record="quickNote" aria-describedby="quickNote-keys">
-            Record<span class="sr-only"> Quick note shortcut</span>
-          </button>
+          <div class="actions">
+            <kbd id="quickNote-keys"></kbd>
+            <button type="button" class="ghost" data-record="quickNote" aria-describedby="quickNote-keys">
+              Record<span class="sr-only"> Quick note shortcut</span>
+            </button>
+          </div>
+          <p class="error" id="quickNote-error" role="alert"></p>
         </div>
-        <p class="error" id="quickNote-error" role="alert"></p>
         <div class="row">
           <span id="capture-label">Save selection</span>
-          <kbd id="capture-keys"></kbd>
-          <button type="button" class="ghost" data-record="capture" aria-describedby="capture-keys">
-            Record<span class="sr-only"> Save selection shortcut</span>
-          </button>
+          <div class="actions">
+            <kbd id="capture-keys"></kbd>
+            <button type="button" class="ghost" data-record="capture" aria-describedby="capture-keys">
+              Record<span class="sr-only"> Save selection shortcut</span>
+            </button>
+          </div>
+          <p class="error" id="capture-error" role="alert"></p>
         </div>
-        <p class="error" id="capture-error" role="alert"></p>
-        <p class="hint">Press Record, then the new combination. Esc cancels. The Save selection shortcut must include <span class="primary-key">⌘</span>.</p>
-      </section>
+      </div>
+      <p class="hint">Press Record, then the new combination. Esc cancels. The Save selection shortcut must include <span class="primary-key">⌘</span>.</p>
+    </section>
 
-      <section aria-labelledby="h-folder">
-        <h2 id="h-folder">Notes folder</h2>
-        <p class="path" id="vaultPath"></p>
-        <div class="actions">
-          <button type="button" class="ghost" id="choose">Choose…</button>
-          <button type="button" class="ghost" id="reveal">Show in <span class="file-manager">Finder</span></button>
-        </div>
-        <p class="error" id="vaultPath-error" role="alert"></p>
-        <p class="hint">Existing notes stay where they are. Move them in <span class="file-manager">Finder</span> if you want them in the new folder. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
-      </section>
-
-      <section aria-labelledby="h-appearance">
-        <h2 id="h-appearance">Appearance</h2>
+    <section class="panel" role="tabpanel" id="panel-appearance" aria-labelledby="tab-appearance" hidden>
+      <h2>Display</h2>
+      <div class="card">
         <div class="row">
           <label for="theme">Theme</label>
           <select id="theme" data-setting="theme">
@@ -54,32 +97,82 @@
             <option value="light">Light</option>
             <option value="dark">Dark</option>
           </select>
+          <p class="error" id="theme-error" role="alert"></p>
         </div>
-        <p class="error" id="theme-error" role="alert"></p>
         <div class="row">
           <label for="editorFontSize">Editor font size</label>
-          <input type="range" id="editorFontSize" data-setting="editorFontSize" min="11" max="24" step="1" />
-          <output id="editorFontSize-value" for="editorFontSize"></output>
+          <div class="actions">
+            <input type="range" id="editorFontSize" data-setting="editorFontSize" min="11" max="24" step="1" />
+            <output id="editorFontSize-value" for="editorFontSize"></output>
+          </div>
+          <p class="error" id="editorFontSize-error" role="alert"></p>
         </div>
-        <p class="error" id="editorFontSize-error" role="alert"></p>
         <div class="row">
           <label for="sessionView">Default session view</label>
           <select id="sessionView" data-setting="sessionView">
             <option value="timeline">Timeline</option>
             <option value="journal">Journal</option>
           </select>
+          <p class="error" id="sessionView-error" role="alert"></p>
         </div>
-        <p class="error" id="sessionView-error" role="alert"></p>
-      </section>
+      </div>
+    </section>
 
-      <section aria-labelledby="h-startup">
-        <h2 id="h-startup">Startup &amp; notifications</h2>
-        <label class="check"><input type="checkbox" data-setting="launchAtLogin" /> Launch at login</label>
-        <p class="error" id="launchAtLogin-error" role="alert"></p>
-        <label class="check"><input type="checkbox" data-setting="notifications" /> Show a notification when a note is saved</label>
-        <p class="error" id="notifications-error" role="alert"></p>
-      </section>
-    </div>
+    <section class="panel" role="tabpanel" id="panel-backups" aria-labelledby="tab-backups" hidden>
+      <h2>Back up to a folder</h2>
+      <div class="card">
+        <div class="row">
+          <span>Folder</span>
+          <div class="actions">
+            <button type="button" class="ghost" id="backup-choose">Choose…</button>
+            <button type="button" class="ghost" id="backup-off">Turn off</button>
+          </div>
+          <p class="path" id="backupFolder"></p>
+          <p class="error" id="backupFolder-error" role="alert"></p>
+        </div>
+        <div class="row">
+          <p class="backup-status" id="folder-status" role="status"></p>
+          <button type="button" class="ghost" id="backup-now">Back up now</button>
+          <p class="error" id="folder-run-error" role="alert"></p>
+        </div>
+      </div>
+      <p class="hint">Pick a folder inside Google Drive, Dropbox, OneDrive or iCloud Drive (their desktop apps upload it for you), or a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days.</p>
+
+      <h2>Back up to GitHub</h2>
+      <div class="card">
+        <div class="row" id="gh-signed-out">
+          <span>GitHub account</span>
+          <button type="button" class="ghost" id="gh-sign-in">Sign in with GitHub</button>
+          <p class="hint" id="gh-unavailable" hidden>GitHub backup isn't set up in this build yet.</p>
+        </div>
+        <div class="row" id="gh-flow" hidden>
+          <div class="row-label">
+            <p class="gh-step">On github.com, enter this code:</p>
+            <p class="gh-code" id="gh-code"></p>
+          </div>
+          <div class="actions">
+            <button type="button" class="ghost" id="gh-copy">Copy code</button>
+            <button type="button" class="ghost" id="gh-open">Open github.com</button>
+            <button type="button" class="ghost" id="gh-cancel">Cancel</button>
+          </div>
+          <p class="hint" role="status">Waiting for you to approve…</p>
+        </div>
+        <div class="row" id="gh-signed-in" hidden>
+          <div class="row-label">
+            <p class="gh-step">Signed in as <strong id="gh-login"></strong>.</p>
+            <p class="sub">Notes go to <a href="#" id="gh-repo"></a>.</p>
+          </div>
+          <div class="actions">
+            <button type="button" class="ghost" id="gh-now">Back up now</button>
+            <button type="button" class="ghost" id="gh-sign-out">Sign out</button>
+          </div>
+          <p class="backup-status" id="github-status" role="status"></p>
+          <p class="error" id="github-run-error" role="alert"></p>
+        </div>
+        <p class="error" id="github-error" role="alert"></p>
+      </div>
+      <p class="hint">Every backup is saved as a version, so you can see or restore notes from any point.</p>
+    </section>
     <script type="module" src="settings.js"></script>
   </body>
 </html>

@@ -8,6 +8,11 @@ import { applyTheme } from "./theme.js";
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
+const { platform } = document.documentElement.dataset; // set by platform.js
+const mac = platform === "macos";
+const windows = platform === "windows";
+const linux = !mac && !windows;
+const tauriWindow = window.__TAURI__.window?.getCurrentWindow();
 
 let vault = { folders: [], notes: [], currentSession: "" };
 let templates = []; // Templates/ notes: used by "New page", hidden everywhere else
@@ -97,12 +102,15 @@ function propsHtml(props) {
 
 // ---------- sidebar ----------
 
+/** The template whose pages live in `folder`, or "". */
+const templateFor = (folder) => templates.map((t) => baseName(t.path)).find((t) => folderFor(t, vault.folders) === folder) ?? "";
+
 function treeHtml(node) {
   const dirs = node.dirs
     .map((d) => {
       const n = d.files.length;
       const count = n ? `<span class="sr-only">, </span>${n}<span class="sr-only"> page${n === 1 ? "" : "s"}</span>` : "";
-      const tpl = templates.map((t) => baseName(t.path)).find((t) => folderFor(t, vault.folders) === d.path) ?? "";
+      const tpl = templateFor(d.path);
       const empty = `<button type="button" class="folder-new" data-template="${escape(tpl)}" data-folder="${escape(d.path)}">+ New ${escape(tpl || "page")}</button>`;
       return `<details data-folder="${escape(d.path)}"${closedFolders.has(d.path) ? "" : " open"}>
         <summary>${escape(d.name)}<span class="count">${count}</span></summary>
@@ -443,23 +451,132 @@ $("keep-mine").addEventListener("click", async () => {
   saving = save().finally(() => (saving = null));
 });
 
+// ---------- menu bar, shortcuts, context menu ----------
+
+const zoomKey = (key) => () => window.dispatchEvent(new KeyboardEvent("keydown", { key, metaKey: mac, ctrlKey: !mac }));
+
+/** What the menu bar and the keyboard shortcuts do; each reuses the button or function behind it. */
+const actions = {
+  search: () => $("search").focus(),
+  toggle: () => current && $("toggle").click(),
+  newPage: () => $("new-dialog").open || openNewDialog(),
+  newSession: () => $("new-session").click(),
+  obsidian: () => current && vault.hasObsidian && $("obsidian").click(),
+  settings: () => invoke("open_settings").catch(say),
+  // Tauri's zoom-hotkey.js (zoomHotkeysEnabled, macOS/Linux) owns the zoom level; drive it with the key it listens for.
+  zoomIn: zoomKey("="),
+  zoomOut: zoomKey("-"),
+  zoomReset: zoomKey("0"),
+};
+const ZOOM = { "=": "zoomIn", "+": "zoomIn", "-": "zoomOut", "0": "zoomReset" };
+
+let last = { name: "", at: 0 };
+/** Runs an action once per key press: where both the keydown and the menu accelerator arrive, the second is dropped. */
+function run(name) {
+  const now = performance.now();
+  if (name === last.name && now - last.at < 300) return;
+  last = { name, at: now };
+  if (name !== "settings") {
+    // The macOS menu is app-wide: Cmd+N typed in the quick-note box must not act on this window while it's hidden.
+    if (document.visibilityState === "hidden") return;
+    if (!document.hasFocus()) tauriWindow?.setFocus().catch(() => {});
+  }
+  actions[name]();
+}
+
 document.addEventListener("keydown", (e) => {
-  const mod = e.metaKey || e.ctrlKey;
-  if (!mod) return;
+  if (!(e.metaKey || e.ctrlKey)) return;
   const key = e.key.toLowerCase();
-  if (key === "k") $("search").focus();
-  else if (key === "e" && current) $("toggle").click();
-  else if (key === "n" && !$("new-dialog").open) openNewDialog();
-  else if (key === ",") invoke("open_settings").catch(say);
-  else return;
-  e.preventDefault();
+  // The zoom polyfill zooms on this same keydown; marking it handled stops the View menu accelerator zooming again.
+  if (!windows && ZOOM[key]) {
+    last = { name: ZOOM[key], at: performance.now() };
+    return e.preventDefault();
+  }
+  const name = key === "n" && e.shiftKey ? "newSession" : { k: "search", e: "toggle", n: "newPage", ",": "settings" }[key];
+  if (!name) return;
+  e.preventDefault(); // also keeps the matching menu accelerator from firing on macOS
+  run(name);
 });
+
+/** The native menu bar: app-wide on macOS (replacing Tauri's default one), the main window's own menu bar elsewhere. */
+async function buildMenu() {
+  const Menu = window.__TAURI__.menu?.Menu;
+  if (!Menu) return;
+  const sep = { item: "Separator" };
+  const linuxOk = ["Separator", "Cut", "Copy", "Paste", "SelectAll"]; // GTK greys out the other predefined items
+  const predefined = (...names) => names.filter((n) => !linux || linuxOk.includes(n)).map((item) => ({ item }));
+  const item = (text, name, accelerator) => ({ text, accelerator, action: () => run(name) });
+  const version = await window.__TAURI__.app?.getVersion().catch(() => undefined);
+  const menu = await Menu.new({
+    items: [
+      { text: "Lorekeeper", items: [
+        { item: { About: { name: "Lorekeeper", version } } },
+        sep,
+        item("Settings…", "settings", "CmdOrCtrl+,"),
+        ...(mac ? [sep, { item: "Services" }, sep, ...predefined("Hide", "HideOthers", "ShowAll"), sep, { item: "Quit" }] : []),
+      ] },
+      { text: "File", items: [
+        item("New Page", "newPage", "CmdOrCtrl+N"),
+        item("New Session", "newSession", "CmdOrCtrl+Shift+N"),
+        sep,
+        item("Open in Obsidian", "obsidian"),
+      ] },
+      { text: "Edit", items: predefined("Undo", "Redo", "Separator", "Cut", "Copy", "Paste", "SelectAll") },
+      { text: "View", items: [
+        item("Edit / Preview", "toggle", "CmdOrCtrl+E"),
+        item("Search", "search", "CmdOrCtrl+K"),
+        // Windows zooms natively in WebView2, with no level the page can drive.
+        ...(windows ? [] : [sep, item("Zoom In", "zoomIn", "CmdOrCtrl+="), item("Zoom Out", "zoomOut", "CmdOrCtrl+-"), item("Actual Size", "zoomReset", "CmdOrCtrl+0")]),
+        ...(mac ? [sep, { item: "Fullscreen" }] : []),
+      ] },
+      // Tauri's Window-menu id: set_menu registers it with AppKit, which adds the open-window list.
+      ...(linux ? [] : [{ id: "__tauri_window_menu__", text: "Window", items: predefined("Minimize", "Maximize", "Separator", "CloseWindow") }]),
+    ],
+  });
+  await (mac ? menu.setAsAppMenu() : menu.setAsWindowMenu());
+}
+
+function copyLink(path) {
+  const text = `[[${baseName(path)}]]`;
+  // A native menu click isn't a user gesture, so WebKit may refuse; plain text, since copy_html also writes HTML, which Obsidian converts on paste.
+  navigator.clipboard.writeText(text)
+    .catch(() => invoke("plugin:clipboard-manager|write_text", { text }))
+    .then(() => say(`Copied ${text}`), (err) => say(`Copy failed: ${err}`));
+}
+
+$("sidebar").addEventListener("contextmenu", (e) => {
+  const Menu = window.__TAURI__.menu?.Menu;
+  const file = e.target.closest(".file")?.dataset.path;
+  const folder = e.target.closest("summary")?.parentElement.dataset.folder;
+  if (!Menu || (file === undefined && folder === undefined)) return;
+  e.preventDefault();
+  const reveal = mac ? "Show Vault in Finder" : windows ? "Show Vault in Explorer" : "Open Vault Folder";
+  const items = file !== undefined
+    ? [
+        { text: "Open", action: () => open(file) },
+        ...(vault.hasObsidian ? [{ text: "Open in Obsidian", action: () => invoke("open_in_obsidian", { path: file }).catch(say) }] : []),
+        { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
+        { item: "Separator" },
+        { text: "Copy Link", action: () => copyLink(file) },
+      ]
+    : [{ text: "New Page Here…", action: () => openNewDialog("", { template: templateFor(folder), folder }) }];
+  // ponytail: one small menu resource per right-click is never closed; call close() after popup if that ever matters.
+  Menu.new({ items }).then((m) => m.popup()).catch(say);
+});
+
+if (mac) {
+  // The title bar overlays the page (tauri.conf.json): the sidebar's top strip and the header move the window.
+  $("sidebar").dataset.tauriDragRegion = ""; // only its own padding, not the rows inside it
+  $("bar").dataset.tauriDragRegion = "deep"; // anywhere but its buttons
+}
 
 /** Theme, editor font size and the default session view from the Settings window. */
 function applySettings(next) {
   const prev = settings;
   settings = { ...settings, ...next };
   applyTheme(settings.theme);
+  // Native appearance follows too (the sidebar material, title bar, menus); on macOS this is app-wide.
+  tauriWindow?.setTheme(settings.theme === "light" || settings.theme === "dark" ? settings.theme : null).catch(() => {});
   editor?.setFontSize(settings.editorFontSize);
   if (settings.sessionView !== prev.sessionView) sessionView = settings.sessionView;
   if (prev.vaultPath !== undefined && settings.vaultPath !== prev.vaultPath) refresh();
@@ -475,3 +592,4 @@ window.addEventListener("beforeunload", flush);
 applySettings(await invoke("get_settings").catch(() => ({})));
 await refresh();
 open(vault.currentSession || null);
+buildMenu().catch((err) => console.error("menu:", err));
