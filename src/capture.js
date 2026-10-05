@@ -58,13 +58,14 @@ function accept() {
 }
 
 // Shows where the note went before closing; on failure the draft comes back so nothing is lost.
-async function save() {
+async function save(startNew = false) {
   const draft = input.value, old = editing;
   saving = input.readOnly = hint.hidden = true;
   matches = [];
   render();
   try {
-    const done = old === null ? `Saved to ${await invoke("save_note", { text: draft })}` : await invoke("fix_note", { old, text: draft });
+    // Fixing the last note keeps it where it is, so ⌘Enter only starts a new session for a new note.
+    const done = old === null ? `Saved to ${await invoke("save_note", { text: draft, startNew })}` : await invoke("fix_note", { old, text: draft });
     input.value = `✓ ${done}`;
     await wait(700);
     dismiss();
@@ -97,7 +98,7 @@ input.addEventListener("keydown", (e) => {
     // First Escape drops a showing suggestion, the next one closes the box.
     if (matches.length) { matches = []; render(); } else dismiss();
   } else if (e.key === "Enter") {
-    if (input.value.trim()) save(); else dismiss();
+    if (input.value.trim()) save((e.metaKey || e.ctrlKey) && document.body.classList.contains("stale")); else dismiss();
   }
 });
 // The macOS menu bar is app-wide, and its Undo / Redo items act on the main window: undo typing here instead,
@@ -116,6 +117,15 @@ window.addEventListener("focus", () => {
 });
 // Clicking away hides the box but keeps the draft for next time.
 window.addEventListener("blur", () => invoke("dismiss", { restoreFocus: false }));
+
+// Offers a new session when the current one has gone quiet for 12+ hours (session_status); Enter still saves to it.
+const stale = document.getElementById("stale");
+const mod = navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl+";
+const ago = (h) => (h < 48 ? `${h} hours` : `${Math.floor(h / 24)} days`);
+window.addEventListener("focus", () => invoke("session_status").then((s) => {
+  document.body.classList.toggle("stale", !!s);
+  if (s) stale.textContent = `Last note was ${ago(s.idleHours)} ago. ${mod}Enter saves to a new Session ${s.next}.`;
+}));
 
 invoke("get_settings").then((s) => applyTheme(s.theme));
 listen("settings-changed", (e) => applyTheme(e.payload.theme));

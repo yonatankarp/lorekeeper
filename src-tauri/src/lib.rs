@@ -187,6 +187,31 @@ fn fix_last_note(dir: &Path, old: &str, text: &str) -> io::Result<bool> {
     Ok(false)
 }
 
+/// Whole hours since `modified` when that is 12 or more: time to offer a new session.
+fn stale_hours(modified: std::time::SystemTime, now: std::time::SystemTime) -> Option<u64> {
+    let hours = now.duration_since(modified).ok()?.as_secs() / 3600;
+    (hours >= 12).then_some(hours)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StaleSession {
+    next: u32,
+    idle_hours: u64,
+}
+
+/// The newest session when its file hasn't changed in 12 hours. A fresh vault or a session with
+/// no notes yet has none (and no file gets created).
+fn stale_session(dir: &Path, now: std::time::SystemTime) -> io::Result<Option<StaleSession>> {
+    let n = latest_session(dir)?;
+    let path = session_path(dir, n);
+    if n == 0 || !fs::read_to_string(&path)?.lines().any(|l| l.starts_with("- ")) {
+        return Ok(None);
+    }
+    let modified = fs::metadata(path)?.modified()?;
+    Ok(stale_hours(modified, now).map(|idle_hours| StaleSession { next: n + 1, idle_hours }))
+}
+
 /// Turns a path from the webview into a file inside the vault. Only plain relative `.md`
 /// paths pass: no `..`, no absolute paths or drive prefixes.
 fn vault_file(root: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -644,9 +669,10 @@ fn open_new_page(app: &AppHandle) {
 
 /// From the quick box. Returns the session the note went into ("Session 3") for the box to show.
 #[tauri::command]
-fn save_note(app: AppHandle, text: String) -> Result<String, String> {
+fn save_note(app: AppHandle, text: String, start_new: Option<bool>) -> Result<String, String> {
     let dir = notes_dir(&app);
-    match append_note(&dir, &text).and_then(|_| current_session(&dir)) {
+    let fresh = if start_new == Some(true) { new_session(&dir).map(|_| backup::request(false)) } else { Ok(()) };
+    match fresh.and_then(|_| append_note(&dir, &text)).and_then(|_| current_session(&dir)) {
         Ok(path) => {
             emit_changed(&app);
             Ok(path.file_stem().unwrap_or_default().to_string_lossy().into_owned())
@@ -831,6 +857,12 @@ fn start_session(app: AppHandle) -> Result<String, String> {
     emit_changed(&app);
     backup::request(false); // captures the session that just ended
     Ok(rel_path(&root, &path))
+}
+
+/// For the quick box: offers "Start Session N?" when the current session has gone quiet.
+#[tauri::command]
+fn session_status(app: AppHandle) -> Option<StaleSession> {
+    stale_session(&notes_dir(&app), std::time::SystemTime::now()).ok().flatten()
 }
 
 /// Opens a page in Obsidian. Outside a vault it can't, so the window shows how to add the notes folder;
@@ -1089,6 +1121,7 @@ pub fn run() {
             create_file,
             delete_file,
             start_session,
+            session_status,
             open_in_obsidian,
             open_url,
             copy_html,
@@ -1241,6 +1274,29 @@ mod tests {
         assert!(!fix_last_note(&dir, "Mirela the innkeeper", "Mirela the elf").unwrap());
         let notes: Vec<String> = fs::read_to_string(session_path(&dir, 1)).unwrap().lines().filter_map(|l| Some(note_line(l)?.1.to_owned())).collect();
         assert_eq!(notes, ["Mirela the innkeeper", "#potion", "Mirela the elf"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_prompt() {
+        let t = |h: u64, m: u64| std::time::UNIX_EPOCH + Duration::from_secs(h * 3600 + m * 60);
+        assert_eq!(stale_hours(t(0, 0), t(11, 59)), None);
+        assert_eq!(stale_hours(t(0, 0), t(12, 0)), Some(12));
+        assert_eq!(stale_hours(t(0, 0), t(72, 30)), Some(72));
+        assert_eq!(stale_hours(t(5, 0), t(0, 0)), None, "a file from the future isn't stale");
+
+        // A fresh vault gets no prompt and no session file; an old session offers the next one.
+        let dir = temp_dir("stale");
+        let far = std::time::SystemTime::now() + Duration::from_secs(1000 * 3600);
+        assert!(stale_session(&dir, far).unwrap().is_none());
+        assert_eq!(latest_session(&dir).unwrap(), 0);
+        append_note(&dir, "the party rests").unwrap();
+        assert!(stale_session(&dir, std::time::SystemTime::now()).unwrap().is_none());
+        let later = std::time::SystemTime::now() + Duration::from_secs(13 * 3600 + 60);
+        let s = stale_session(&dir, later).unwrap().unwrap();
+        assert_eq!((s.next, s.idle_hours), (2, 13));
+        new_session(&dir).unwrap();
+        assert!(stale_session(&dir, far).unwrap().is_none(), "a session without notes isn't stale");
         fs::remove_dir_all(&dir).unwrap();
     }
 

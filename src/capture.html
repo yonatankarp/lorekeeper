@@ -22,13 +22,18 @@
       #ghost { position: absolute; inset: 0; display: flex; align-items: center; white-space: pre; overflow: hidden; color: transparent; }
       #rest { color: var(--ghost); }
       #hint { position: absolute; top: 5px; right: 12px; font: 12px "Bookinsanity", Georgia, serif; color: var(--muted); pointer-events: none; }
+      /* "Start Session N?" under the note when the session has gone quiet; the note row shrinks to make room. */
+      #stale { display: none; position: absolute; left: 18px; right: 18px; bottom: 8px; font: 13px "Bookinsanity", Georgia, serif; color: var(--muted); }
+      body.stale #stale { display: block; }
+      body.stale input, body.stale #ghost { height: 40px; }
     </style>
   </head>
   <body>
     <div id="ghost" aria-hidden="true"><span id="typed"></span><span id="rest"></span></div>
-    <input id="note" aria-label="Session note" autocomplete="off" spellcheck="true" autofocus
+    <input id="note" aria-label="Session note" aria-describedby="stale" autocomplete="off" spellcheck="true" autofocus
            placeholder='Note…   @npc  #loot  !quest  ?mystery  "quote' />
     <div id="hint" hidden>Editing last note - Esc to cancel</div>
+    <div id="stale"></div>
     <script type="module" src="capture.js"></script>
   </body>
 </html>
