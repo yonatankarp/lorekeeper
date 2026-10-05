@@ -158,6 +158,6 @@ export function renameLinks(md, from, to, paths) {
     let name = old.slice(0, old.lastIndexOf("/") + 1) + baseName(to);
     if (resolve(name, after) !== to) name = to.replace(/\.md$/i, "");
     if (/\.md$/i.test(old)) name += ".md";
-    return `${bang}[[${target.replace(old, name)}${heading}${alias === undefined ? "" : `|${alias}`}]]`;
+    return `${bang}[[${target.replace(old, () => name)}${heading}${alias === undefined ? "" : `|${alias}`}]]`;
   });
 }

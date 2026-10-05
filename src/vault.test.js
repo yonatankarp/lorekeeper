@@ -126,5 +126,6 @@ test("renaming a page rewrites the links to it, and only those", async () => {
   // Case-only rename, and a new name that a shorter path already has: the link keeps pointing at the renamed page.
   assert.equal(renameLinks("[[mirela]] [[MIRELA|x]]", "NPCs/Mirela.md", "NPCs/mirela.md", paths), "[[mirela]] [[mirela|x]]");
   assert.equal(renameLinks("[[Phandalin]]", "Locations/Phandalin.md", "Locations/Mirela.md", paths), "[[Locations/Mirela]]");
+  assert.equal(renameLinks("[[Mirela]]", "NPCs/Mirela.md", "NPCs/Ca$$ Shop.md", paths), "[[Ca$$ Shop]]");
   assert.equal(renameLinks("no links", "NPCs/Mirela.md", "NPCs/Mira.md", paths), "no links");
 });
