@@ -9,6 +9,8 @@ pnpm test          # node tests + cargo test
 pnpm vendor        # rebuild src/vendor (marked, CodeMirror) after changing editor-src/ or those versions
 ```
 
+Google Drive sign-in also needs the Desktop client's secret at build time (Google requires it even with PKCE; for installed apps it isn't treated as confidential, but it's kept out of the source). Release builds get it from the Actions secret `LOREKEEPER_GOOGLE_CLIENT_SECRET`; for local builds keep it in `~/.tauri/lorekeeper-google-client-secret` and prefix the build with `LOREKEEPER_GOOGLE_CLIENT_SECRET="$(cat ~/.tauri/lorekeeper-google-client-secret)"`. Without it, Settings says Google Drive backup isn't set up.
+
 Local release builds need the update signing key, or skip the update files:
 
 ```bash

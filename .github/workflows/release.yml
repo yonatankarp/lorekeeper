@@ -60,6 +60,8 @@ jobs:
           # Signs the update files (.sig) that the app checks against plugins.updater.pubkey.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Compiled into the app (see src-tauri/src/cloud.rs); kept out of the source.
+          LOREKEEPER_GOOGLE_CLIENT_SECRET: ${{ secrets.LOREKEEPER_GOOGLE_CLIENT_SECRET }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', '__VERSION__') }}
           releaseName: Lorekeeper __VERSION__

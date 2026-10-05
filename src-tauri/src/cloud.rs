@@ -27,6 +27,14 @@ use crate::{dropbox, gdrive, github};
 /// Public client IDs of the Lorekeeper apps registered with each provider (see docs/DEVELOPMENT.md).
 /// Empty: the Settings window says that backup isn't set up in this build.
 pub const DROPBOX_APP_KEY: &str = "m7ph6dy364xcvi4";
+/// Google's token endpoint insists on the Desktop client's secret even with PKCE. For installed apps
+/// Google treats it as public ("the client secret is obviously not treated as a secret"): it identifies
+/// the app, it can't read anyone's data without that person's consent. It's kept out of the source
+/// and compiled in from LOREKEEPER_GOOGLE_CLIENT_SECRET (a GitHub Actions secret in release builds).
+pub const GOOGLE_CLIENT_SECRET: &str = match option_env!("LOREKEEPER_GOOGLE_CLIENT_SECRET") {
+    Some(secret) => secret,
+    None => "",
+};
 pub const GOOGLE_CLIENT_ID: &str = "159297619332-dqarcjgn49pg93g5k6ouidvtfrnjgrbv.apps.googleusercontent.com";
 
 /// Dropbox only accepts redirect URIs registered with their exact port.
@@ -57,6 +65,11 @@ impl Provider {
             Provider::Dropbox => "Dropbox",
             Provider::Google => "Google Drive",
         }
+    }
+
+    /// Whether this build has what signing in needs (Google also needs its build-time secret).
+    pub fn configured(self) -> bool {
+        !self.client_id().is_empty() && (self != Provider::Google || !GOOGLE_CLIENT_SECRET.is_empty())
     }
 
     pub fn client_id(self) -> &'static str {
@@ -166,6 +179,10 @@ pub fn bearer(token: &str) -> String {
 }
 
 fn token_request(p: Provider, form: &[(&str, &str)]) -> Result<Value, String> {
+    let mut form = form.to_vec();
+    if p == Provider::Google && !GOOGLE_CLIENT_SECRET.is_empty() {
+        form.push(("client_secret", GOOGLE_CLIENT_SECRET));
+    }
     let reply = call(p, || github::AGENT.post(p.token_url()).header("Accept", "application/json").send_form(form.iter().copied()))?;
     if reply.0 == 400 && reply.1["error"] == "invalid_grant" {
         return Err(sign_in_again(p)); // revoked, expired or the password changed
@@ -241,8 +258,8 @@ fn page(title: &str, text: &str) -> String {
     )
 }
 
-/// Reads one request from the browser and answers it with a page to close.
-fn answer(mut stream: TcpStream, state: &str) -> Option<Result<String, String>> {
+/// Reads one request from the browser: None for anything but the redirect (favicon, empty connections).
+fn read_redirect(stream: &mut TcpStream, state: &str) -> Option<Result<String, String>> {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let (mut buf, mut n) = (vec![0u8; 16 * 1024], 0);
@@ -253,14 +270,17 @@ fn answer(mut stream: TcpStream, state: &str) -> Option<Result<String, String>> 
             Ok(k) => n += k,
         }
     }
-    let result = parse_redirect(&String::from_utf8_lossy(&buf[..n]), state);
-    let (status, body) = match &result {
+    parse_redirect(&String::from_utf8_lossy(&buf[..n]), state)
+}
+
+/// Answers the browser; for the redirect only once signing in really finished or failed.
+fn respond(mut stream: TcpStream, result: Option<&Result<String, String>>) {
+    let (status, body) = match result {
         None => ("404 Not Found", String::new()),
         Some(Ok(_)) => ("200 OK", page("You're signed in", "You can close this tab and return to Lorekeeper.")),
         Some(Err(e)) => ("200 OK", page("Sign-in didn't finish", &format!("{e} You can close this tab and return to Lorekeeper."))),
     };
     let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-    result
 }
 
 /// The loopback server: 127.0.0.1 (and [::1] for "localhost", which browsers may try first).
@@ -300,7 +320,7 @@ pub fn cancel_sign_in() {
 /// Signs in through the browser, keeps the refresh token and returns the account (email or name).
 /// The manifest is kept for the same account, so signing out and in again doesn't upload everything.
 pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
-    if p.client_id().is_empty() {
+    if !p.configured() {
         return Err(not_set_up(p));
     }
     let attempt = {
@@ -324,7 +344,7 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
     crate::open_external(url.as_str());
 
     let deadline = Instant::now() + SIGN_IN_TIMEOUT;
-    let code = 'wait: loop {
+    let (stream, code) = 'wait: loop {
         if *ATTEMPT.lock().unwrap() != attempt {
             return Err(CANCELLED.into());
         }
@@ -332,9 +352,10 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
             return Err("Sign-in took too long. Try again.".into());
         }
         for l in &listeners {
-            if let Ok((stream, _)) = l.accept() {
-                if let Some(result) = answer(stream, &state) {
-                    break 'wait result?;
+            if let Ok((mut stream, _)) = l.accept() {
+                match read_redirect(&mut stream, &state) {
+                    Some(result) => break 'wait (stream, result),
+                    None => respond(stream, None),
                 }
             }
         }
@@ -342,7 +363,24 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
     };
     drop(listeners);
 
-    let form = [("client_id", p.client_id()), ("grant_type", "authorization_code"), ("code", &code), ("redirect_uri", &redirect), ("code_verifier", &verifier)];
+    // The browser tab waits for this, so it only says "signed in" when that's true.
+    let finished = code.and_then(|code| finish_sign_in(p, &code, &redirect, &verifier));
+    respond(stream, Some(&finished.clone().map(|(_, account)| account)));
+    let (refresh, account) = finished?;
+    if *ATTEMPT.lock().unwrap() != attempt {
+        return Err(CANCELLED.into());
+    }
+    save_token(p, &refresh)?;
+    let file = manifest_file(config_dir, p);
+    if load_manifest(&file).account != account {
+        let _ = fs::remove_file(&file);
+    }
+    Ok(account)
+}
+
+/// Trades the code for tokens and looks up the account: (refresh token, account).
+fn finish_sign_in(p: Provider, code: &str, redirect: &str, verifier: &str) -> Result<(String, String), String> {
+    let form = [("client_id", p.client_id()), ("grant_type", "authorization_code"), ("code", code), ("redirect_uri", redirect), ("code_verifier", verifier)];
     let v = token_request(p, &form)?;
     // Google lets people untick Drive access on the consent screen.
     if p == Provider::Google && v["scope"].as_str().is_some_and(|s| !s.contains("auth/drive.file")) {
@@ -354,15 +392,7 @@ pub fn sign_in(p: Provider, config_dir: &Path) -> Result<String, String> {
         Provider::Dropbox => dropbox::account(&access),
         Provider::Google => gdrive::account(&access),
     }?;
-    if *ATTEMPT.lock().unwrap() != attempt {
-        return Err(CANCELLED.into());
-    }
-    save_token(p, refresh)?;
-    let file = manifest_file(config_dir, p);
-    if load_manifest(&file).account != account {
-        let _ = fs::remove_file(&file);
-    }
-    Ok(account)
+    Ok((refresh.to_string(), account))
 }
 
 // ---------- what was uploaded ----------

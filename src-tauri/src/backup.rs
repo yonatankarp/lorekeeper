@@ -205,8 +205,8 @@ pub fn request(force: bool) {
 pub fn status() -> Status {
     let mut s = STATUS.lock().unwrap().clone();
     s.github_available = !github::GITHUB_CLIENT_ID.is_empty();
-    s.dropbox_available = !cloud::DROPBOX_APP_KEY.is_empty();
-    s.google_available = !cloud::GOOGLE_CLIENT_ID.is_empty();
+    s.dropbox_available = cloud::Provider::Dropbox.configured();
+    s.google_available = cloud::Provider::Google.configured();
     s
 }
 
