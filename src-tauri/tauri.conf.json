@@ -24,13 +24,6 @@
         "trafficLightPosition": {
           "x": 20,
           "y": 26
-        },
-        "transparent": true,
-        "windowEffects": {
-          "effects": [
-            "sidebar",
-            "mica"
-          ]
         }
       },
       {

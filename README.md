@@ -65,7 +65,7 @@ Open **Settings…** from the tray menu (or `⌘,` in the Lorekeeper window). Ch
 
 - **Hotkeys:** press **Record**, then the new combination (Esc cancels). If another app already uses it, the old shortcut stays and the window says so.
 - **Notes folder:** where notes are kept (default `Documents/Lorekeeper`). **Choose…** picks another folder and adds the standard folders and templates there. Existing notes are not moved; move them in Finder if you want them in the new folder. A folder inside your Obsidian vault or iCloud Drive works well.
-- **Appearance:** theme (System, Light, Dark), editor font size, and whether sessions open as Timeline or Journal.
+- **Appearance:** theme (Light is the parchment Tome look, Dark the torchlit Dungeon, System switches between them with your OS), editor font size, and whether sessions open as Timeline or Journal.
 - **Backups:** back up to a folder, to GitHub, or both. See [Backups](#backups).
 - **Startup & notifications:** Launch at login (same as the tray item), and whether a notification appears when a note is saved. Errors always show.
 - **Updates:** the version you have, **Check now**, and whether to check automatically. See [Updates](#updates).
@@ -162,3 +162,8 @@ These can't be tested automatically:
 - The first GitHub backup of a very large vault (thousands of files) can take several runs, because GitHub limits how many files can be uploaded per hour.
 - When capturing, the app restores your previous clipboard as text only. An image on the clipboard is lost.
 - Open quests are not carried over between sessions.
+
+## Credits
+
+- Fonts: Bookinsanity, Mr Eaves Small Caps, Scaly Sans and Solbera Imitation from Solbera's D&D 5e font package (remakes and fixes by Ners, Ryrok and LUCASTUCIOUS), via [jonathonf/solbera-dnd-fonts](https://github.com/jonathonf/solbera-dnd-fonts), licensed [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Lorekeeper ships them converted to WOFF2 and subset to Latin; see [src/fonts/README.md](src/fonts/README.md).
+- Editor: [CodeMirror 6](https://codemirror.net) (MIT). Markdown: [marked](https://marked.js.org) (MIT).

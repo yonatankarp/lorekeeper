@@ -6,8 +6,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   position: relative;
   flex: none;
   padding: 8px 16px;
-  background: var(--side);
-  border-bottom: 1px solid var(--line);
+  background: var(--surface-side);
+  border-bottom: 1px solid var(--side-edge);
 }
 .tabs { display: flex; justify-content: center; gap: 4px; }
 .tab {
@@ -21,9 +21,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 16px;
+  font: 14px/17px var(--font-ui);
 }
 .tab svg {
   width: 24px;
@@ -45,10 +43,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   transform: translateY(-50%);
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
 }
 
-:root:not([data-platform="macos"]) .tabbar { padding: 0 16px; background: var(--bg); }
+:root:not([data-platform="macos"]) .tabbar { padding: 0 16px; }
 :root:not([data-platform="macos"]) .tabs { justify-content: flex-start; gap: 0; }
 :root:not([data-platform="macos"]) .tab {
   min-width: 0;
@@ -56,14 +54,14 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   padding: 8px 16px;
   border-bottom: 2px solid transparent;
   border-radius: 0;
-  font-size: 13px;
+  font-size: 15px;
   line-height: 20px;
 }
 :root:not([data-platform="macos"]) .tab svg { display: none; }
 :root:not([data-platform="macos"]) .tab[aria-selected="true"] {
   background: transparent;
   border-bottom-color: var(--accent-text);
-  font-weight: 600;
+  font-weight: 700;
 }
 :root:not([data-platform="macos"]) .tab:hover { background: var(--hover); }
 /* Inset ring: the strip touches the window edge, which would clip an outside one. */
@@ -71,11 +69,12 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 /* ---------- panels: each scrolls on its own, so Backups' position doesn't leak into other tabs ---------- */
 .panel { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 24px; }
-h2 { margin: 16px 0 8px 8px; font-size: 13px; font-weight: 600; }
+/* Section rubrics in the heading face and accent ink. */
+h2 { margin: 18px 0 6px 8px; color: var(--accent-text); font: 19px/1.25 var(--font-display); letter-spacing: 0.04em; }
 .card {
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface-panel);
 }
 .panel > .hint { margin: 8px 8px 0; }
 
@@ -93,22 +92,22 @@ h2 { margin: 16px 0 8px 8px; font-size: 13px; font-weight: 600; }
 .row-label { min-width: 0; }
 .row-label > span { display: block; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.card button { padding: 4px 12px; font-size: 13px; }
+.card button { padding: 3px 12px; font-size: 16px; }
 
 /* Kept in the page while empty so screen readers announce new text; no gaps while empty. */
-.error { margin: 0; color: var(--accent-text); font-size: 13px; }
+.error { margin: 0; color: var(--accent-text); font-size: 14px; }
 .row > .error:not(:empty) { margin-top: 8px; }
 .card > .error:not(:empty) { padding: 0 16px 8px; }
-.hint { margin: 0; color: var(--muted); font-size: 12px; }
+.hint { margin: 0; color: var(--muted); font-size: 14px; }
 .row > .hint { margin-top: 8px; }
 .path, .sub {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
   overflow-wrap: anywhere;
 }
-.path { margin-top: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; }
-.backup-status { margin: 0; font-size: 13px; }
+.path { margin-top: 4px; font: 12px ui-monospace, Menlo, Consolas, monospace; }
+.backup-status { margin: 0; font-size: 15px; }
 .row > .backup-status:not(:first-child):not(:empty) { margin-top: 8px; }
 .gh-step { margin: 0; }
 /* The device code needs the full width; its buttons go below it. */
@@ -132,10 +131,9 @@ select {
   background: var(--panel);
   color: var(--fg);
   font: inherit;
-  font-size: 13px;
 }
 input[type="range"] { width: 160px; margin: 0; accent-color: var(--accent); }
-output { min-width: 5ch; color: var(--muted); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+output { min-width: 5ch; color: var(--muted); font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; }
 input[role="switch"] {
   appearance: none;
   position: relative;
@@ -160,7 +158,7 @@ input[role="switch"]::before {
   transition: transform 0.15s;
 }
 input[role="switch"]:checked { background: var(--accent); border-color: var(--accent-text); }
-input[role="switch"]:checked::before { transform: translateX(12px); background: #fff; }
+input[role="switch"]:checked::before { transform: translateX(12px); background: var(--on-accent); }
 @media (prefers-reduced-motion: reduce) {
   input[role="switch"], input[role="switch"]::before { transition: none; }
 }
@@ -168,13 +166,3 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 /* Platform-specific wording in hints. */
 :root:not([data-platform="macos"]) .mac-only,
 :root[data-platform="macos"] .other-only { display: none; }
-
-/* ---------- Tome and Dungeon (tokens and fonts in styles.css): the tab bar is the leather or stone of the main sidebar ---------- */
-:root[data-ornate] .tabbar { background: var(--surface-side); border-bottom-color: var(--side-edge); }
-[data-ornate] .tab { font-size: 13.5px; }
-[data-ornate] h2 { margin-top: 18px; font: 600 12.5px var(--font-display); letter-spacing: 0.08em; color: var(--accent-text); }
-[data-ornate] .card { background: var(--surface-panel); }
-[data-ornate] .card button, [data-ornate] select, [data-ornate] .backup-status { font-size: 15px; }
-[data-ornate] :is(.hint, .sub, .error, output, #saved-status) { font-size: 14px; }
-[data-ornate] .path { font-size: 12px; }
-[data-theme="dungeon"] input[role="switch"]:checked::before { background: var(--bg); }

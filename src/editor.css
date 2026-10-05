@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   padding: 0;
-  font: 14px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif;
+  font: 15px/1.6 var(--font-body);
 }
 #editor:focus-within { border-color: var(--accent-text); }
 
@@ -20,21 +20,25 @@
   border-radius: 8px 8px 0 0;
   background: var(--panel);
 }
-.editor-toolbar button { min-width: 30px; padding: 2px 8px; border-color: transparent; font-size: 13px; }
-.editor-toolbar button:nth-child(2) { font-style: italic; }
+/* Body face, not the button face: B and I show the real bold and italic. */
+.editor-toolbar button { min-width: 30px; padding: 2px 8px; border-color: transparent; font: 700 15px/1.4 var(--font-body); }
+.editor-toolbar button:nth-child(2) { font-style: italic; font-weight: 400; }
 
 #editor .cm-editor { flex: 1; background: transparent; color: var(--fg); }
 #editor .cm-editor.cm-focused { outline: none; }
 #editor .cm-scroller { font-family: inherit; line-height: 1.6; }
-#editor .cm-content { padding: 14px 20px 32px; font-size: var(--editor-font-size, 15px); caret-color: var(--fg); }
+/* Bookinsanity reads a touch small next to the page view's 16px, so the setting is scaled: 15 (the default) gives 16px. */
+#editor .cm-content { padding: 14px 20px 32px; font-size: calc(var(--editor-font-size, 15px) * 16 / 15); caret-color: var(--fg); }
 #editor .cm-line { padding: 0; }
 #editor .cm-placeholder { color: var(--muted); }
 
 /* live preview */
+/* H1-H3 match the page view: Mr Eaves (one weight) in the rubric ink; H4-H6 stay in bold body type. */
 .cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6 { font-weight: 700; line-height: 1.3; }
-.cm-md-h1 { font-size: 1.75em; }
-.cm-md-h2 { font-size: 1.4em; }
-.cm-md-h3 { font-size: 1.2em; }
+:is(.cm-md-h1, .cm-md-h2, .cm-md-h3) { color: var(--accent-text); font-family: var(--font-display); font-weight: 400; letter-spacing: 0.02em; }
+.cm-md-h1 { font-size: 2.1em; }
+.cm-md-h2 { font-size: 1.65em; }
+.cm-md-h3 { font-size: 1.35em; }
 .cm-md-h4, .cm-md-h5, .cm-md-h6 { font-size: 1.05em; }
 .cm-md-mark { color: var(--muted); font-weight: 400; font-style: normal; }
 .cm-md-strong { font-weight: 700; }
@@ -50,7 +54,7 @@
 .cm-md-hr { background: linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat; }
 .cm-md-frontmatter, .cm-md-time { color: var(--muted); }
 .cm-md-time { font-variant-numeric: tabular-nums; }
-.cm-md-kind { color: var(--k); font-weight: 600; }
+.cm-md-kind { color: var(--k); font-weight: 700; }
 .cm-md-task { margin: 0 4px 0 0; vertical-align: -1px; accent-color: var(--accent); cursor: pointer; }
 
 /* suggestions */
@@ -58,10 +62,4 @@
 #editor .cm-tooltip-autocomplete ul { font-family: inherit; }
 #editor .cm-tooltip-autocomplete ul li { padding: 3px 10px; }
 #editor .cm-tooltip-autocomplete ul li[aria-selected] { background: var(--accent-soft); color: var(--link); }
-#editor .cm-completionMatchedText { text-decoration: none; font-weight: 600; }
-
-/* Tome and Dungeon: book type, set a little larger since Garamond reads small at the same pixel size. */
-[data-ornate] #editor { font-family: var(--font-body); }
-[data-ornate] #editor .cm-content { font-size: calc(var(--editor-font-size, 15px) * 1.12); }
-[data-ornate] .editor-toolbar button { font-size: 14px; }
-[data-ornate] :is(.cm-md-h1, .cm-md-h2, .cm-md-h3) { font-family: var(--font-display); font-weight: 600; }
+#editor .cm-completionMatchedText { text-decoration: none; font-weight: 700; }

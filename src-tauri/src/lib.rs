@@ -191,7 +191,7 @@ fn merge_save(disk: &str, base: &str, content: &str) -> Option<String> {
 
 // ---------- settings.json (in the app's config folder) ----------
 
-const THEMES: [&str; 5] = ["system", "light", "dark", "tome", "dungeon"];
+const THEMES: [&str; 3] = ["system", "light", "dark"];
 const SESSION_VIEWS: [&str; 2] = ["timeline", "journal"];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -263,6 +263,12 @@ fn load_settings(file: &Path, default_vault: &Path) -> Result<Settings, String> 
     };
     if s.vault_path.is_empty() {
         s.vault_path = default_vault.to_string_lossy().into_owned();
+    }
+    // 0.3.0 had Tome and Dungeon next to plain Light and Dark; now they are the light and dark themes.
+    match s.theme.as_str() {
+        "tome" => s.theme = "light".into(),
+        "dungeon" => s.theme = "dark".into(),
+        _ => {}
     }
     if !file.exists() && write_settings(file, &s).is_ok() && migrate {
         let _ = fs::remove_file(&legacy);
@@ -995,6 +1001,12 @@ mod tests {
         assert!(s.auto_update, "files from before automatic updates turn them on");
         assert_eq!(s.vault_path, vault_path);
 
+        // Tome and Dungeon from 0.3.0 become Light and Dark; anything else is left for validate to judge.
+        for (old, new) in [("tome", "light"), ("dungeon", "dark"), ("purple", "purple")] {
+            fs::write(&config, format!(r#"{{"theme":"{old}"}}"#)).unwrap();
+            assert_eq!(load_settings(&config, &vault).unwrap().theme, new);
+        }
+
         // A broken file is reported, not overwritten.
         fs::write(&config, "{oops").unwrap();
         assert!(load_settings(&config, &vault).is_err());
@@ -1027,11 +1039,12 @@ mod tests {
         // Optional shortcuts: off by default, any distinct valid combination when set.
         let extra = Settings { new_session: "Ctrl+Alt+CmdOrCtrl+S".into(), new_page: "Ctrl+Alt+CmdOrCtrl+P".into(), ..ok.clone() };
         assert_eq!(validate(extra.clone()).unwrap(), extra);
-        for theme in ["tome", "dungeon"] {
+        for theme in ["light", "dark"] {
             assert_eq!(validate(Settings { theme: theme.into(), ..ok.clone() }).unwrap().theme, theme);
         }
         let bad = [
             Settings { theme: "purple".into(), ..ok.clone() },
+            Settings { theme: "tome".into(), ..ok.clone() }, // migrated by load_settings, never sent by the window
             Settings { session_view: "grid".into(), ..ok.clone() },
             Settings { vault_path: "notes".into(), ..ok.clone() },
             Settings { quick_note: "CmdOrCtrl+Nope".into(), ..ok.clone() },
