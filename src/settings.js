@@ -148,6 +148,7 @@ function render(s) {
   for (const p in CLOUDS) cloudEl(p, "cloud-user").textContent = s[`${p}User`];
   showClouds();
   renderBackup(backup);
+  invoke("campaign_places").then(showPlaces).catch(() => {});
 }
 
 // One save at a time, each applied on top of the last result, so quick changes don't undo each other.
@@ -194,12 +195,21 @@ function renderCampaigns(s) {
   }
 }
 
-// Adding a campaign opens it: the main window saves the page it has open, then switches.
+/** Adds a campaign (unless it's there) and opens it: the main window saves the page it has open, then switches. */
+function addCampaign(path) {
+  const done = saves.then(async () => {
+    if (!current.campaigns.includes(path)) render(await invoke("save_settings", { settings: { ...current, campaigns: [...current.campaigns, path] } }));
+    await emitTo("main", "switch-campaign", path);
+  });
+  saves = done.catch(() => {}); // a failure here mustn't stop later saves
+  return done;
+}
+
 $("choose").addEventListener("click", async () => {
   const path = await invoke("pick_folder", { title: "Choose the new campaign's notes folder", start: "" });
   if (!path) return;
-  if (!current.campaigns.includes(path)) save({ campaigns: [...current.campaigns, path] });
-  saves = saves.then(() => { if (current.campaigns.includes(path)) emitTo("main", "switch-campaign", path).catch(() => {}); });
+  $("campaigns-error").textContent = "";
+  addCampaign(path).catch((err) => { $("campaigns-error").textContent = String(err); });
 });
 $("reveal").addEventListener("click", () => invoke("open_vault_folder"));
 
@@ -271,7 +281,7 @@ $("folder-restore").addEventListener("click", () => openRestore("folder", "your 
 $("gh-restore").addEventListener("click", () => openRestore("github", "GitHub"));
 $("gh-repo").addEventListener("click", (e) => {
   e.preventDefault();
-  invoke("open_url", { url: `https://github.com/${current.githubUser}/${current.githubRepo}` });
+  invoke("open_url", { url: `https://github.com/${current.githubUser}/${places?.repo ?? current.githubRepo}` });
 });
 
 $("gh-sign-in").addEventListener("click", async () => {
@@ -314,9 +324,9 @@ $("gh-sign-out").addEventListener("click", () => {
 // ---------- Dropbox and Google Drive: sign-in happens in the browser ----------
 
 const CLOUDS = {
-  dropbox: { name: "Dropbox", account: "Dropbox", where: "Apps/Lorekeeper in your Dropbox",
+  dropbox: { name: "Dropbox", account: "Dropbox", where: (w) => `${["Apps/Lorekeeper", w.dropbox].filter(Boolean).join("/")} in your Dropbox`,
     help: "Only new and changed notes are uploaded. A note you delete here is deleted there too, and Dropbox keeps deleted files for 30 days or more, so you can restore them." },
-  google: { name: "Google Drive", account: "Google", where: "the Lorekeeper folder in your Google Drive",
+  google: { name: "Google Drive", account: "Google", where: (w) => `the ${w.drive} folder in your Google Drive`,
     help: "Only new and changed notes are uploaded. A note you delete here moves to the Google Drive trash, where you can restore it for 30 days." },
 };
 const cloudCards = {};
@@ -329,8 +339,6 @@ for (const [p, c] of Object.entries(CLOUDS)) {
   $("clouds").append(card);
   card.querySelector("h2").textContent = `Back up to ${c.name}`;
   cloudEl(p, "cloud-label").textContent = `${c.account} account`;
-  cloudEl(p, "cloud-where").textContent = `Notes go to ${c.where}. Lorekeeper can only see that folder.`;
-  cloudEl(p, "cloud-dest").textContent = `Notes go to ${c.where}.`;
   cloudEl(p, "cloud-sign-in").textContent = `Sign in with ${c.account}`;
   cloudEl(p, "cloud-unavailable").textContent = `${c.name} backup isn't set up in this build yet.`;
   for (const el of card.querySelectorAll(".cloud-sr")) el.textContent = ` ${c.name}`;
@@ -356,6 +364,21 @@ for (const [p, c] of Object.entries(CLOUDS)) {
     }
   });
 }
+
+// Where the open campaign backs up (restore.rs Places): another campaign than the first has places of its own.
+let places = null;
+function showPlaces(w) {
+  places = w;
+  for (const [p, c] of Object.entries(CLOUDS)) {
+    cloudEl(p, "cloud-where").textContent = `Notes go to ${c.where(w)}. Lorekeeper can only see that folder.`;
+    cloudEl(p, "cloud-dest").textContent = `Notes go to ${c.where(w)}.`;
+  }
+  if (current && w.repo) {
+    $("gh-repo").textContent = `${current.githubUser}/${w.repo}`;
+    $("backupFolder").textContent = w.folder || "Off";
+  }
+}
+showPlaces({ dropbox: "", drive: "Lorekeeper" }); // the first campaign's, until campaign_places answers
 
 function showClouds() {
   if (!current) return;
@@ -405,7 +428,7 @@ function restoreView() {
 
 async function openRestore(source, name) {
   const r = restore = { source, parent: "", target: "", done: null, running: false };
-  $("restore-title").textContent = `Restore from ${name}`;
+  $("restore-title").textContent = `Restore ${campaignName(current.vaultPath)} from ${name}`;
   $("restore-choice").replaceChildren();
   $("restore-status").textContent = "Looking for backups…";
   $("restore-error").textContent = "";
@@ -465,16 +488,12 @@ listen("restore-progress", ({ payload: [done, total] }) => {
 
 $("restore-open").addEventListener("click", () => invoke("restore_open"));
 $("restore-use").addEventListener("click", () => {
+  // A new campaign with backups of its own: its first backup can't touch the backup it came from.
   const target = restore.done.target;
-  saves = saves.then(async () => {
-    try {
-      render(await invoke("save_settings", { settings: { ...current, vaultPath: target } }));
-      $("restore-status").textContent = `Your notes folder is now ${target}. The old one is still where it was.`;
-      $("restore-use").disabled = true;
-    } catch (err) {
-      $("restore-error").textContent = String(err);
-    }
-  });
+  addCampaign(target).then(() => {
+    $("restore-status").textContent = `Opened ${campaignName(target)} as a new campaign. Your other campaigns are still where they were.`;
+    $("restore-use").disabled = true;
+  }, (err) => { $("restore-error").textContent = String(err); });
 });
 for (const id of ["restore-cancel", "restore-close"]) $(id).addEventListener("click", () => $("restore-dialog").close());
 // Esc can't close it while a restore is running.

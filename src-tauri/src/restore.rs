@@ -23,13 +23,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     backup,
     cloud::{self, bearer, call, ok, Provider},
-    dropbox, github,
+    dropbox, gdrive, github,
     github::AGENT,
     Settings,
 };
 
-/// Where the notes sit inside each backup ("" = the top). Campaigns could pass a sub-folder.
-const ROOT: &str = "";
 const DRIVE_FILES: &str = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_FOLDER: &str = "application/vnd.google-apps.folder";
 
@@ -55,6 +53,51 @@ pub struct Done {
     files: usize,
     /// Names that couldn't be saved here (unsafe or duplicate), not restored.
     skipped: Vec<String>,
+}
+
+// ---------- where the open campaign's backups are ----------
+
+/// The open campaign's backups (see backup::backup_name): the main campaign's are the places from
+/// before there were campaigns, every other campaign's are its own. Restore only reads these, and
+/// the Settings window shows them.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Places {
+    /// The open campaign's name.
+    campaign: String,
+    /// Where its dated copies are; "" when folder backup is off.
+    folder: String,
+    /// Its GitHub repository.
+    repo: String,
+    /// Its folder in the Dropbox app folder: "" (the app folder itself) or "Campaigns/<name>".
+    dropbox: String,
+    /// The name of its folder in My Drive.
+    drive: String,
+    /// The main campaign only: the other campaigns' Dropbox folders, which aren't its notes.
+    #[serde(skip)]
+    others: Vec<String>,
+}
+
+pub fn places(s: &Settings) -> Places {
+    let name = backup::backup_name(s, &s.vault_path);
+    let dropbox_dir = |name: &str| dropbox::root(name).trim_start_matches('/').to_string();
+    let others = match name.as_str() {
+        "" => s.campaigns.iter().map(|c| backup::backup_name(s, c)).filter(|n| !n.is_empty()).map(|n| dropbox_dir(&n)).collect(),
+        _ => Vec::new(),
+    };
+    let folder = match (s.backup_folder.as_str(), name.as_str()) {
+        ("", _) => String::new(),
+        (base, "") => base.to_string(),
+        (base, name) => Path::new(base).join(name).to_string_lossy().into_owned(),
+    };
+    Places {
+        campaign: backup::campaign_name(&s.vault_path),
+        folder,
+        repo: backup::campaign_repo(&s.github_repo, &name),
+        dropbox: dropbox_dir(&name),
+        drive: gdrive::top_folder(&name),
+        others,
+    }
 }
 
 // ---------- names from a backup ----------
@@ -202,8 +245,8 @@ fn github_get(token: &str, path: &str) -> Result<Value, String> {
     github::ok(reply)
 }
 
-fn github_commits(token: &str, s: &Settings) -> Result<Vec<Choice>, String> {
-    let v = github_get(token, &format!("/repos/{}/{}/commits?per_page=10", s.github_user, s.github_repo))?;
+fn github_commits(token: &str, owner: &str, repo: &str) -> Result<Vec<Choice>, String> {
+    let v = github_get(token, &format!("/repos/{owner}/{repo}/commits?per_page=10"))?;
     let commits = v.as_array().cloned().unwrap_or_default();
     Ok(commits
         .iter()
@@ -260,8 +303,8 @@ fn download(p: Provider, send: impl Fn() -> Result<ureq::http::Response<ureq::Bo
     }
 }
 
-/// (path, file id) of every file in the app folder.
-fn dropbox_files(token: &str, root: &str) -> Result<Vec<(String, String)>, String> {
+/// (path, file id) of every file in the campaign's folder (`root`, see Places), leaving out the `others`.
+fn dropbox_files(token: &str, root: &str, others: &[String]) -> Result<Vec<(String, String)>, String> {
     let p = Provider::Dropbox;
     let mut v = ok(p, dropbox::rpc(token, "files/list_folder", &json!({ "path": "", "recursive": true, "limit": 2000 }))?)?;
     let mut out = Vec::new();
@@ -272,6 +315,7 @@ fn dropbox_files(token: &str, root: &str) -> Result<Vec<(String, String)>, Strin
             }
         }
         if v["has_more"] != true {
+            out.retain(|(rel, _)| !others.iter().any(|o| under_root(rel, o).is_some()));
             return Ok(rooted(out, root));
         }
         let cursor = v["cursor"].as_str().unwrap_or("").to_string();
@@ -303,9 +347,10 @@ fn drive_list(token: &str, query: &str, fields: &str) -> Result<Vec<Value>, Stri
     }
 }
 
-/// The Lorekeeper folders the app made in My Drive (one per computer that backed up), newest first.
-fn drive_roots(token: &str) -> Result<Vec<Value>, String> {
-    let q = format!("name = 'Lorekeeper' and mimeType = '{DRIVE_FOLDER}' and 'root' in parents and trashed = false");
+/// The `name` folders the app made in My Drive (one per computer that backed up), newest first.
+fn drive_roots(token: &str, name: &str) -> Result<Vec<Value>, String> {
+    let name = name.replace('\\', "\\\\").replace('\'', "\\'"); // quoted for Drive's query language
+    let q = format!("name = '{name}' and mimeType = '{DRIVE_FOLDER}' and 'root' in parents and trashed = false");
     let mut roots = drive_list(token, &q, "nextPageToken,files(id,createdTime)")?;
     roots.sort_by(|a, b| b["createdTime"].as_str().cmp(&a["createdTime"].as_str()));
     Ok(roots)
@@ -316,7 +361,7 @@ fn is_drive_id(id: &str) -> bool {
 }
 
 /// (path, file id) of every file under a Drive folder. Google Docs and the like have no file to download.
-fn drive_files(token: &str, folder: &str, root: &str) -> Result<Vec<(String, String)>, String> {
+fn drive_files(token: &str, folder: &str) -> Result<Vec<(String, String)>, String> {
     let (mut out, mut stack) = (Vec::new(), vec![(String::new(), folder.to_string())]);
     while let Some((prefix, id)) = stack.pop() {
         for f in drive_list(token, &format!("'{id}' in parents and trashed = false"), "nextPageToken,files(id,name,mimeType)")? {
@@ -329,7 +374,7 @@ fn drive_files(token: &str, folder: &str, root: &str) -> Result<Vec<(String, Str
             }
         }
     }
-    Ok(rooted(out, root))
+    Ok(out)
 }
 
 fn drive_file(token: &str, id: &str) -> Result<Vec<u8>, String> {
@@ -346,25 +391,25 @@ fn current(p: Provider, n: usize) -> Result<Vec<Choice>, String> {
     Ok(vec![Choice { id: String::new(), label: format!("Current backup ({})", files(n)) }])
 }
 
-/// What can be restored from a backup.
-pub fn list(source: Source, s: &Settings, root: &str) -> Result<Vec<Choice>, String> {
+/// What can be restored from the open campaign's backup (`w`, from places).
+pub fn list(source: Source, s: &Settings, w: &Places) -> Result<Vec<Choice>, String> {
     let choices = match source {
         Source::Folder => {
-            if s.backup_folder.is_empty() {
+            if w.folder.is_empty() {
                 return Err("Folder backup is off.".into());
             }
-            let names = snapshots(Path::new(&s.backup_folder))?;
+            let names = snapshots(Path::new(&w.folder))?;
             names.into_iter().map(|n| Choice { label: n.rsplit(' ').next().unwrap_or(&n).to_string(), id: n }).collect()
         }
-        Source::Github => github_commits(&github::load_token()?, s)?,
-        Source::Dropbox => current(Provider::Dropbox, dropbox_files(&cloud::access_token(Provider::Dropbox)?, root)?.len())?,
+        Source::Github => github_commits(&github::load_token()?, &s.github_user, &w.repo)?,
+        Source::Dropbox => current(Provider::Dropbox, dropbox_files(&cloud::access_token(Provider::Dropbox)?, &w.dropbox, &w.others)?.len())?,
         Source::Google => {
             let token = cloud::access_token(Provider::Google)?;
-            let roots = drive_roots(&token)?;
+            let roots = drive_roots(&token, &w.drive)?;
             let mut choices = Vec::new();
             for r in roots.iter().filter_map(|r| Some((r["id"].as_str().filter(|id| is_drive_id(id))?, r["createdTime"].as_str().unwrap_or("")))) {
-                let n = drive_files(&token, r.0, root)?.len();
-                let label = if roots.len() == 1 { format!("Current backup ({})", files(n)) } else { format!("Lorekeeper folder made {} ({})", r.1.get(..10).unwrap_or(r.1), files(n)) };
+                let n = drive_files(&token, r.0)?.len();
+                let label = if roots.len() == 1 { format!("Current backup ({})", files(n)) } else { format!("{} folder made {} ({})", w.drive, r.1.get(..10).unwrap_or(r.1), files(n)) };
                 choices.push(Choice { id: r.0.to_string(), label });
             }
             choices
@@ -377,16 +422,15 @@ pub fn list(source: Source, s: &Settings, root: &str) -> Result<Vec<Choice>, Str
 }
 
 /// Restores backup `id` (from `list`) of `source` into the new folder `target`.
-pub fn restore(source: Source, id: &str, s: &Settings, root: &str, target: &Path, progress: &mut dyn FnMut(usize, usize)) -> Result<Done, String> {
+pub fn restore(source: Source, id: &str, s: &Settings, w: &Places, target: &Path, progress: &mut dyn FnMut(usize, usize)) -> Result<Done, String> {
     let at = (Path::new(&s.vault_path), Path::new(&s.backup_folder), target);
     let not_found = || Err::<Done, String>("That backup wasn't found. Close this and try again.".into());
     match source {
         Source::Folder => {
-            if s.backup_folder.is_empty() || !backup::is_snapshot(id) {
+            if w.folder.is_empty() || !backup::is_snapshot(id) {
                 return not_found();
             }
-            let snapshot = Path::new(&s.backup_folder).join(id);
-            let found = rooted(local_files(&snapshot)?, root);
+            let found = local_files(&Path::new(&w.folder).join(id))?;
             write_all(at, found, |path| fs::read(path).map_err(|e| format!("Couldn't read {}: {e}.", path.display())), progress)
         }
         Source::Github => {
@@ -394,14 +438,14 @@ pub fn restore(source: Source, id: &str, s: &Settings, root: &str, target: &Path
                 return not_found();
             }
             let token = github::load_token()?;
-            let base = format!("/repos/{}/{}", s.github_user, s.github_repo);
-            let found = rooted(github_files(&token, &base, id)?, root);
+            let base = format!("/repos/{}/{}", s.github_user, w.repo);
+            let found = github_files(&token, &base, id)?;
             // ponytail: one request per file; GitHub allows 5,000 an hour, plenty for a notes vault.
             write_all(at, found, |sha| github_blob(&token, &base, sha), progress)
         }
         Source::Dropbox => {
             let token = cloud::access_token(Provider::Dropbox)?;
-            let found = dropbox_files(&token, root)?;
+            let found = dropbox_files(&token, &w.dropbox, &w.others)?;
             write_all(at, found, |fid| dropbox_file(&token, fid), progress)
         }
         Source::Google => {
@@ -409,7 +453,7 @@ pub fn restore(source: Source, id: &str, s: &Settings, root: &str, target: &Path
                 return not_found();
             }
             let token = cloud::access_token(Provider::Google)?;
-            let found = drive_files(&token, id, root)?;
+            let found = drive_files(&token, id)?;
             write_all(at, found, |fid| drive_file(&token, fid), progress)
         }
     }
@@ -428,7 +472,13 @@ fn settings(app: &AppHandle) -> Settings {
 #[tauri::command]
 pub async fn restore_list(app: AppHandle, source: Source) -> Result<Vec<Choice>, String> {
     let s = settings(&app);
-    crate::off_main(move || list(source, &s, ROOT)).await
+    crate::off_main(move || list(source, &s, &places(&s))).await
+}
+
+/// Where the open campaign backs up, for the Settings window.
+#[tauri::command]
+pub fn campaign_places(app: AppHandle) -> Places {
+    places(&settings(&app))
 }
 
 /// A new folder to restore into, in `parent` ("" = next to the notes folder).
@@ -451,7 +501,7 @@ pub async fn restore_start(app: AppHandle, source: Source, id: String, target: S
         let mut progress = |done: usize, total: usize| {
             let _ = handle.emit("restore-progress", (done, total));
         };
-        restore(source, &id, &s, ROOT, Path::new(&target), &mut progress)
+        restore(source, &id, &s, &places(&s), Path::new(&target), &mut progress)
     })
     .await;
     RUNNING.store(false, SeqCst);
@@ -515,9 +565,49 @@ mod tests {
         assert_eq!(snapshots(&dir).unwrap(), ["Lorekeeper backup 2026-10-03", "Lorekeeper backup 2026-10-01"]);
         assert!(snapshots(&dir.join("unplugged")).is_err());
         let s = Settings { backup_folder: dir.to_string_lossy().into_owned(), ..Settings::default() };
-        let labels: Vec<String> = list(Source::Folder, &s, "").unwrap().into_iter().map(|c| c.label).collect();
+        let labels: Vec<String> = list(Source::Folder, &s, &places(&s)).unwrap().into_iter().map(|c| c.label).collect();
         assert_eq!(labels, ["2026-10-03", "2026-10-01"]);
-        assert!(list(Source::Folder, &Settings::default(), "").is_err(), "folder backup off");
+        assert!(list(Source::Folder, &Settings::default(), &places(&Settings::default())).is_err(), "folder backup off");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn restore_reads_the_open_campaigns_backup() {
+        let dir = temp_dir("campaigns");
+        let (lore, side, backups) = (dir.join("Lore"), dir.join("Side"), dir.join("Backups"));
+        let day = NaiveDate::from_ymd_opt(2026, 10, 4).unwrap();
+        fs::create_dir_all(&backups).unwrap();
+        for (vault, note, name) in [(&lore, "Vex.md", ""), (&side, "Bob.md", "Side")] {
+            fs::create_dir_all(vault).unwrap();
+            fs::write(vault.join(note), note).unwrap();
+            backup::backup_campaign_to_folder(vault, &backups, name, day).unwrap();
+        }
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+        let main = Settings {
+            vault_path: path(&lore),
+            campaigns: vec![path(&lore), path(&side)],
+            main_campaign: path(&lore),
+            backup_folder: path(&backups),
+            ..Settings::default()
+        };
+        let other = Settings { vault_path: path(&side), ..main.clone() };
+
+        // The main campaign: the places from before campaigns, minus the other campaign's Dropbox folder.
+        let w = places(&main);
+        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups).as_str(), "lorekeeper-notes", "", "Lorekeeper"));
+        assert_eq!((w.campaign.as_str(), w.others.clone()), ("Lore", vec!["Campaigns/Side".to_string()]));
+        // Another campaign: only its own places.
+        let w = places(&other);
+        assert_eq!((w.folder, w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups.join("Side")), "lorekeeper-notes-side", "Campaigns/Side", "Lorekeeper - Side"));
+        assert!(w.others.is_empty());
+
+        for (s, note, other_note) in [(&main, "Vex.md", "Bob.md"), (&other, "Bob.md", "Vex.md")] {
+            let w = places(s);
+            let id = &list(Source::Folder, s, &w).unwrap()[0].id;
+            let target = dir.join(format!("Restored {note}"));
+            restore(Source::Folder, id, s, &w, &target, &mut |_, _| {}).unwrap();
+            assert!(target.join(note).exists() && !target.join(other_note).exists() && !target.join("Side").exists(), "{note}");
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -594,20 +684,21 @@ mod tests {
         backup::backup_to_folder(&vault, &backups, day).unwrap();
         fs::write(vault.join("Loot.md"), "changed since").unwrap();
 
-        let s = Settings { vault_path: vault.to_string_lossy().into_owned(), backup_folder: backups.to_string_lossy().into_owned(), ..Settings::default() };
-        let id = &list(Source::Folder, &s, "").unwrap()[0].id;
+        let vault_path = vault.to_string_lossy().into_owned();
+        let s = Settings { main_campaign: vault_path.clone(), vault_path, backup_folder: backups.to_string_lossy().into_owned(), ..Settings::default() };
+        let id = &list(Source::Folder, &s, &places(&s)).unwrap()[0].id;
         let target = dir.join("Lorekeeper restored 2026-10-05");
-        let done = restore(Source::Folder, id, &s, "", &target, &mut |_, _| {}).unwrap();
+        let done = restore(Source::Folder, id, &s, &places(&s), &target, &mut |_, _| {}).unwrap();
         assert_eq!((done.files, done.skipped.len()), (2, 0));
         assert_eq!(fs::read_to_string(target.join("Loot.md")).unwrap(), "gold");
         assert_eq!(fs::read_to_string(target.join("NPCs/Villains/Vex.md")).unwrap(), "# Vex");
         assert_eq!(fs::read_to_string(vault.join("Loot.md")).unwrap(), "changed since");
-        assert!(restore(Source::Folder, id, &s, "", &target, &mut |_, _| {}).is_err(), "never into an existing folder");
+        assert!(restore(Source::Folder, id, &s, &places(&s), &target, &mut |_, _| {}).is_err(), "never into an existing folder");
         for bad_id in ["../Lorekeeper", "Lorekeeper backup 2026-10-04/../../Lorekeeper", ""] {
-            assert!(restore(Source::Folder, bad_id, &s, "", &dir.join("x"), &mut |_, _| {}).is_err(), "{bad_id}");
+            assert!(restore(Source::Folder, bad_id, &s, &places(&s), &dir.join("x"), &mut |_, _| {}).is_err(), "{bad_id}");
         }
-        assert!(restore(Source::Github, "../../user", &s, "", &dir.join("x"), &mut |_, _| {}).is_err());
-        assert!(restore(Source::Google, "x' or name contains '", &s, "", &dir.join("x"), &mut |_, _| {}).is_err());
+        assert!(restore(Source::Github, "../../user", &s, &places(&s), &dir.join("x"), &mut |_, _| {}).is_err());
+        assert!(restore(Source::Google, "x' or name contains '", &s, &places(&s), &dir.join("x"), &mut |_, _| {}).is_err());
         assert!(!dir.join("x").exists());
         fs::remove_dir_all(&dir).unwrap();
     }

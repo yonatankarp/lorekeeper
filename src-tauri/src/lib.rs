@@ -1030,10 +1030,6 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     for p in cloud::ALL {
         new = new.with_cloud_user(p, old.cloud_user(p).clone());
     }
-    // Existing notes stay in the old folder; the new one gets the standard folders and templates.
-    if new.vault_path != old.vault_path {
-        create_vault_folders(Path::new(&new.vault_path)).map_err(|e| format!("Notes folder: {e}"))?;
-    }
     if new.backup_folder != old.backup_folder && !new.backup_folder.is_empty() {
         fs::create_dir_all(&new.backup_folder).map_err(|e| format!("Backup folder: {e}"))?;
     }
@@ -1051,10 +1047,6 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         set_launch_at_login(&app, new.launch_at_login)?;
     }
     store_settings(&app, &new)?;
-    if new.vault_path != old.vault_path {
-        allow_vault_images(&app, &new.vault_path, Some(&old.vault_path));
-        emit_changed(&app);
-    }
     if new.backup_folder != old.backup_folder {
         backup::reset(&app, backup::Kind::Folder); // a new place: back up there right away
     }
@@ -1083,7 +1075,8 @@ fn switch_campaign(app: AppHandle, path: String) -> Result<(), String> {
         return Err(format!("{path} isn't one of your campaigns."));
     }
     create_vault_folders(Path::new(&path)).map_err(|e| format!("{}: {e}", backup::campaign_name(&path)))?;
-    store_settings(&app, &Settings { vault_path: path, ..old.clone() })?;
+    store_settings(&app, &Settings { vault_path: path.clone(), ..old.clone() })?;
+    allow_vault_images(&app, &path, Some(&old.vault_path));
     backup::left(&old.vault_path); // its last changes still get backed up
     emit_changed(&app);
     backup::request(false);
@@ -1312,6 +1305,7 @@ pub fn run() {
             restore::restore_target,
             restore::restore_start,
             restore::restore_open,
+            restore::campaign_places,
             updater::check_for_updates
         ])
         .setup(|app| {
