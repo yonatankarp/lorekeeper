@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backlinks, badName, buildTree, fillTemplate, folderFor, openQuests, questStatus, resolve, search, splitFrontmatter } from "./vault.js";
+import { backlinks, badName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, resolve, search, sessionPaths, splitFrontmatter } from "./vault.js";
 
 const notes = [
   { path: "Sessions/Session 2.md", content: "# Session 2\n- 20:15 @[[Mirela]] again\n- 20:30 went to [[Locations/Phandalin|town]]" },
@@ -76,4 +76,40 @@ test("quest status and the open quest list", () => {
   ];
   assert.deepEqual(openQuests(quests), ["Quests/Quest 2.md", "Quests/Quest 10.md", "Quests/Rescue Sildar.md"]);
   assert.deepEqual(openQuests([]), []);
+});
+
+test("party: PCs with their properties, sorted", () => {
+  const pcs = [
+    { path: "PCs/Pip.md", content: "---\nClass: rogue\nrace: 'halfling'\nlevel: 3\nplayer: Sam\n---\n# Pip" },
+    { path: "PCs/Brakka.md", content: "# Brakka, no properties" },
+    { path: "NPCs/Mirela.md", content: "---\nclass: bard\n---\n" },
+  ];
+  assert.deepEqual(party(pcs), [
+    { path: "PCs/Brakka.md", class: "", race: "", level: "", player: "" },
+    { path: "PCs/Pip.md", class: "rogue", race: "halfling", level: "3", player: "Sam" },
+  ]);
+  assert.deepEqual(party([]), []);
+});
+
+test("recently mentioned: pages linked from the last two sessions, most mentioned first", () => {
+  const vault = [
+    { path: "Sessions/Session 1.md", content: "- [[Old Town]] [[Old Town]] [[Old Town]]" }, // too old
+    { path: "Sessions/Session 2.md", content: "- @[[Mirela]] at [[Phandalin]]\n- [[The Crows|crows]] [[Nobody]] [[Pip]]" },
+    { path: "Sessions/Session 10.md", content: "- [[mirela]] lied, [[Crow Signet]]\n- [[Phandalin#Inn|inn]] [[Mirela]]" },
+    { path: "NPCs/Mirela.md", content: "" },
+    { path: "Locations/Phandalin.md", content: "" },
+    { path: "Locations/Old Town.md", content: "" },
+    { path: "Items/Crow Signet.md", content: "" },
+    { path: "Factions/The Crows.md", content: "" },
+    { path: "PCs/Pip.md", content: "" }, // the party isn't "mentioned"
+  ];
+  assert.deepEqual(sessionPaths(vault), ["Sessions/Session 10.md", "Sessions/Session 2.md", "Sessions/Session 1.md"]);
+  assert.deepEqual(recentlyMentioned(vault), [
+    { path: "NPCs/Mirela.md", kind: "npc", count: 3 },
+    { path: "Locations/Phandalin.md", kind: "location", count: 2 },
+    { path: "Items/Crow Signet.md", kind: "item", count: 1 },
+    { path: "Factions/The Crows.md", kind: "faction", count: 1 },
+  ]);
+  assert.equal(recentlyMentioned(vault, 2).length, 2);
+  assert.deepEqual(recentlyMentioned([]), []);
 });

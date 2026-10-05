@@ -223,7 +223,7 @@ kbd {
 }
 
 /* Wax seal: the primary actions. */
-:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"]) {
+:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"], .seal) {
   padding: 5px 16px;
   border: 1px solid var(--seal-edge);
   border-radius: 999px;
@@ -234,9 +234,9 @@ kbd {
   text-shadow: 0 1px 0 rgb(0 0 0 / 0.4);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -2px 3px rgb(0 0 0 / 0.3), 0 1px 2px rgb(0 0 0 / 0.3);
 }
-:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"]):hover { filter: brightness(1.08); }
-:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"]):active { box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.45); }
-:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"]):disabled {
+:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"], .seal):hover { filter: brightness(1.08); }
+:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"], .seal):active { box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.45); }
+:is(#copy, #keep-mine, #new-create, #obsidian-dialog button[value="done"], .seal):disabled {
   background: var(--hover);
   color: var(--muted);
   border-color: var(--line);
@@ -291,6 +291,10 @@ kbd {
 }
 #search::placeholder { color: var(--muted); }
 #tree, #results { flex: 1; overflow: auto; padding: 0 6px 12px; }
+/* Home, pinned above the folders. */
+#home { width: auto; margin: 0 6px 6px; padding-left: 8px; font: 17px/1.75 var(--font-display); letter-spacing: 0.03em; color: var(--accent-text); }
+#home .icon { margin-right: 0.4em; }
+#home.active { color: var(--selected-text); }
 #tree details { margin: 0; }
 #tree summary {
   list-style: none;
@@ -360,6 +364,11 @@ main { display: flex; flex-direction: column; min-width: 0; height: 100vh; backg
   box-shadow: 0 1px 0 var(--bg), 0 3px 0 -1px var(--line);
 }
 #crumbs { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#crumbs a { color: var(--muted); }
+#crumbs a:hover { color: var(--link); }
+.icon-button { padding: 4px 6px; line-height: 1; }
+.icon-button .icon { margin: 0; vertical-align: -0.15em; }
+#back:disabled, #forward:disabled { background: transparent; border-color: var(--line); }
 #crumbs .folder { color: var(--muted); }
 #crumbs strong { font-weight: 700; }
 #status { color: var(--muted); font: italic 14px var(--font-body); }
@@ -392,13 +401,13 @@ a { color: var(--link); text-decoration: none; cursor: pointer; }
 a:hover { text-decoration: underline; }
 a.missing { opacity: 0.7; text-decoration: underline dashed; }
 /* Illuminated initial on the session title: Solbera's drop-cap capital. */
-#view .session-title::first-letter {
+#view :is(.session-title, .home-title)::first-letter {
   margin-right: 0.04em;
   color: var(--initial);
   font: 1.55em/1 var(--font-initial);
 }
 /* Ornamental divider: a centred fleuron between two rules. */
-#view hr, #backlinks h2::before, #view .session-title::after {
+#view hr, #backlinks h2::before, #view .session-title::after, #view .home-title::after {
   content: "";
   display: block;
   height: 14px;
@@ -464,7 +473,7 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 .kind .icon { margin-right: 0.25em; }
 :is(.empty-state, .welcome) > .icon { display: block; width: 32px; height: 32px; margin: 0 auto 10px; stroke-width: 1.1; color: var(--accent-text); }
 .empty-state { max-width: 460px; margin: 40px auto 0; text-align: center; color: var(--muted); }
-.empty-state > h2, #view .empty-state > h2, .welcome p:first-of-type { margin: 0 0 8px; color: var(--fg); font: 24px/1.2 var(--font-display); }
+.empty-state > :is(h1, h2), #view .empty-state > :is(h1, h2), .welcome p:first-of-type { margin: 0 0 8px; color: var(--fg); font: 24px/1.2 var(--font-display); }
 .empty-state p { margin: 0 0 10px; }
 .prefix-legend {
   display: inline-grid;
@@ -491,6 +500,46 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 #view .open-quests ul { display: flex; flex-wrap: wrap; gap: 2px 18px; margin: 0; padding: 0; list-style: none; }
 #view .open-quests li { margin: 0; }
 #view .open-quests .icon { color: var(--kind-quest); }
+/* Deleting one note: a small bin at the end of the row, shown on hover or keyboard focus. */
+.remove-note { flex: none; align-self: center; padding: 1px 4px; border: 0; background: transparent; color: var(--muted); line-height: 1; opacity: 0; }
+.remove-note .icon { margin: 0; }
+.timeline li:hover .remove-note, .remove-note:focus-visible { opacity: 1; }
+.remove-note:hover { background: var(--hover); color: var(--accent-text); }
+
+/* ---------- Home: the campaign's contents page ---------- */
+#view .home-title { text-align: center; }
+#view .home-title::after { margin-top: 10px; }
+.home-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.home-card {
+  min-width: 0;
+  padding: 10px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-panel);
+  box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--line);
+  font: 15px/1.5 var(--font-ui);
+}
+.home-card.wide { grid-column: 1 / -1; }
+#view .home-card h2 { margin: 2px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--rule); font-size: 21px; line-height: 1.25; letter-spacing: 0.04em; }
+.home-card h2 .icon { margin-right: 0.35em; }
+#view .home-latest { margin: 0; padding: 0; border: 0; color: var(--fg); font: 20px/1.3 var(--font-body); letter-spacing: 0; }
+.home-meta { color: var(--muted); font-size: 14px; }
+.home-latest + .home-meta { margin: 0 0 6px; }
+#view .home-card .timeline { margin-bottom: 10px; }
+.home-none { color: var(--muted); font-style: italic; }
+.home-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 0; }
+.empty-state .home-actions { justify-content: center; margin-top: 16px; }
+.button-link { padding: 5px 12px; border: 1px solid var(--control-border); border-radius: 7px; color: var(--fg); font: 16.5px/1.3 var(--font-display); }
+.button-link:hover { background: var(--hover); text-decoration: none; }
+#view .home-list { margin: 0 0 4px; padding: 0; list-style: none; }
+#view .home-list li { margin: 0; padding: 3px 0; }
+.home-list .icon { color: var(--accent-text); }
+/* Sessions: contents lines, a dotted leader between the title and its date. */
+#view .home-list.contents { margin-bottom: 10px; }
+.home-list.contents li { display: flex; align-items: baseline; gap: 6px; }
+.home-list.contents a { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-list .leader { flex: 1; min-width: 12px; border-bottom: 1px dotted var(--rule); transform: translateY(-4px); }
+.home-list.contents .home-meta { flex: none; font-variant-numeric: tabular-nums; }
 #editor {
   flex: 1;
   width: calc(100% - 32px);
@@ -593,6 +642,28 @@ dialog label.chip:has(:checked) { border-color: var(--accent-text); background: 
 }
 #obsidian-dialog .copied { display: block; min-height: 1.2em; font-size: 14px; color: var(--muted); }
 #obsidian-dialog .tip { margin: 0 0 16px; font-size: 15px; color: var(--muted); }
+#delete-body p { margin: 0 0 12px; font-size: 15.5px; }
+
+/* "Note deleted. Undo": bottom centre of the page, for a few seconds. */
+main { position: relative; }
+#toast {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--selected);
+  color: var(--selected-text);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.3);
+  white-space: nowrap;
+}
+#toast button { --fg: var(--selected-text); padding: 2px 10px; border-color: var(--selected-text); }
+#toast button:hover { background: rgb(255 255 255 / 0.12); }
 
 /* ---------- native feel ---------- */
 /* Chrome behaves like app chrome: no text selection or I-beam, and no focus ring after a mouse click (keyboard focus keeps it). */
@@ -610,7 +681,7 @@ input, select, textarea { -webkit-user-select: text; user-select: text; } /* Web
 /* ---------- narrow window / 200% zoom ---------- */
 @media (max-width: 640px) {
   #bar { flex-wrap: wrap; padding: 8px 12px; }
-  #crumbs { flex-basis: 100%; }
+  #crumbs { flex-basis: 100%; order: -1; } /* its own top row; the buttons share the next */
   #conflict { flex-wrap: wrap; padding: 8px 12px; }
   #view, #backlinks { padding-left: 14px; padding-right: 14px; }
   #view { padding-top: 12px; }

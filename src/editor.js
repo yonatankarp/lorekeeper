@@ -3,8 +3,8 @@
 import {
   acceptCompletion, Annotation, autocompletion, Decoration, defaultKeymap, deleteMarkupBackward, EditorSelection,
   EditorState, EditorView, history, historyKeymap, indentLess, indentMore, insertNewlineContinueMarkup, keymap,
-  Language, LanguageSupport, markdownLanguage, placeholder, startCompletion, syntaxTree, Transaction, ViewPlugin,
-  WidgetType,
+  Language, LanguageSupport, markdownLanguage, placeholder, redo, startCompletion, syntaxTree, Transaction, undo,
+  ViewPlugin, WidgetType,
 } from "./vendor/codemirror.js";
 import { splitFrontmatter } from "./vault.js";
 import { cycleHeading, diff, linkTarget, nameQuery, togglePrefix } from "./editor-text.js";
@@ -306,8 +306,10 @@ export function createEditor(parent, { onChange, onFollowLink, pageNames }) {
       { key: "Enter", run: insertNewlineContinueMarkup },
       { key: "Backspace", run: deleteMarkupBackward },
       { key: "Tab", run: (v) => acceptCompletion(v) || (inList(v) && indentMore(v)), shift: (v) => inList(v) && indentLess(v) },
-      ...defaultKeymap.filter((b) => b.key !== "Shift-Mod-k"), // ⌘⇧K would also jump to search
-      ...historyKeymap,
+      // ⌘⇧K jumps to search and ⌘[ / ⌘] go Back / Forward (app.js), so CodeMirror doesn't take them.
+      ...defaultKeymap.filter((b) => !["Shift-Mod-k", "Mod-[", "Mod-]"].includes(b.key)),
+      // Undo and redo come through app.js (keys and the Edit menu alike), which calls undo() / redo() below.
+      ...historyKeymap.filter((b) => b.run !== undo && b.run !== redo),
     ]),
     preview,
     EditorView.domEventHandlers({
@@ -348,6 +350,8 @@ export function createEditor(parent, { onChange, onFollowLink, pageNames }) {
       view.dispatch({ changes: { from: view.state.doc.length, insert: text }, annotations: quiet });
     },
     focus: () => view.focus(),
+    undo: () => undo(view),
+    redo: () => redo(view),
     setFontSize(px) {
       parent.style.setProperty("--editor-font-size", `${px}px`);
       view.requestMeasure();

@@ -4,7 +4,7 @@
 export const WIKILINK = /(!?)\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]*))?\]\]/g;
 
 export const baseName = (path) => path.split("/").pop().replace(/\.md$/i, "");
-const naturally = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+export const naturally = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
 /** Splits leading `---` properties from the body. Values are kept as raw strings. */
 export function splitFrontmatter(md) {
@@ -102,6 +102,41 @@ export const openQuests = (notes) =>
     .filter((n) => n.path.startsWith("Quests/") && questStatus(n.content) === "open")
     .map((n) => n.path)
     .sort((a, b) => naturally(baseName(a), baseName(b)));
+
+/** Sessions/ pages, newest first (natural order, as in the sidebar). */
+export const sessionPaths = (notes) =>
+  notes.map((n) => n.path).filter((p) => p.startsWith("Sessions/")).sort((a, b) => naturally(baseName(b), baseName(a)));
+
+/** A property's value, by case-insensitive key, unquoted; "" when missing. */
+const prop = (props, key) => (props.find(([k]) => k.toLowerCase() === key)?.[1] ?? "").replace(/^["']|["']$/g, "").trim();
+
+/** The PCs/ pages with their class, race, level and player properties, sorted by name. */
+export const party = (notes) =>
+  notes
+    .filter((n) => n.path.startsWith("PCs/"))
+    .map((n) => {
+      const { props } = splitFrontmatter(n.content);
+      return { path: n.path, ...Object.fromEntries(["class", "race", "level", "player"].map((k) => [k, prop(props, k)])) };
+    })
+    .sort((a, b) => naturally(baseName(a.path), baseName(b.path)));
+
+const MENTIONED = { NPCs: "npc", Locations: "location", Items: "item", Factions: "faction" };
+
+/** NPC, Location, Item and Faction pages linked from the latest two sessions: [{ path, kind, count }], most mentioned first. */
+export function recentlyMentioned(notes, n = 8) {
+  const paths = notes.map((note) => note.path);
+  const counts = new Map();
+  for (const session of sessionPaths(notes).slice(0, 2)) {
+    for (const m of notes.find((note) => note.path === session).content.matchAll(WIKILINK)) {
+      const path = resolve(m[2], paths);
+      if (path && MENTIONED[path.split("/")[0]]) counts.set(path, (counts.get(path) ?? 0) + 1);
+    }
+  }
+  return [...counts]
+    .map(([path, count]) => ({ path, kind: MENTIONED[path.split("/")[0]], count }))
+    .sort((a, b) => b.count - a.count || naturally(baseName(a.path), baseName(b.path)))
+    .slice(0, n);
+}
 
 /** Characters that break Obsidian links or file names. Returns an error message, or "" when fine. */
 export function badName(name) {

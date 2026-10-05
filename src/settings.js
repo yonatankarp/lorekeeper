@@ -37,6 +37,13 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   selectTab(tabs[e.code.slice(-1) - 1], true);
 });
+// The macOS menu bar is app-wide, and its Undo / Redo items act on the main window: undo typing here instead,
+// and keep the keys from reaching that menu (a handled keydown stops its accelerator).
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
+  e.preventDefault();
+  document.execCommand(e.shiftKey ? "redo" : "undo");
+});
 let savedTab = null;
 try { savedTab = localStorage.getItem("settings-tab"); } catch {}
 selectTab(tabs.find((t) => t.id === savedTab) ?? tabs[0]);

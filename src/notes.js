@@ -1,7 +1,7 @@
 // Turns a session file into grouped sections and D&D Beyond-ready HTML.
 // Hotkey notes look like "- 21:43 @Mirela the innkeeper"; the first character picks the section.
 // Hand-written bullets and paragraphs count too, so nothing typed in the editor is silently dropped.
-import { splitFrontmatter, WIKILINK } from "./vault.js";
+import { baseName, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
 
 export const SECTIONS = [
   ["event", "What happened"],
@@ -14,9 +14,11 @@ export const SECTIONS = [
 
 const PREFIX = { "@": "npc", "#": "loot", "!": "quest", "?": "mystery", '"': "quote", "“": "quote" };
 
-/** Every line in file order: { title } for a "# " heading, else a note { time, kind, text }. */
+/** Every line in file order: { title } for a "# " heading, else a note { time, kind, text, line } (its line index in the file). */
 function* lines(md) {
-  for (const raw of splitFrontmatter(md).body.split("\n")) {
+  const body = splitFrontmatter(md).body;
+  const offset = md.slice(0, md.length - body.length).split("\n").length - 1; // lines taken by the properties
+  for (const [i, raw] of body.split("\n").entries()) {
     const line = raw.trim();
     const bullet = line.match(/^[-*+] (?:(\d{1,2}:\d{2}) )?(.*)$/);
     if (!bullet && line.startsWith("#")) {
@@ -27,7 +29,7 @@ function* lines(md) {
     if (!text || /^(-{3,}|\*{3,})$/.test(text)) continue;
     const kind = PREFIX[text[0]] ?? "event";
     if (kind !== "event" && kind !== "quote") text = text.slice(1).trim(); // quotes keep their marks
-    if (text) yield { time: bullet?.[1] ?? "", kind, text };
+    if (text) yield { time: bullet?.[1] ?? "", kind, text, line: offset + i };
   }
 }
 
@@ -44,12 +46,35 @@ export function parse(md) {
   return { title, groups };
 }
 
+/** `md` without line `i`, which must still read `expected` (else the page changed and nothing is removed). */
+export function removeLine(md, i, expected) {
+  const lines = md.split("\n");
+  if (lines[i] !== expected) throw "That note has changed since, so nothing was deleted";
+  lines.splice(i, 1);
+  return lines.join("\n");
+}
+
+/** `md` with `text` put back as line `i`. */
+export function insertLine(md, i, text) {
+  const lines = md.split("\n");
+  lines.splice(Math.min(i, lines.length), 0, text);
+  return lines.join("\n");
+}
+
+/** Session pages, newest first: [{ path, title, date, count }] (title without link brackets, count = notes). */
+export const sessions = (notes) =>
+  sessionPaths(notes).map((path) => {
+    const content = notes.find((n) => n.path === path).content;
+    const date = splitFrontmatter(content).props.find(([k]) => k.toLowerCase() === "date")?.[1] ?? "";
+    return { path, title: stripLinks(parse(content).title) || baseName(path), date: date.replace(/^["']|["']$/g, ""), count: timeline(content).length };
+  });
+
 export const escape = (s) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 /** Plain label for a link: [[Mirela]] -> Mirela, [[Baron Vex|the Baron]] -> the Baron. */
 const plainLink = (_, bang, target, heading, label) => label ?? target;
-const stripLinks = (text) => text.replace(WIKILINK, plainLink);
+export const stripLinks = (text) => text.replace(WIKILINK, plainLink);
 
 const filled = (groups) => SECTIONS.filter(([key]) => groups[key].length);
 

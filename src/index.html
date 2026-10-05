@@ -11,6 +11,7 @@
   <body>
     <aside id="sidebar">
       <input id="search" type="search" placeholder="Search notes  ⌘K" aria-label="Search notes" autocomplete="off" />
+      <button id="home" class="file" data-home title="Home (⌘⇧H)">Home</button>
       <nav id="tree" aria-label="Vault"></nav>
       <nav id="results" aria-label="Search results" hidden></nav>
       <p id="result-count" class="sr-only" aria-live="polite"></p>
@@ -22,11 +23,14 @@
 
     <main>
       <header id="bar">
-        <div id="crumbs"></div>
+        <button id="back" class="ghost icon-button" aria-label="Back" title="Back (⌘[)" disabled></button>
+        <button id="forward" class="ghost icon-button" aria-label="Forward" title="Forward (⌘])" disabled></button>
+        <nav id="crumbs" aria-label="Breadcrumb"></nav>
         <span id="status" role="status"></span>
         <button id="copy" hidden>Copy for D&amp;D Beyond</button>
         <button id="toggle" class="ghost" title="Edit / preview (⌘E)">Edit</button>
         <button id="obsidian" class="ghost" title="Open this page in Obsidian">Obsidian</button>
+        <button id="delete" class="ghost icon-button" aria-label="Move page to the Trash" title="Move to the Trash (⌘⌫)" disabled></button>
       </header>
       <div id="conflict" role="alert" hidden>
         This page changed outside the app while you were editing.
@@ -39,6 +43,7 @@
         <p id="editor-hint" class="editor-hint" hidden>@ NPC · # Loot · ! Quest · ? Mystery · " Quote</p>
         <section id="backlinks" aria-label="Linked from"></section>
       </div>
+      <div id="toast" role="status" hidden><span id="toast-text"></span> <button id="toast-undo" class="ghost">Undo</button></div>
     </main>
 
     <dialog id="new-dialog" aria-labelledby="new-title">
@@ -53,6 +58,20 @@
         <div class="dialog-actions">
           <button type="button" id="new-cancel" class="ghost">Cancel</button>
           <button id="new-create" value="create">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-body">
+      <form method="dialog">
+        <h2 id="delete-title">Move to the Trash?</h2>
+        <div id="delete-body">
+          <p>You can restore it from the Trash.</p>
+          <p id="delete-links"></p>
+        </div>
+        <div class="dialog-actions">
+          <button id="delete-cancel" value="cancel" class="ghost" autofocus>Cancel</button>
+          <button id="delete-confirm" value="delete" class="seal">Move to Trash</button>
         </div>
       </form>
     </dialog>

@@ -23,10 +23,17 @@ const PATHS = {
   // quest outcomes in the sidebar
   done: `<path d="M3 8.5l3 3 7-7"/>`,
   failed: `<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>`,
+  // open book: Home, the campaign's contents
+  home: `<path d="M8 3.6C6.4 2.5 4.3 2 1.5 2.2v10.4c2.8-.2 4.9.3 6.5 1.4 1.6-1.1 3.7-1.6 6.5-1.4V2.2C11.7 2 9.6 2.5 8 3.6z"/><path d="M8 3.6V14"/>`,
+  // Back / Forward
+  back: `<path d="M10 3 5 8l5 5"/>`,
+  forward: `<path d="M6 3l5 5-5 5"/>`,
+  // waste bin: delete
+  trash: `<path d="M2.5 4.5h11M6.5 4.5V2.5h3v2M4 4.5l.7 9h6.6l.7-9M6.7 7v4.5M9.3 7v4.5"/>`,
   // d20, face on
   session: `<path d="M8 1.5l5.6 3.25v6.5L8 14.5l-5.6-3.25v-6.5z"/><path d="M8 4.75l3.1 5.35H4.9z"/><path d="M2.4 4.75 8 4.75l5.6 0M4.9 10.1l-2.5 1.15M11.1 10.1l2.5 1.15M4.9 10.1 8 14.5l3.1-4.4M8 1.5v3.25"/>`,
 };
 
-/** `<svg>` markup for a name above (note kinds, page types, "session", "done", "failed"), hidden from screen readers. */
+/** `<svg>` markup for a name above (note kinds, page types, "session", "done", "failed", actions), hidden from screen readers. */
 export const icon = (name) =>
   `<svg class="icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${PATHS[name] ?? ""}</svg>`;

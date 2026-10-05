@@ -1,8 +1,12 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
-import { escape, linkify, parse, timeline, toHtml, toText } from "./notes.js";
-import { backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, questStatus, resolve, search, splitFrontmatter } from "./vault.js";
+import { escape, insertLine, linkify, parse, removeLine, sessions, stripLinks, timeline, toHtml, toText } from "./notes.js";
+import {
+  backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, resolve,
+  search, splitFrontmatter,
+} from "./vault.js";
+import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
 import { icon } from "./icons.js";
 
@@ -18,7 +22,9 @@ const tauriWindow = window.__TAURI__.window?.getCurrentWindow();
 let vault = { folders: [], notes: [], currentSession: "" };
 const canObsidian = () => vault.hasObsidian || vault.obsidianInstalled; // installed but no vault yet: the button explains how
 let templates = []; // Templates/ notes: used by "New page", hidden everywhere else
-let current = null; // open page path
+let current = null; // open page path; null is Home
+const nav = navHistory(); // pages visited, for Back / Forward
+const undos = undoStack(); // the app's own undoable actions (deleting, creating); text edits use the editor's history
 let base = ""; // file content the editor started from, for conflict-safe saves
 let editing = false;
 let saveTimer = null;
@@ -33,6 +39,8 @@ let editor = null; // created on first Edit, then reused for every page
 const note = (path) => vault.notes.find((n) => n.path === path);
 const paths = () => vault.notes.map((n) => n.path);
 const isSession = (path) => path?.startsWith("Sessions/");
+const alive = (path) => path === null || !!note(path); // Home, or a page still in the vault
+const modal = () => !!document.querySelector("dialog[open]");
 const dirty = () => saveTimer !== null || saving !== null;
 const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD
 
@@ -170,11 +178,15 @@ const emptySessionHtml = `<div class="empty-state">${icon("session")}<h2>No note
   <p>Notes appear here live during the game. Start a note with a symbol to file it:</p>${legendHtml}
   <p class="legend-note">A <kbd>!</kbd> note goes in this session's Quests section. To follow a quest across sessions, make a Quest page with + New page: open ones are listed at the top of every session.</p></div>`;
 
-const timelineHtml = (items) =>
+/** The notes in order; `removable` adds each row's delete button (the session's own Timeline view). */
+const timelineHtml = (items, removable = false) =>
   `<ol class="timeline">${items
-    .map(({ time, kind, text }) => {
+    .map(({ time, kind, text, line }) => {
       const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${icon(kind)}${KINDS[kind][1]}</span>` : "";
-      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}</span></li>`;
+      const remove = removable
+        ? `<button type="button" class="remove-note" data-line="${line}" aria-label="Delete note: ${escape(stripLinks(text))}" title="Delete note">${icon("trash")}</button>`
+        : "";
+      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}</span>${remove}</li>`;
     })
     .join("")}</ol>`;
 
@@ -198,17 +210,88 @@ function sessionHtml(content) {
   return views + title + openQuestsHtml() + (sessionView === "journal"
     ? `<div class="journal">${toHtml({ ...session, title: "" }, linkHtml)}</div>` +
       `<p class="session-note">This is what “Copy for D&amp;D Beyond” pastes. Click Edit to see every line.</p>`
-    : timelineHtml(items));
+    : timelineHtml(items, true));
+}
+
+// ---------- home ----------
+
+/** The campaign's contents page: latest session, open quests, the party, who and what came up lately, the sessions. */
+function homeHtml() {
+  const list = sessions(vault.notes);
+  const latest = list.find((s) => s.path === vault.currentSession) ?? list[0]; // where hotkey notes go
+  const quests = openQuests(vault.notes);
+  const pcs = party(vault.notes);
+  const seen = recentlyMentioned(vault.notes);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const dated = (s, count) => `${s.date && !s.title.includes(s.date) ? `${escape(s.date)} · ` : ""}${plural(count, "note")}`; // "Session 3 - 2026-10-04" says it already
+  const link = (path, iconName = "") => `<a href="#" data-path="${escape(path)}">${iconName && icon(iconName)}${escape(baseName(path))}</a>`;
+  const card = (id, title, iconName, body, wide = false) =>
+    `<section class="home-card${wide ? " wide" : ""}" aria-labelledby="home-${id}"><h2 id="home-${id}">${icon(iconName)}${title}</h2>${body}</section>`;
+  const cards = [];
+  if (latest) {
+    const items = timeline(note(latest.path).content);
+    cards.push(card("latest", "Latest session", "session", `
+      <h3 class="home-latest">${escape(latest.title)}</h3>
+      <p class="home-meta">${dated(latest, items.length)}</p>
+      ${items.length ? timelineHtml(items.slice(-5)) : `<p class="home-none">No notes yet. Press <kbd>⌘⌥N</kbd> during the game to jot one.</p>`}
+      <div class="home-actions">
+        <a href="#" class="button-link" data-path="${escape(latest.path)}">Open session</a>
+        <button type="button" class="seal" data-copy="${escape(latest.path)}"${items.length ? "" : " disabled"}>Copy for D&amp;D Beyond</button>
+      </div>`, true));
+  }
+  if (quests.length) cards.push(card("quests", "Open quests", "quest", `<ul class="home-list">${quests.map((p) => `<li>${link(p, "quest")}</li>`).join("")}</ul>`));
+  if (pcs.length) {
+    const who = (pc) => {
+      const what = [pc.race, pc.class].filter(Boolean).join(" ");
+      const level = pc.level ? `level ${pc.level}` : "";
+      const details = [[what, level].filter(Boolean).join(", "), pc.player && `played by ${pc.player}`].filter(Boolean).join(" · ");
+      return `<li>${link(pc.path, "pc")}${details ? ` <span class="home-meta">${inlineLinks(details)}</span>` : ""}</li>`;
+    };
+    cards.push(card("party", "The party", "pc", `<ul class="home-list">${pcs.map(who).join("")}</ul>`));
+  }
+  if (seen.length) {
+    const items = seen.map((m) => `<li>${link(m.path, m.kind)} <span class="home-meta">${plural(m.count, "mention")}</span></li>`);
+    cards.push(card("mentioned", "Recently mentioned", "npc", `<ul class="home-list">${items.join("")}</ul>`));
+  }
+  if (list.length) {
+    const items = list.slice(0, 5).map((s) =>
+      `<li><a href="#" data-path="${escape(s.path)}">${escape(s.title)}</a><span class="leader" aria-hidden="true"></span>` +
+      `<span class="home-meta">${dated(s, s.count)}</span></li>`);
+    cards.push(card("sessions", "Sessions", "note", `<ul class="home-list contents">${items.join("")}</ul>
+      <button type="button" class="ghost" data-action="newSession">+ New session</button>`));
+  }
+  if (!cards.length) {
+    return `<div class="empty-state">${icon("home")}<h1>Welcome to Lorekeeper</h1>
+      <p>This page gathers your campaign at a glance: the latest session, open quests, the party and who you've met.</p>
+      <p>Start a session, then press <kbd>⌘⌥N</kbd> during the game to jot a note.</p>
+      <p class="home-actions"><button type="button" class="seal" data-action="newSession">+ New session</button>
+      <button type="button" class="ghost" data-action="newPage">+ New page</button></p></div>`;
+  }
+  const campaign = settings.vaultPath?.split(/[\\/]/).filter(Boolean).pop() || "Your campaign";
+  return `<h1 class="home-title">${escape(campaign)}</h1><div class="home-grid">${cards.join("")}</div>`;
 }
 
 /** Copy is pointless until the session has a note; while editing, the unsaved text counts. */
 const syncCopy = () =>
   ($("copy").disabled = !timeline(editing ? ed().getValue() : note(current)?.content ?? "").length);
 
+let shown = ""; // the page HTML on screen: re-rendering the same HTML would only lose keyboard focus
+function setView(html) {
+  if (html !== shown) $("view").innerHTML = shown = html;
+}
+
 function render() {
-  const n = note(current);
+  const n = note(current); // none: Home
   const folder = current ? current.split("/").slice(0, -1).join(" / ") : "";
-  $("crumbs").innerHTML = n ? `${folder ? `<span class="folder">${escape(folder)} / </span>` : ""}<strong>${escape(baseName(current))}</strong>` : "";
+  $("crumbs").innerHTML = n
+    ? `<a href="#" data-home>Home</a><span class="folder"> / ${folder ? `${escape(folder)} / ` : ""}</span><strong>${escape(baseName(current))}</strong>`
+    : `<strong aria-current="page">Home</strong>`;
+  $("home").classList.toggle("active", !n);
+  n ? $("home").removeAttribute("aria-current") : $("home").setAttribute("aria-current", "page");
+  $("back").disabled = nav.find(-1, alive, current) < 0;
+  $("forward").disabled = nav.find(1, alive, current) < 0;
+  $("delete").disabled = !n;
+  $("backlinks").hidden = !n;
   $("toggle").hidden = !n;
   $("obsidian").hidden = !n || !canObsidian();
   $("copy").hidden = !n || !isSession(current);
@@ -218,15 +301,10 @@ function render() {
   $("editor-hint").hidden = !editing || !n || !isSession(current);
   $("view").hidden = editing && !!n;
 
-  if (!n) {
-    $("view").innerHTML = `<div class="welcome">${icon("session")}<p>No page open.</p>
-      <p>Press <kbd>⌘⌥N</kbd> during a game to jot a note, or create a page with <kbd>+ New page</kbd>.</p></div>`;
-    $("backlinks").innerHTML = "";
-    return;
-  }
+  if (!n) return setView(homeHtml());
   if (!editing) {
     const { props, body } = splitFrontmatter(n.content);
-    $("view").innerHTML = isSession(current) ? sessionHtml(n.content) : propsHtml(props) + marked.parse(body);
+    setView(isSession(current) ? sessionHtml(n.content) : propsHtml(props) + marked.parse(body));
   }
   const links = backlinks(current, vault.notes);
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length
@@ -237,8 +315,11 @@ function render() {
     : `<p class="none">No pages link here yet. Link to it with [[${escape(baseName(current))}]].</p>`);
 }
 
-async function open(path, { edit = false } = {}) {
+/** Shows a page (null: Home), saving pending edits first. A new visit goes into history; `to` is Back / Forward's index. */
+async function open(path, { edit = false, to } = {}) {
   await flush();
+  if (to === undefined) nav.visit(path);
+  else nav.go(to);
   current = path;
   base = note(path)?.content ?? "";
   editing = edit;
@@ -249,6 +330,12 @@ async function open(path, { edit = false } = {}) {
   render();
   $("scroll").scrollTop = 0;
   if (editing) ed().focus();
+}
+
+/** Back (-1) or Forward (1), skipping pages deleted or renamed since. */
+function go(dir) {
+  const i = nav.find(dir, alive, current);
+  if (i >= 0) open(nav.entry(i), { to: i });
 }
 
 function followLink(target) {
@@ -387,6 +474,7 @@ $("new-form").addEventListener("submit", async (e) => {
   lastType = type;
   $("new-dialog").close();
   await refresh();
+  record({ label: `Create ${name}`, undo: () => trashIfUnchanged(path, content), redo: () => restore(path, content) });
   open(path, { edit: true });
 });
 
@@ -396,6 +484,7 @@ document.addEventListener("click", (e) => {
   const el = e.target.closest("a, .file");
   if (!el) return;
   e.preventDefault();
+  if (el.dataset.home !== undefined) return open(null);
   if (el.dataset.path) return open(el.dataset.path);
   if (el.dataset.target !== undefined) return followLink(el.dataset.target);
   const href = el.getAttribute("href") ?? "";
@@ -408,7 +497,18 @@ $("tree").addEventListener("click", (e) => {
   if (b) openNewDialog("", { folder: b.dataset.folder });
 });
 
-$("view").addEventListener("click", (e) => {
+$("view").addEventListener("click", async (e) => {
+  const button = e.target.closest("button");
+  if (button?.dataset.copy) return copySession(note(button.dataset.copy)?.content ?? "");
+  if (button?.dataset.action) return actions[button.dataset.action]();
+  if (button?.classList.contains("remove-note")) {
+    const row = [...$("view").querySelectorAll(".remove-note")].indexOf(button);
+    await deleteNote(current, +button.dataset.line);
+    // Keyboard users stay in the list: the next note's button, else the previous one, else the toast's Undo.
+    const left = $("view").querySelectorAll(".remove-note");
+    (left[Math.min(row, left.length - 1)] ?? ($("toast").hidden ? null : $("toast-undo")))?.focus();
+    return;
+  }
   const view = e.target.closest(".view-switch button")?.dataset.view;
   if (!view) return;
   sessionView = view;
@@ -459,11 +559,152 @@ $("toggle").addEventListener("click", async () => {
   if (editing) ed().focus();
 });
 
-$("copy").addEventListener("click", async () => {
-  const session = parse(editing ? ed().getValue() : note(current)?.content ?? "");
-  await invoke("copy_html", { html: toHtml(session), text: toText(session) })
+/** Copies a session's notes, grouped, for the D&D Beyond journal (the header button, and the Latest session card on Home). */
+function copySession(content) {
+  const session = parse(content);
+  return invoke("copy_html", { html: toHtml(session), text: toText(session) })
     .then(() => say("Copied. Paste it into the D&D Beyond journal"), (err) => say(`Copy failed: ${err}`));
-});
+}
+$("copy").addEventListener("click", () => copySession(editing ? ed().getValue() : note(current)?.content ?? ""));
+
+// ---------- deleting, and undoing it ----------
+
+/** Asks before moving a page to the Trash; true when confirmed. Focus starts on Cancel. */
+function confirmDelete(path) {
+  const n = backlinks(path, vault.notes).length;
+  $("delete-title").textContent = `Move "${baseName(path)}" to the Trash?`;
+  $("delete-links").textContent = n ? `${n} page${n === 1 ? " links" : "s link"} to it; those links will show as missing.` : "";
+  $("delete-links").hidden = !n;
+  $("delete-dialog").returnValue = "";
+  $("delete-dialog").showModal();
+  $("delete-cancel").focus();
+  return new Promise((done) =>
+    $("delete-dialog").addEventListener("close", () => done($("delete-dialog").returnValue === "delete"), { once: true }));
+}
+
+/**
+ * Moves a page to the OS Trash and returns what it held (for undo), saving pending typing first so a failed delete
+ * loses nothing. When it was the open page, goes Back (skipping it), or Home when there's nothing to go back to.
+ */
+async function trash(path) {
+  const wasOpen = path === current;
+  await flush();
+  const content = note(path)?.content ?? "";
+  const back = nav.find(-1, (p) => p !== path && alive(p), path);
+  await invoke("delete_file", { path });
+  await refresh();
+  if (wasOpen) await (back >= 0 ? open(nav.entry(back), { to: back }) : open(null));
+  return content;
+}
+
+/** Undo for creating a page (or redo for deleting one): only while it still holds `expected`, so no work is lost. */
+async function trashIfUnchanged(path, expected) {
+  await flush();
+  const n = note(path);
+  if (!n) return; // already gone
+  if (n.content !== expected) throw `${baseName(path)} has changed since, so it was kept`;
+  await trash(path);
+}
+
+/** Puts a page back at its path; never overwrites one that's there now. */
+async function restore(path, content) {
+  await invoke("create_file", { path, content }); // fails with "<path> already exists."
+  await refresh();
+}
+
+async function deletePage(path) {
+  if (!path || !note(path) || modal()) return;
+  if (!(await confirmDelete(path))) return;
+  const name = baseName(path);
+  try {
+    const content = await trash(path);
+    record({ label: `Delete ${name}`, undo: () => restore(path, content), redo: () => trashIfUnchanged(path, content) });
+    say(`Moved ${name} to the Trash`);
+  } catch (err) {
+    say(`Couldn't delete ${name}: ${err}`);
+  }
+}
+$("delete").addEventListener("click", () => deletePage(current));
+$("back").addEventListener("click", () => go(-1));
+$("forward").addEventListener("click", () => go(1));
+
+/** Rewrites a page from the reading view through the conflict-safe save (hotkey notes added meanwhile are kept). */
+async function rewrite(path, change) {
+  await flush();
+  const n = note(path);
+  if (!n) throw `${baseName(path)} no longer exists`;
+  let written;
+  try {
+    written = await invoke("save_file", { path, content: change(n.content), base: n.content });
+  } catch (err) {
+    if (err !== "conflict") throw err;
+    await refresh(); // the conflict banner is for the editor; here, show the page as it is now and change nothing
+    throw "the page changed outside the app, so nothing was changed";
+  }
+  n.content = written;
+  if (path === current) {
+    base = written;
+    if (editing) ed().setValue(written);
+  }
+  render();
+}
+
+/** Removes one note's line from a session, with an Undo toast. */
+async function deleteNote(path, line) {
+  const raw = note(path)?.content.split("\n")[line];
+  if (raw === undefined) return;
+  try {
+    await rewrite(path, (md) => removeLine(md, line, raw));
+  } catch (err) {
+    return say(`Couldn't delete the note: ${err}`);
+  }
+  // ponytail: undo puts the line back by index; edits above it in the meantime would shift where it lands.
+  record({ label: "Delete note", undo: () => rewrite(path, (md) => insertLine(md, line, raw)), redo: () => rewrite(path, (md) => removeLine(md, line, raw)) });
+  showToast("Note deleted.");
+}
+
+let toastTimer;
+function showToast(text) {
+  $("toast-text").textContent = text;
+  $("toast").hidden = false;
+  clearTimeout(toastTimer);
+  const later = () => (toastTimer = setTimeout(() => ($("toast").contains(document.activeElement) ? later() : hideToast()), 6000));
+  later();
+}
+function hideToast() {
+  clearTimeout(toastTimer);
+  $("toast").hidden = true;
+}
+$("toast-undo").addEventListener("click", () => appHistory("undo")); // the newest action is the one the toast is about
+
+/** Adds an undoable action; an older toast no longer applies. */
+function record(action) {
+  undos.push(action);
+  hideToast();
+}
+
+let undoing = false;
+async function appHistory(dir) {
+  if (undoing) return;
+  undoing = true;
+  hideToast();
+  try {
+    const action = await undos[dir]();
+    say(action ? `${dir === "undo" ? "Undid" : "Redid"}: ${action.label}` : `Nothing to ${dir}`);
+  } catch (err) {
+    say(`Couldn't ${dir}: ${err}`);
+  } finally {
+    undoing = false;
+  }
+}
+
+/** Undo / Redo go where the focus is: the editor's own history, a text field's, else the app's actions. */
+function undoRedo(dir) {
+  const el = document.activeElement;
+  if (editor && $("editor").contains(el)) ed()[dir]();
+  else if (el?.matches("input:not([type=radio]), textarea")) document.execCommand(dir);
+  else if (!modal()) appHistory(dir);
+}
 
 // ---------- Obsidian ----------
 
@@ -499,6 +740,8 @@ $("new-session").addEventListener("click", async () => {
   try {
     const path = await invoke("start_session");
     await refresh();
+    const content = note(path)?.content ?? "";
+    record({ label: `Start ${baseName(path)}`, undo: () => trashIfUnchanged(path, content), redo: () => restore(path, content) });
     open(path);
   } catch (err) {
     say(`Couldn't start a session: ${err}`);
@@ -535,6 +778,12 @@ const actions = {
   newSession: () => $("new-session").click(),
   obsidian: () => current && canObsidian() && $("obsidian").click(),
   settings: () => invoke("open_settings").catch(say),
+  home: () => modal() || open(null),
+  back: () => modal() || go(-1),
+  forward: () => modal() || go(1),
+  deletePage: () => deletePage(current),
+  undo: () => undoRedo("undo"),
+  redo: () => undoRedo("redo"),
   // Tauri's zoom-hotkey.js (zoomHotkeysEnabled, macOS/Linux) owns the zoom level; drive it with the key it listens for.
   zoomIn: zoomKey("="),
   zoomOut: zoomKey("-"),
@@ -542,12 +791,15 @@ const actions = {
 };
 const ZOOM = { "=": "zoomIn", "+": "zoomIn", "-": "zoomOut", "0": "zoomReset" };
 
-let last = { name: "", at: 0 };
-/** Runs an action once per key press: where both the keydown and the menu accelerator arrive, the second is dropped. */
-function run(name) {
+let last = { name: "", at: 0, from: "" };
+/**
+ * Runs an action once per key press: where both the keydown and the menu accelerator arrive, the second is dropped.
+ * Only a repeat from the other source counts, so quick presses of one key (undo, undo, undo) all run.
+ */
+function run(name, from = "key") {
   const now = performance.now();
-  if (name === last.name && now - last.at < 300) return;
-  last = { name, at: now };
+  if (name === last.name && from !== last.from && now - last.at < 300) return;
+  last = { name, at: now, from };
   if (name !== "settings") {
     // The macOS menu is app-wide: Cmd+N typed in the quick-note box must not act on this window while it's hidden.
     if (document.visibilityState === "hidden") return;
@@ -561,10 +813,14 @@ document.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   // The zoom polyfill zooms on this same keydown; marking it handled stops the View menu accelerator zooming again.
   if (!windows && ZOOM[key]) {
-    last = { name: ZOOM[key], at: performance.now() };
+    last = { name: ZOOM[key], at: performance.now(), from: "key" };
     return e.preventDefault();
   }
-  const name = key === "n" && e.shiftKey ? "newSession" : { k: "search", e: "toggle", n: "newPage", ",": "settings" }[key];
+  const typing = e.target.closest?.("#editor, input, textarea");
+  let name;
+  if (key === "z" || (key === "y" && !mac)) name = key === "z" && !e.shiftKey ? "undo" : "redo"; // routed by focus in undoRedo
+  else if (key === "backspace") name = typing ? "" : "deletePage"; // in text, it deletes to the line start
+  else name = (e.shiftKey && { n: "newSession", h: "home" }[key]) || { k: "search", e: "toggle", n: "newPage", ",": "settings", "[": "back", "]": "forward" }[key];
   if (!name) return;
   e.preventDefault(); // also keeps the matching menu accelerator from firing on macOS
   run(name);
@@ -577,7 +833,7 @@ async function buildMenu() {
   const sep = { item: "Separator" };
   const linuxOk = ["Separator", "Cut", "Copy", "Paste", "SelectAll"]; // GTK greys out the other predefined items
   const predefined = (...names) => names.filter((n) => !linux || linuxOk.includes(n)).map((item) => ({ item }));
-  const item = (text, name, accelerator) => ({ text, accelerator, action: () => run(name) });
+  const item = (text, name, accelerator) => ({ text, accelerator, action: () => run(name, "menu") });
   const version = await window.__TAURI__.app?.getVersion().catch(() => undefined);
   const menu = await Menu.new({
     items: [
@@ -592,9 +848,15 @@ async function buildMenu() {
         item("New Session", "newSession", "CmdOrCtrl+Shift+N"),
         sep,
         item("Open in Obsidian", "obsidian"),
+        item("Move to Trash…", "deletePage"), // ⌘⌫ comes from the keydown handler, so text fields keep it
       ] },
-      { text: "Edit", items: predefined("Undo", "Redo", "Separator", "Cut", "Copy", "Paste", "SelectAll") },
+      // Undo and Redo are our own items, not the predefined ones: the editor's history and the app's deletions need them.
+      { text: "Edit", items: [item("Undo", "undo", "CmdOrCtrl+Z"), item("Redo", "redo", "CmdOrCtrl+Shift+Z"), ...predefined("Separator", "Cut", "Copy", "Paste", "SelectAll")] },
       { text: "View", items: [
+        item("Home", "home", "CmdOrCtrl+Shift+H"),
+        item("Back", "back", "CmdOrCtrl+["),
+        item("Forward", "forward", "CmdOrCtrl+]"),
+        sep,
         item("Edit / Preview", "toggle", "CmdOrCtrl+E"),
         item("Search", "search", "CmdOrCtrl+K"),
         // Windows zooms natively in WebView2, with no level the page can drive.
@@ -630,6 +892,8 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
+        { item: "Separator" },
+        { text: "Delete…", action: () => deletePage(file) },
       ]
     : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];
   // ponytail: one small menu resource per right-click is never closed; call close() after popup if that ever matters.
@@ -655,6 +919,17 @@ function applySettings(next) {
   else render();
 }
 
+$("home").insertAdjacentHTML("afterbegin", icon("home"));
+$("back").innerHTML = icon("back");
+$("forward").innerHTML = icon("forward");
+$("delete").innerHTML = icon("trash");
+// Mouse back / forward buttons.
+window.addEventListener("mouseup", (e) => {
+  if (e.button !== 3 && e.button !== 4) return;
+  e.preventDefault();
+  run(e.button === 3 ? "back" : "forward", "mouse");
+});
+
 $("editor-hint").innerHTML = Object.entries(KINDS)
   .map(([kind, [k, label]]) => `<span>${escape(k)} ${icon(kind)}${label}</span>`).join(" · ");
 
@@ -668,5 +943,6 @@ window.addEventListener("beforeunload", flush);
 
 applySettings(await invoke("get_settings").catch(() => ({})));
 await refresh();
-open(vault.currentSession || null);
+open(null); // Home
+
 buildMenu().catch((err) => console.error("menu:", err));

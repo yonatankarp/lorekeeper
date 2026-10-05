@@ -33,6 +33,7 @@ keyring = "4"
 sha1_smol = "1"
 base64 = "0.22"
 tauri-plugin-updater = "2"
+trash = "5.2.9"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

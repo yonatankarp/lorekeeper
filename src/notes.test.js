@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { linkify, parse, timeline, toHtml, toText } from "./notes.js";
+import { insertLine, linkify, parse, removeLine, sessions, timeline, toHtml, toText } from "./notes.js";
 
 const md = `---
 session: 14
@@ -61,15 +61,15 @@ test("groups notes by prefix, keeps hand-written lines, and escapes HTML", () =>
 test("timeline keeps every note in file order with time and kind", () => {
   const items = timeline(md);
   assert.deepEqual(items.slice(0, 4), [
-    { time: "20:01", kind: "event", text: "Arrived in Phandalin" },
-    { time: "20:15", kind: "npc", text: "[[Mirela]] the innkeeper, shifty" },
-    { time: "20:20", kind: "event", text: "Met [[Baron Vex|the Baron]] at the gate" },
-    { time: "20:16", kind: "loot", text: "+2 healing potions & 40gp" }, // file order, not sorted
+    { time: "20:01", kind: "event", text: "Arrived in Phandalin", line: 6 },
+    { time: "20:15", kind: "npc", text: "[[Mirela]] the innkeeper, shifty", line: 7 },
+    { time: "20:20", kind: "event", text: "Met [[Baron Vex|the Baron]] at the gate", line: 8 },
+    { time: "20:16", kind: "loot", text: "+2 healing potions & 40gp", line: 9 }, // file order, not sorted
   ]);
   assert.deepEqual(items.slice(-3), [
-    { time: "21:02", kind: "event", text: "Fought goblins" },
-    { time: "", kind: "event", text: "We camped by the river." },
-    { time: "", kind: "event", text: "Bought rope" }, // no heading, rule or bare "@"
+    { time: "21:02", kind: "event", text: "Fought goblins", line: 13 },
+    { time: "", kind: "event", text: "We camped by the river.", line: 15 },
+    { time: "", kind: "event", text: "Bought rope", line: 16 }, // no heading, rule or bare "@"
   ]);
   const { groups } = parse(md);
   for (const [kind, texts] of Object.entries(groups)) {
@@ -86,4 +86,28 @@ test("links with apostrophes and ampersands survive escaping", () => {
   );
   assert.equal(linkify("[[Mirela#Secrets|she]] lied", a), '<a data-target="Mirela">she</a> lied');
   assert.equal(toHtml(parse("- 19:40 Took the [[Old King's Road]]")), "<h3>What happened</h3><ul><li>Took the Old King&#39;s Road</li></ul>");
+});
+
+test("a note's line can be removed and put back", () => {
+  const lines = md.split("\n");
+  for (const item of timeline(md)) assert.ok(lines[item.line].includes(item.text.slice(0, 10))); // line indexes point at the note
+  assert.equal(timeline("# T\n- 20:00 a\r\n- 20:01 b")[1].line, 2); // no properties
+  const { line } = timeline(md)[1];
+  const without = removeLine(md, line, lines[line]);
+  assert.ok(!without.includes("Mirela"));
+  assert.equal(without.split("\n").length, lines.length - 1);
+  assert.equal(insertLine(without, line, lines[line]), md);
+  assert.throws(() => removeLine(md, line, "- 20:15 something else")); // the page changed: nothing removed
+  assert.equal(insertLine("a", 5, "b"), "a\nb");
+});
+
+test("sessions newest first, with title, date and note count", () => {
+  assert.deepEqual(sessions([
+    { path: "Sessions/Session 2.md", content: "---\ndate: '2026-10-04'\n---\n# Session 2 at [[Phandalin|town]]\n- 20:00 a\n- 20:01 b" },
+    { path: "Sessions/Session 10.md", content: "" },
+    { path: "NPCs/Mirela.md", content: "- not a session" },
+  ]), [
+    { path: "Sessions/Session 10.md", title: "Session 10", date: "", count: 0 },
+    { path: "Sessions/Session 2.md", title: "Session 2 at town", date: "2026-10-04", count: 2 },
+  ]);
 });

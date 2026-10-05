@@ -638,6 +638,28 @@ fn save_file(app: AppHandle, path: String, content: String, base: String) -> Res
     Ok(merged)
 }
 
+/// Moves a note to the system Trash / Recycle Bin, so a mistake can be undone from there.
+#[tauri::command]
+fn delete_file(app: AppHandle, path: String) -> Result<(), String> {
+    let file = vault_file(&notes_dir(&app), &path)?;
+    if !file.is_file() {
+        return Err(format!("{path} doesn't exist."));
+    }
+    {
+        let _guard = WRITE_LOCK.lock().unwrap();
+        let mut trash = trash::TrashContext::default();
+        // The file-manager call needs no "control Finder" permission prompt; the file can still be dragged back out.
+        #[cfg(target_os = "macos")]
+        {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            trash.set_delete_method(DeleteMethod::NsFileManager);
+        }
+        trash.delete(&file).map_err(|e| format!("Couldn't move {path} to the Trash: {e}"))?;
+    }
+    emit_changed(&app);
+    Ok(())
+}
+
 /// Creates a new note; never overwrites an existing one.
 #[tauri::command]
 fn create_file(app: AppHandle, path: String, content: String) -> Result<(), String> {
@@ -882,6 +904,7 @@ pub fn run() {
             page_names,
             save_file,
             create_file,
+            delete_file,
             start_session,
             open_in_obsidian,
             open_url,

@@ -82,6 +82,13 @@ input.addEventListener("keydown", (e) => {
     if (input.value.trim()) save(); else dismiss();
   }
 });
+// The macOS menu bar is app-wide, and its Undo / Redo items act on the main window: undo typing here instead,
+// and keep the keys from reaching that menu (a handled keydown stops its accelerator).
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
+  e.preventDefault();
+  document.execCommand(e.shiftKey ? "redo" : "undo");
+});
 input.addEventListener("input", suggest);
 input.addEventListener("click", suggest);
 input.addEventListener("keyup", (e) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) suggest(); });
