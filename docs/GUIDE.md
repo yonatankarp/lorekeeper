@@ -146,5 +146,5 @@ Backups run on each new session, every 30 minutes while notes change, and once a
 
 ## Limits
 
-- Moving pages to other folders and the graph view: use Obsidian or your file manager.
+- Moving pages to other folders: use Obsidian or your file manager.
 - When saving a selection, the previous clipboard is restored as text only.
