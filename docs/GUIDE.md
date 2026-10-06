@@ -23,6 +23,8 @@ On macOS, allow **Accessibility** the first time you use `⌘⇧S` (System Setti
 
 Change them in **Settings > Hotkeys**. The save-selection shortcut must include `⌘` / `Ctrl`.
 
+The note box, and on macOS **Settings…** and **Open Lorekeeper…** from the menu bar icon, take you back to the app you were in (Discord, say) when you close them.
+
 Start a note with a symbol to file it:
 
 | Prefix | Goes to |

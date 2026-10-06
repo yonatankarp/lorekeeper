@@ -778,26 +778,26 @@ fn dismiss(app: AppHandle, restore_focus: Option<bool>) {
 /// The app in front when the quick-note box opened (macOS process id, Windows window handle).
 static FRONT_APP: Mutex<Option<isize>> = Mutex::new(None);
 
-fn remember_front_app() {
+/// The app in front now, unless it's Lorekeeper itself (macOS process id, Windows window handle).
+fn front_app() -> Option<isize> {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::{NSRunningApplication, NSWorkspace};
         let me = NSRunningApplication::currentApplication().processIdentifier();
         let front = NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| a.processIdentifier());
-        *FRONT_APP.lock().unwrap() = front.filter(|&pid| pid != me).map(|pid| pid as isize);
+        front.filter(|&pid| pid != me).map(|pid| pid as isize)
     }
     #[cfg(windows)]
     {
         let hwnd = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
-        *FRONT_APP.lock().unwrap() = (!hwnd.is_invalid()).then_some(hwnd.0 as isize);
+        (!hwnd.is_invalid()).then_some(hwnd.0 as isize)
     }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    None
 }
 
-/// Forgets the remembered app, and with `restore` brings it back to the front. False if nothing was restored.
-fn return_to_front_app(restore: bool) -> bool {
-    let Some(front) = FRONT_APP.lock().unwrap().take().filter(|_| restore) else {
-        return false;
-    };
+/// Brings an app from front_app() back to the front. False if it couldn't.
+fn activate(front: isize) -> bool {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
@@ -814,6 +814,29 @@ fn return_to_front_app(restore: bool) -> bool {
         let _ = front;
         false
     }
+}
+
+fn remember_front_app() {
+    *FRONT_APP.lock().unwrap() = front_app();
+}
+
+/// Forgets the remembered app, and with `restore` brings it back to the front. False if nothing was restored.
+fn return_to_front_app(restore: bool) -> bool {
+    FRONT_APP.lock().unwrap().take().filter(|_| restore).is_some_and(activate)
+}
+
+/// A window opened from the tray menu and the app that was in front then (macOS: opening one
+/// activates Lorekeeper, and closing it would leave you there instead of where you were).
+#[cfg(target_os = "macos")]
+static MENU_FRONT: Mutex<Option<(&str, isize)>> = Mutex::new(None);
+
+/// From the tray menu: shows the window, and on macOS closing it takes you back to the app you were in.
+fn show_from_menu(app: &AppHandle, label: &'static str) {
+    #[cfg(target_os = "macos")]
+    {
+        *MENU_FRONT.lock().unwrap() = front_app().map(|front| (label, front));
+    }
+    show_window(app, label);
 }
 
 /// After the app writes notes: tells the windows and marks the vault as needing a backup.
@@ -1220,10 +1243,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "review" => show_window(app, "main"),
+            "review" => show_from_menu(app, "main"),
             "new" => start_new_session(app),
             "folder" => open_notes(app),
-            "settings" => show_window(app, "settings"),
+            "settings" => show_from_menu(app, "settings"),
             "update" => updater::check(app, true),
             "login" => {
                 let on = app.autolaunch().is_enabled().unwrap_or(false);
@@ -1337,15 +1360,31 @@ pub fn run() {
             Ok(())
         })
         // Closing a window only hides it; the app keeps running in the tray.
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
                 #[cfg(target_os = "macos")]
-                if !app_window_visible(window.app_handle(), window.label()) {
-                    let _ = window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                {
+                    if !app_window_visible(window.app_handle(), window.label()) {
+                        let _ = window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                    // Opened from the tray menu and closed without using another Lorekeeper window: back to where you were.
+                    let front = MENU_FRONT.lock().unwrap().take();
+                    if let Some((_, front)) = front.filter(|(label, _)| *label == window.label()) {
+                        activate(front);
+                    }
                 }
             }
+            // Moving to another Lorekeeper window means you're working in Lorekeeper now (the quick box aside).
+            #[cfg(target_os = "macos")]
+            WindowEvent::Focused(true) if window.label() != "capture" => {
+                let mut menu_front = MENU_FRONT.lock().unwrap();
+                if menu_front.is_some_and(|(label, _)| label != window.label()) {
+                    *menu_front = None;
+                }
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
