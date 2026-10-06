@@ -37,8 +37,8 @@ let saving = null; // in-flight save promise
 let inConflict = false;
 const closedFolders = new Set();
 const KINDS = { npc: ["@", "NPC"], loot: ["#", "Loot"], quest: ["!", "Quest"], mystery: ["?", "Mystery"], quote: ['"', "Quote"] };
-let settings = { theme: "system", editorFontSize: 15, sessionView: "timeline" }; // until get_settings answers
-let sessionView = settings.sessionView; // or "journal": a recap grouped by kind; the switch changes it until restart
+let settings = { theme: "system", editorFontSize: 15 }; // until get_settings answers
+let sessionView = "timeline"; // or "journal": a recap grouped by kind; the switch changes it until restart
 let editor = null; // created on first Edit, then reused for every page
 
 /** A page, or a file inside a shared session (a player's file, a sync conflict's copy). */
@@ -1355,7 +1355,6 @@ function applySettings(next) {
   // Native appearance follows too (the sidebar material, title bar, menus); on macOS this is app-wide.
   tauriWindow?.setTheme(nativeTheme(settings.theme)).catch(() => {});
   editor?.setFontSize(settings.editorFontSize);
-  if (settings.sessionView !== prev.sessionView) sessionView = settings.sessionView;
   if (prev.vaultPath !== undefined && settings.vaultPath !== prev.vaultPath) {
     forgetPictures();
     refresh();

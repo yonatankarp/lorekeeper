@@ -2,7 +2,7 @@
 
 Lorekeeper can share one campaign with your whole party: everyone jots notes during the game, and everyone sees the same NPCs, quests, places and a single merged session log. Notes you want to keep to yourself stay private on your own computer.
 
-There's no Lorekeeper server and no account to make. The shared campaign is a folder in Google Drive that your party already has access to, and your private notes never leave your computer except in your own backups.
+Lorekeeper syncs a shared campaign between your computers through the Lorekeeper sync server, so there's nothing to install or sign up for. Notes are encrypted on your computer before they leave it, so the server stores only data it can't read. Your private notes never leave your computer except in your own backups.
 
 ## What's shared and what's private
 
@@ -10,36 +10,27 @@ There's no Lorekeeper server and no account to make. The shared campaign is a fo
 |---|---|---|
 | NPCs, PCs, locations, items, factions, quests, lore | yes | pages you mark private |
 | Session notes | your notes, merged with everyone else's | notes you start with `~` |
-| Where it lives | the campaign folder in Google Drive | a private folder next to it, on your computer |
+| Where it lives | the campaign folder on each player's computer, synced through the server | a private folder next to it, on your computer |
 | Backed up | by every player who turns backups on | by your own backups |
 
 ## Setting it up
 
-You need Google Drive for desktop on every computer (it's free with a Google account), and Lorekeeper 0.7 or later.
+**One person (say the DM), once:**
 
-**One person, once:**
+1. Open the campaign, then in **Settings > General** click **Share with party…** next to it.
+2. Under **I play**, pick your character. That's how your notes get your character's name and portrait. If your character has no page yet, import it from D&D Beyond first (**+ New page > PC > Import from D&D Beyond…**).
+3. Click **Share**. The first time, the server asks for its creation key: ask the maintainer for it.
+4. Click **Invite a player** and send the link to that player, privately. Make a new link for each player.
 
-1. In Google Drive, create a folder for the campaign, for example `Scale & Frost`. If you already keep the campaign in Lorekeeper, move its folder into Drive instead.
-2. Share the folder with everyone in the party, with **Editor** access.
+**Everyone else:** in **Settings > General**, click **Join a shared campaign…**, paste your link, then **Join**. When the campaign has downloaded, pick your character under **I play**.
 
-**Everyone else:**
-
-1. In Google Drive, open **Shared with me**, right-click the campaign folder and choose **Organize > Add shortcut**, then put the shortcut in **My Drive**. Drive for desktop now syncs it to your computer.
-2. Check it's there: on a Mac it's under **Google Drive > My Drive** in Finder; on Windows, under the Google Drive letter (usually `G:`).
-
-**Everyone, in Lorekeeper:**
-
-1. Open **Settings > General > Add campaign…** and choose the campaign folder inside Google Drive.
-2. Next to the campaign, turn on **Shared with my party**.
-3. Under **I play**, pick your character. That's how your notes get your character's name and portrait. If your character has no page yet, import it from D&D Beyond first (**+ New page > PC > Import from D&D Beyond…**).
-
-That's it. Notes you take from now on are shared.
+That's it. Notes you take from now on are shared. The [guide](GUIDE.md#playing-with-your-party) has the details.
 
 ## During the game
 
 Take notes exactly as before, with the note box (`⌘⌥N` / `Ctrl+Alt+N`) and the same prefixes. Each player's notes go into a file of their own, so two people writing at once never get in each other's way.
 
-The session page shows everyone's notes in one timeline, in the order they were written, each marked with the character who wrote it. Notes from the rest of the party appear by themselves while Lorekeeper is open, usually within a few seconds to a minute, depending on how fast Google Drive syncs. **New session** starts the next session for everyone; whoever writes first opens it.
+The session page shows everyone's notes in one timeline, in the order they were written, each marked with the character who wrote it. Notes from the rest of the party appear by themselves while Lorekeeper is open, usually within a few seconds. **New session** starts the next session for everyone; whoever writes first opens it.
 
 You can fix (`↑` in the empty note box) or delete only your own notes. **Edit** on a session opens your own part of it.
 
@@ -59,7 +50,7 @@ Sync isn't a backup: if someone deletes a page, the deletion reaches everyone. T
 
 ## When something looks wrong
 
-- **Someone's notes don't appear.** Check that Drive for desktop is running and signed in on both computers, and that the folder in Drive shows the new file. Lorekeeper shows whatever Drive has delivered.
-- **"Sync conflicts" on Home.** Two people changed the same shared page at almost the same moment, and Drive kept both versions. Open both, keep what you want in the original, and delete the copy.
-- **Notes went to the wrong character.** Check **I play** in **Settings > General**.
-- **Slow to show up.** Drive can take up to a minute. That's fine for notes, but Lorekeeper isn't a live co-editor like Google Docs: avoid editing the same page at the same time as someone else.
+- **Someone's notes don't appear.** Check the sync status next to the campaign in **Settings > General** on both computers. The campaign that's open syncs; another shared campaign catches up when you switch to it.
+- **"Sync conflicts" on Home.** Two people changed the same shared page at almost the same moment, and Lorekeeper kept both versions. Open both, keep what you want in the original, and delete the copy.
+- **Notes went to the wrong character.** Check **I play** under **Party…** next to the campaign in **Settings > General**.
+- **Editing the same page together.** Lorekeeper isn't a live co-editor like Google Docs: avoid editing the same page at the same time as someone else.

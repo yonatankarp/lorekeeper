@@ -16,7 +16,7 @@
         </button>
         <button type="button" class="tab" role="tab" id="tab-hotkeys" aria-controls="panel-hotkeys" aria-selected="false" tabindex="-1">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 9.5h1M9.5 9.5h1M13 9.5h1M16.5 9.5h1M6 12h1M17 12h1M8 14.5h8" /></svg>
-          <span>Hotkeys</span>
+          <span>Shortcuts</span>
         </button>
         <button type="button" class="tab" role="tab" id="tab-appearance" aria-controls="panel-appearance" aria-selected="false" tabindex="-1">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" /></svg>
@@ -34,59 +34,33 @@
       <h2>Campaigns</h2>
       <div class="card">
         <div class="row" id="campaign-add">
-          <span>Each campaign has its own notes folder</span>
           <div class="actions">
             <button type="button" class="ghost" id="choose">Add campaign…</button>
             <button type="button" class="ghost" id="join-open">Join a shared campaign…</button>
-            <button type="button" class="ghost" id="reveal">Show in <span class="file-manager">Finder</span></button>
           </div>
           <p class="error" id="campaigns-error" role="alert"></p>
           <p class="error" id="backupNames-error" role="alert"></p>
-          <p class="error" id="sharing-error" role="alert"></p>
-        </div>
-        <div class="row">
-          <div class="row-label">
-            <label for="syncServer">Sync server</label>
-            <p class="sub" id="sync-server-in-use"></p>
-          </div>
-          <input type="text" id="syncServer" data-setting="syncServer" spellcheck="false" autocomplete="off" placeholder="Default" />
-          <p class="error" id="syncServer-error" role="alert"></p>
         </div>
       </div>
-      <p class="hint">Switch campaigns at the top of the sidebar or from the tray menu. Remove only forgets a campaign here: its notes and backups stay where they are. A campaign is called after its folder unless you give it a name; the name shows in the sidebar and the tray, and each campaign backs up separately under it. A new name starts a new backup; the old one stays, and changing the name back carries it on. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
-      <p class="hint">Playing with your party: turn on Shared with my party, pick your character, then Share. Invite a player makes a one-time link for each player; they paste it into Join a shared campaign. Everyone's quick notes go to a file of their own, and every session shows everyone's notes together. Notes are encrypted on your computer before they reach the sync server, which can't read them. Leave the sync server empty to use the default one.</p>
+      <p class="hint">Each campaign keeps its notes in a folder of its own. Switch campaigns at the top of the sidebar.</p>
       <template id="campaign-row">
         <div class="row campaign">
           <div class="row-label">
             <span class="campaign-name"></span>
-            <p class="sub path campaign-path"></p>
-          </div>
-          <div class="actions">
-            <label class="campaign-backup"><span>Name<span class="sr-only campaign-sr"></span></span>
-              <input type="text" class="campaign-backup-name" spellcheck="false" autocomplete="off" /></label>
-            <button type="button" class="ghost campaign-remove">Remove<span class="sr-only campaign-sr"></span></button>
-          </div>
-          <div class="campaign-party">
-            <label class="campaign-backup"><input type="checkbox" role="switch" class="campaign-shared" />
-              <span>Shared with my party<span class="sr-only campaign-sr"></span></span></label>
-            <label class="campaign-backup campaign-me-label"><span>I play<span class="sr-only campaign-sr"></span></span>
-              <select class="campaign-me"></select></label>
-          </div>
-          <div class="campaign-sync" hidden>
             <p class="sub campaign-sync-status" role="status"></p>
-            <div class="actions">
-              <button type="button" class="ghost campaign-share">Share<span class="sr-only campaign-sr"></span></button>
-              <button type="button" class="ghost campaign-invite">Invite a player<span class="sr-only campaign-sr"></span></button>
-              <button type="button" class="ghost campaign-players">Players and invites…<span class="sr-only campaign-sr"></span></button>
-            </div>
-            <div class="campaign-key" hidden>
-              <label class="campaign-backup"><span>Creation key<span class="sr-only campaign-sr"></span></span>
-                <input type="password" class="campaign-key-input" spellcheck="false" autocomplete="off" /></label>
-              <button type="button" class="ghost campaign-key-go">Share</button>
-              <p class="hint">This sync server only lets people with its creation key share campaigns. Ask whoever runs it. Lorekeeper keeps it in your system's password storage, for this server only. Players who join with an invite never need it.</p>
-            </div>
-            <p class="error campaign-sync-error" role="alert"></p>
           </div>
+          <button type="button" class="ghost campaign-party-open">Share with party…<span class="sr-only campaign-sr"></span></button>
+          <details class="campaign-more">
+            <summary class="campaign-more-toggle">Rename or remove<span class="sr-only campaign-sr"></span></summary>
+            <div class="campaign-more-body">
+              <p class="sub path campaign-path"></p>
+              <label class="campaign-backup"><span>Name<span class="sr-only campaign-sr"></span></span>
+                <input type="text" class="campaign-backup-name" spellcheck="false" autocomplete="off" /></label>
+              <p class="hint">Shown in the sidebar and the tray. Backups are kept under this name, so a new name starts a new backup (the old one stays).</p>
+              <button type="button" class="ghost campaign-remove">Remove<span class="sr-only campaign-sr"></span></button>
+              <p class="hint">Removing only takes the campaign off this list. Its notes and backups stay where they are.<span class="campaign-remove-why"> To remove the open campaign, switch to another one first.</span></p>
+            </div>
+          </details>
         </div>
       </template>
 
@@ -104,87 +78,106 @@
           <p class="error" id="ddb-error" role="alert"></p>
         </div>
       </div>
-      <p class="hint">Needed to import characters from your campaigns. Lorekeeper only reads the characters you import; your password goes to D&amp;D Beyond, never to Lorekeeper. If Google sign-in is refused here, use a Wizards, Apple or Twitch login.</p>
+      <p class="hint">Sign in to import characters from your D&amp;D Beyond campaigns. Lorekeeper only reads the characters you import, and your password goes only to D&amp;D Beyond. If Google sign-in doesn't work here, use a Wizards, Apple or Twitch login.</p>
 
-      <h2>Startup &amp; notifications</h2>
+      <h2>Startup and updates</h2>
       <div class="card">
         <div class="row">
-          <label for="launchAtLogin">Launch at login</label>
+          <label for="launchAtLogin">Open Lorekeeper when you log in</label>
           <input type="checkbox" role="switch" id="launchAtLogin" data-setting="launchAtLogin" />
           <p class="error" id="launchAtLogin-error" role="alert"></p>
-        </div>
-        <div class="row">
-          <label for="notifications">Show a notification when a note is saved</label>
-          <input type="checkbox" role="switch" id="notifications" data-setting="notifications" />
-          <p class="error" id="notifications-error" role="alert"></p>
-        </div>
-      </div>
-
-      <h2>Updates</h2>
-      <div class="card">
-        <div class="row">
-          <span id="app-version">Version</span>
-          <button type="button" class="ghost" id="check-updates" aria-describedby="app-version">Check now</button>
         </div>
         <div class="row">
           <label for="autoUpdate">Check for updates automatically</label>
           <input type="checkbox" role="switch" id="autoUpdate" data-setting="autoUpdate" />
           <p class="error" id="autoUpdate-error" role="alert"></p>
         </div>
+        <div class="row">
+          <span id="app-version">Version</span>
+          <button type="button" class="ghost" id="check-updates" aria-describedby="app-version">Check for updates</button>
+        </div>
       </div>
+
+      <details class="more" id="advanced">
+        <summary>Advanced</summary>
+        <div class="card">
+          <div class="row">
+            <div class="row-label">
+              <label for="syncServer">Sync server</label>
+              <p class="sub" id="sync-server-help">Only change this if your group runs its own server. Leave it empty to use the usual one.</p>
+              <p class="sub" id="sync-server-in-use"></p>
+            </div>
+            <input type="text" id="syncServer" data-setting="syncServer" spellcheck="false" autocomplete="off" placeholder="Default" aria-describedby="sync-server-help sync-server-in-use" />
+            <p class="error" id="syncServer-error" role="alert"></p>
+          </div>
+        </div>
+      </details>
     </section>
 
     <section class="panel" role="tabpanel" id="panel-hotkeys" aria-labelledby="tab-hotkeys" hidden>
-      <h2>Global shortcuts</h2>
+      <h2>Keyboard shortcuts</h2>
+      <p class="hint intro">These work from any app, even while Lorekeeper is in the background.</p>
       <div class="card">
         <div class="row">
-          <span id="quickNote-label">Quick note</span>
+          <div class="row-label">
+            <span id="quickNote-label">Quick note</span>
+            <p class="sub">Type a one-line note</p>
+          </div>
           <div class="actions">
             <kbd id="quickNote-keys"></kbd>
             <button type="button" class="ghost" data-record="quickNote" aria-describedby="quickNote-keys">
-              Record<span class="sr-only"> Quick note shortcut</span>
+              Change<span class="sr-only"> Quick note shortcut</span>
             </button>
           </div>
           <p class="error" id="quickNote-error" role="alert"></p>
         </div>
         <div class="row">
-          <span id="capture-label">Save selection</span>
+          <div class="row-label">
+            <span id="capture-label">Save selection</span>
+            <p class="sub">Save the selected text, or the clipboard</p>
+          </div>
           <div class="actions">
             <kbd id="capture-keys"></kbd>
             <button type="button" class="ghost" data-record="capture" aria-describedby="capture-keys">
-              Record<span class="sr-only"> Save selection shortcut</span>
+              Change<span class="sr-only"> Save selection shortcut</span>
             </button>
           </div>
           <p class="error" id="capture-error" role="alert"></p>
         </div>
         <div class="row">
-          <span id="newSession-label">New session</span>
+          <div class="row-label">
+            <span id="newSession-label">New session</span>
+            <p class="sub">Start a new session</p>
+          </div>
           <div class="actions">
             <kbd id="newSession-keys"></kbd>
             <button type="button" class="ghost" data-record="newSession" aria-describedby="newSession-keys">
-              Record<span class="sr-only"> New session shortcut</span>
+              Change<span class="sr-only"> New session shortcut</span>
             </button>
             <button type="button" class="ghost" data-clear="newSession">
-              Clear<span class="sr-only"> New session shortcut</span>
+              Turn off<span class="sr-only"> New session shortcut</span>
             </button>
           </div>
           <p class="error" id="newSession-error" role="alert"></p>
         </div>
         <div class="row">
-          <span id="newPage-label">New page</span>
+          <div class="row-label">
+            <span id="newPage-label">New page</span>
+            <p class="sub">Open the New page dialog</p>
+          </div>
           <div class="actions">
             <kbd id="newPage-keys"></kbd>
             <button type="button" class="ghost" data-record="newPage" aria-describedby="newPage-keys">
-              Record<span class="sr-only"> New page shortcut</span>
+              Change<span class="sr-only"> New page shortcut</span>
             </button>
             <button type="button" class="ghost" data-clear="newPage">
-              Clear<span class="sr-only"> New page shortcut</span>
+              Turn off<span class="sr-only"> New page shortcut</span>
             </button>
           </div>
           <p class="error" id="newPage-error" role="alert"></p>
         </div>
       </div>
-      <p class="hint">Press Record, then the new combination. Esc cancels. The Save selection shortcut must include <span class="primary-key">⌘</span>. New session and New page are off until you set them; <span class="mac-only">⌃⌥⌘S and ⌃⌥⌘P</span><span class="other-only">Ctrl+Alt+Shift+S and Ctrl+Alt+Shift+P</span> are usually free.</p>
+      <p class="hint">Click Change, then press the new keys (Esc cancels). Save selection must use <span class="primary-key">⌘</span>. New session and New page are off until you set them; <span class="mac-only">⌃⌥⌘S and ⌃⌥⌘P</span><span class="other-only">Ctrl+Alt+Shift+S and Ctrl+Alt+Shift+P</span> are usually free.</p>
     </section>
 
     <section class="panel" role="tabpanel" id="panel-appearance" aria-labelledby="tab-appearance" hidden>
@@ -193,33 +186,47 @@
         <div class="row">
           <label for="theme">Theme</label>
           <select id="theme" data-setting="theme">
-            <option value="system">System (Tome by day, Dungeon by night)</option>
-            <option value="light">Light - Tome</option>
-            <option value="dark">Dark - Dungeon</option>
+            <option value="system">Match my computer</option>
+            <option value="light">Light (Tome)</option>
+            <option value="dark">Dark (Dungeon)</option>
           </select>
           <p class="error" id="theme-error" role="alert"></p>
         </div>
         <div class="row">
-          <label for="editorFontSize">Editor font size</label>
+          <label for="editorFontSize">Text size</label>
           <div class="actions">
             <input type="range" id="editorFontSize" data-setting="editorFontSize" min="11" max="24" step="1" />
             <output id="editorFontSize-value" for="editorFontSize"></output>
           </div>
           <p class="error" id="editorFontSize-error" role="alert"></p>
         </div>
-        <div class="row">
-          <label for="sessionView">Default session view</label>
-          <select id="sessionView" data-setting="sessionView">
-            <option value="timeline">Timeline</option>
-            <option value="journal">Journal</option>
-          </select>
-          <p class="error" id="sessionView-error" role="alert"></p>
-        </div>
       </div>
     </section>
 
     <section class="panel" role="tabpanel" id="panel-backups" aria-labelledby="tab-backups" hidden>
-      <h2>Back up to a folder</h2>
+      <h2>Backups</h2>
+      <div class="card">
+        <div class="row">
+          <div class="row-label">
+            <label for="backup-target">Back up to</label>
+            <p class="sub" id="backup-target-help">Keeps a copy of the open campaign's notes somewhere safe.</p>
+          </div>
+          <select id="backup-target" aria-describedby="backup-target-help">
+            <option value="off">Off</option>
+            <option value="folder">A folder</option>
+            <option value="dropbox">Dropbox</option>
+            <option value="google">Google Drive</option>
+            <option value="github">GitHub</option>
+          </select>
+        </div>
+        <div class="row" id="backup-others" hidden>
+          <p id="backup-others-text" role="status"></p>
+          <div class="actions" id="backup-others-actions"></div>
+          <p class="error" id="backup-others-error" role="alert"></p>
+        </div>
+      </div>
+
+      <div class="backup-target" data-target="folder">
       <div class="card">
         <div class="row">
           <span>Folder</span>
@@ -233,19 +240,18 @@
         <div class="row">
           <p class="backup-status" id="folder-status" role="status"></p>
           <div class="actions">
-            <button type="button" class="ghost" id="backup-now">Back up now</button>
             <button type="button" class="ghost" id="folder-restore">Restore…</button>
             <button type="button" class="ghost" id="folder-open">Show in <span class="file-manager">Finder</span></button>
           </div>
           <p class="error" id="folder-run-error" role="alert"></p>
         </div>
       </div>
-      <p class="hint">Pick a folder inside Google Drive, Dropbox, OneDrive or iCloud Drive (their desktop apps upload it for you), or a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days.</p>
+      <p class="hint">Pick a folder in Google Drive, Dropbox, OneDrive or iCloud Drive, or on a USB drive. Lorekeeper keeps a copy for each of the last 30 days.</p>
+      </div>
 
       <div id="clouds"></div>
       <!-- One per provider (Dropbox, Google Drive); settings.js fills in the names. -->
       <template id="cloud-card">
-        <h2></h2>
         <div class="card">
           <div class="row cloud-out">
             <div class="row-label">
@@ -266,7 +272,6 @@
             </div>
             <div class="actions">
               <button type="button" class="ghost cloud-again" hidden>Sign in again</button>
-              <button type="button" class="ghost cloud-now">Back up now<span class="sr-only cloud-sr"></span></button>
               <button type="button" class="ghost cloud-restore">Restore…<span class="sr-only cloud-sr"></span></button>
               <button type="button" class="ghost cloud-open"></button>
               <button type="button" class="ghost cloud-sign-out">Sign out<span class="sr-only cloud-sr"></span></button>
@@ -279,7 +284,7 @@
         <p class="hint cloud-help"></p>
       </template>
 
-      <h2>Back up to GitHub</h2>
+      <div class="backup-target" data-target="github">
       <div class="card">
         <div class="row" id="gh-signed-out">
           <span>GitHub account</span>
@@ -304,7 +309,6 @@
             <p class="sub">Notes go to <a href="#" id="gh-repo"></a>.</p>
           </div>
           <div class="actions">
-            <button type="button" class="ghost" id="gh-now">Back up now</button>
             <button type="button" class="ghost" id="gh-restore">Restore…</button>
             <button type="button" class="ghost" id="gh-open-repo">Open on GitHub</button>
             <button type="button" class="ghost" id="gh-sign-out">Sign out</button>
@@ -314,7 +318,8 @@
         </div>
         <p class="error" id="github-error" role="alert"></p>
       </div>
-      <p class="hint">Every backup is saved as a version, so you can see or restore notes from any point.</p>
+      <p class="hint">For GitHub users. Every backup is kept as a version you can go back to.</p>
+      </div>
     </section>
 
     <!-- Restore: lists a backup's versions and downloads one into a new folder (restore.rs). -->
@@ -343,28 +348,46 @@
       </div>
     </dialog>
     <!-- Shared campaigns (settings.js, shared.rs). Invite links hold the campaign's key: shown only here, cleared on close. -->
+    <!-- The Party dialog: Share walks through I play (and the creation key when the server asks), then invites and players. -->
     <dialog id="players-dialog" aria-labelledby="players-title">
-      <h2 id="players-title">Players and invites</h2>
-      <div class="dialog-actions players-make">
-        <button type="button" class="ghost" id="invite-one">Invite a player</button>
-        <label class="campaign-backup">Invite several
-          <input type="number" id="invite-count" min="2" max="10" value="3" /></label>
-        <button type="button" class="ghost" id="invite-many">Make links</button>
+      <h2 id="players-title">Party</h2>
+      <p class="hint" id="party-intro">Everyone sees each other's notes in every session. Notes are encrypted on your computer before they're sent, so the sync server can't read them.</p>
+      <p id="party-sync" role="status"></p>
+      <label>I play
+        <select id="party-me"></select></label>
+      <p class="hint" id="party-no-pcs" hidden>Your character needs a page in PCs first: make one, or import it from D&amp;D Beyond.</p>
+      <div id="party-key" hidden>
+        <label>Creation key
+          <input type="password" id="party-key-input" spellcheck="false" autocomplete="off" aria-describedby="party-key-help" /></label>
+        <p class="hint" id="party-key-help">This server asks for a creation key before you can share. Ask whoever runs it. Lorekeeper remembers it in your system's password storage.</p>
       </div>
-      <div id="invite-links" hidden>
-        <textarea id="invite-text" readonly rows="3" spellcheck="false" aria-label="Invite links"></textarea>
-        <div class="dialog-actions">
-          <button type="button" class="ghost" id="invite-copy">Copy</button>
+      <div id="party-invites" hidden>
+        <div class="dialog-actions players-make">
+          <button type="button" class="ghost" id="invite-one">Invite a player</button>
         </div>
-        <p class="hint">Each link lets one player join, once, within 7 days. Send each player their own, privately: a link holds the campaign's key.</p>
+        <div id="invite-links" hidden>
+          <textarea id="invite-text" readonly rows="2" spellcheck="false" aria-label="Invite link"></textarea>
+          <div class="dialog-actions">
+            <button type="button" class="ghost" id="invite-copy">Copy</button>
+          </div>
+          <p class="hint">The link lets one player join, once, within 7 days. Send it to them privately: it holds the campaign's key. Make a new one for each player.</p>
+        </div>
+        <h3>Pending invites</h3>
+        <ul class="sync-list" id="invite-list"></ul>
+        <h3>Players</h3>
+        <ul class="sync-list" id="player-list"></ul>
       </div>
-      <h3>Pending invites</h3>
-      <ul class="sync-list" id="invite-list"></ul>
-      <h3>Players</h3>
-      <ul class="sync-list" id="player-list"></ul>
+      <div id="party-pause" hidden>
+        <label class="party-switch"><input type="checkbox" role="switch" id="party-shared" aria-describedby="party-shared-help" />
+          Shared with my party</label>
+        <p class="hint" id="party-shared-help">Turn off to stop syncing on this computer. Your notes stay here.</p>
+      </div>
       <p id="players-status" role="status"></p>
+      <p class="error" id="sharing-error" role="alert"></p>
       <p class="error" id="players-error" role="alert"></p>
       <div class="dialog-actions">
+        <button type="button" class="ghost" id="party-cancel">Cancel</button>
+        <button type="button" class="seal" id="party-share">Share</button>
         <button type="button" class="seal" id="players-close">Done</button>
       </div>
     </dialog>

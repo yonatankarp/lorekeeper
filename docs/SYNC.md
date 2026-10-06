@@ -141,7 +141,7 @@ docker run -d --name lorekeeper-sync --restart unless-stopped \
 - Exposed directly (no proxy), the server has no header-read timeout, so slow clients can hold connections open; a reverse proxy or a Cloudflare tunnel in front takes care of that.
 - With a bind mount instead of a named volume, make the directory writable by UID 10001 (`chown 10001:10001 /srv/lorekeeper-sync`).
 - Back up the volume; `sync.db` with its `-wal` file is the whole state. It holds only encrypted data, but losing it means every player uploads again.
-- In Lorekeeper, set **Settings > General > Sync server** to your URL before sharing the campaign (players who join get the server from their invite link).
+- In Lorekeeper, set **Settings > General > Advanced > Sync server** to your URL before sharing the campaign (players who join get the server from their invite link).
 
 ## Client behaviour (app)
 

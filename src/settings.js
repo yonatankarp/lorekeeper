@@ -128,6 +128,7 @@ for (const button of document.querySelectorAll("[data-clear]")) {
 
 function render(s) {
   if (!s) return;
+  if (!current && s.syncServer) $("advanced").open = true; // once: a server you set yourself is worth seeing
   current = s;
   applyTheme(s.theme);
   for (const key of ["quickNote", "capture", "newSession", "newPage"]) {
@@ -135,6 +136,7 @@ function render(s) {
   }
   for (const button of document.querySelectorAll("[data-clear]")) button.disabled = !s[button.dataset.clear];
   renderCampaigns(s);
+  renderParty();
   for (const el of document.querySelectorAll("[data-setting]")) {
     const value = s[el.dataset.setting];
     if (el.type === "checkbox") el.checked = value;
@@ -183,68 +185,44 @@ const folderName = (path) => path.split(/[\\/]/).filter(Boolean).pop() || path;
 /** A campaign's name: the one given here, else its folder's name. */
 const campaignName = (path) => current.backupNames?.[path] || folderName(path);
 
-const pcs = new Map(); // campaign folder -> its PC pages (campaign_pcs), refreshed on each redraw
+const pcs = new Map(); // campaign folder -> its PC pages (campaign_pcs)
 
-/** Fills a campaign row's "I play" list with its PC pages, `me` chosen (kept even when its page isn't there). */
+/** Fills an "I play" list with a campaign's PC pages, `me` chosen (kept even when its page isn't there). */
 function fillPcs(select, path, me) {
   const options = [...new Set([...(pcs.get(path) ?? []), ...(me ? [me] : [])])];
   select.replaceChildren(new Option("Choose…", ""), ...options.map((p) => new Option(p.replace(/^PCs\//, "").replace(/\.md$/i, ""), p)));
   select.value = me;
 }
 
-/** The "Shared with my party" switch and the "I play" list of a campaign row. */
-function renderSharing(row, s, path) {
-  const sharing = s.sharing?.[path] ?? { shared: false, me: "" };
-  const shared = row.querySelector(".campaign-shared"), select = row.querySelector(".campaign-me");
-  shared.checked = sharing.shared;
-  row.querySelector(".campaign-me-label").hidden = !sharing.shared;
-  fillPcs(select, path, sharing.me);
-  invoke("campaign_pcs", { path }).then((list) => {
-    pcs.set(path, list);
-    if (select.isConnected && document.activeElement !== select) fillPcs(select, path, select.value);
-  }).catch(() => {});
-  const change = (next) => save({ sharing: { ...current.sharing, [path]: { ...(current.sharing?.[path] ?? { shared: false, me: "" }), ...next } } });
-  shared.addEventListener("change", () => change({ shared: shared.checked }));
-  select.addEventListener("change", () => change({ me: select.value }));
-  renderSync(row, s, path);
-}
-
-// ---------- shared campaigns: Share, Invite, Players, Join (shared.rs) ----------
+// ---------- shared campaigns: a status line and one button per row; the Party dialog does the rest (shared.rs) ----------
 // Names and messages here can come from teammates or the server: they're only ever set as text.
 
 const snapshots = new Map(); // campaign folder -> { status, online, warning } from sync-status events
-const syncErrors = new Map(); // campaign folder -> the last Share error, kept across redraws
-let syncInfo = null, askKey = null, sharing = null;
+let syncInfo = null, partyPath = null, sharingNow = false, askKey = false, linksTimer;
+let unshare = null; // a campaign Share turned sharing on for: turned back off if Share doesn't finish (its notes would
+// otherwise go to per-character files in a campaign nobody shares)
 
-/** The sync line and buttons of a campaign row. */
-function renderSync(row, s, path) {
+/** A campaign row's sharing line and its one button: Share with party… until it's shared, then Party…. */
+function renderSharing(row, s, path) {
   const sh = s.sharing?.[path] ?? {};
-  const box = row.querySelector(".campaign-sync");
-  box.hidden = !sh.shared && !sh.room && !sh.removed;
-  const owner = sh.role === "owner" && !!sh.room && sh.shared;
-  row.querySelector(".campaign-share").hidden = !sh.shared || !!sh.room || !!sh.removed || askKey === path;
-  row.querySelector(".campaign-invite").hidden = row.querySelector(".campaign-players").hidden = !owner;
-  row.querySelector(".campaign-key").hidden = askKey !== path;
-  if (sh.me && syncErrors.get(path)?.startsWith("Downloading")) syncErrors.delete(path);
-  row.querySelector(".campaign-sync-error").textContent = syncErrors.get(path) ?? "";
+  const open = row.querySelector(".campaign-party-open");
+  open.hidden = !!sh.removed;
+  open.firstChild.textContent = sh.room ? "Party…" : "Share with party…";
+  open.addEventListener("click", () => openParty(path));
   showSyncStatus(row, path);
-  row.querySelector(".campaign-share").addEventListener("click", () => share(path));
-  row.querySelector(".campaign-key-go").addEventListener("click", () => share(path, row.querySelector(".campaign-key-input").value));
-  row.querySelector(".campaign-key-input").addEventListener("keydown", (e) => { if (e.key === "Enter") share(path, e.target.value); });
-  row.querySelector(".campaign-invite").addEventListener("click", () => openPlayers(path, 1));
-  row.querySelector(".campaign-players").addEventListener("click", () => openPlayers(path, 0));
+}
+
+/** What a shared campaign is doing, or what to do next. */
+function sharingText(path, row = true) {
+  const sh = current.sharing?.[path] ?? {}, snap = snapshots.get(path);
+  if (row && sh.shared && !sh.removed && !sh.me) return `Pick your character: click ${sh.room ? "Party…" : "Share with party…"}`;
+  if (sh.shared && !sh.room && !sh.removed) return "Not shared yet.";
+  const online = path === current.vaultPath && sh.room ? onlineText(snap) : "";
+  return [syncText(snap, sh, path === current.vaultPath), online].filter(Boolean).join(" · ");
 }
 
 function showSyncStatus(row, path) {
-  const sh = current.sharing?.[path] ?? {};
-  const snap = snapshots.get(path);
-  let text = syncText(snap, sh, path === current.vaultPath);
-  if (sh.shared && !sh.room && !sh.removed) {
-    const server = syncInfo?.server?.Ok;
-    text = sharing === path ? "Sharing…" : `Not shared yet. Next: Share, which uploads it encrypted to ${server ?? "the sync server"}, then Invite a player for each friend.`;
-  }
-  const online = path === current.vaultPath && sh.room ? onlineText(snap) : "";
-  row.querySelector(".campaign-sync-status").textContent = [text, online].filter(Boolean).join(" · ");
+  row.querySelector(".campaign-sync-status").textContent = sharingText(path);
 }
 
 const rowFor = (path) => [...document.querySelectorAll(".campaign")].find((r) => r.querySelector(".campaign-path").textContent === path);
@@ -253,6 +231,7 @@ listen("sync-status", ({ payload }) => {
   snapshots.set(payload.path, payload);
   const row = rowFor(payload.path);
   if (row && current) showSyncStatus(row, payload.path);
+  if (partyPath === payload.path) renderParty();
 });
 
 async function loadSyncInfo() {
@@ -260,43 +239,115 @@ async function loadSyncInfo() {
   if (!syncInfo) return;
   for (const snap of syncInfo.statuses) snapshots.set(snap.path, snap);
   const server = syncInfo.server;
-  $("sync-server-in-use").textContent = server.Ok ? `In use: ${server.Ok}` : server.Err;
+  $("sync-server-in-use").textContent = server.Ok ? `Now using ${server.Ok}` : server.Err;
+  if (server.Err) $("advanced").open = true;
   $("syncServer").placeholder = syncInfo.defaultServer;
   if (current) render(current);
 }
 
-/** Share: asks for the server's creation key when it wants one (the field stays open until it works). */
-async function share(path, createKey) {
-  if (sharing) return;
-  sharing = path;
-  syncErrors.delete(path);
-  render(current);
-  try {
-    await invoke("sync_share", { path, createKey: createKey ?? null });
-    if (askKey === path) askKey = null;
-  } catch (err) {
-    if (String(err) === "create_key_required") askKey = path;
-    else syncErrors.set(path, String(err));
-  }
-  sharing = null;
-  render(current);
-  const row = rowFor(path);
-  if (askKey === path) row?.querySelector(".campaign-key-input").focus();
+const changeSharing = (next, path = partyPath) =>
+  save({ sharing: { ...current.sharing, [path]: { ...(current.sharing?.[path] ?? { shared: false, me: "" }), ...next } } });
+
+function refreshPcs(path) {
+  invoke("campaign_pcs", { path }).then((list) => {
+    pcs.set(path, list);
+    if (partyPath !== path) return;
+    fillPcs($("party-me"), path, $("party-me").value);
+    renderParty();
+  }).catch(() => {});
 }
 
-// Players and invites: one dialog for the campaign it was opened for. Links hold the campaign's key, so they're made
+// The Party dialog, for one campaign. Not shared yet: pick who you play, then Share. Shared: your character, invites
+// and players (the owner), and the switch that pauses syncing. Invite links hold the campaign's key, so they're made
 // only on a click, copied only on Copy, and cleared when the dialog closes (or after 10 minutes).
-let playersPath = null, linksTimer;
-
-async function openPlayers(path, make) {
-  playersPath = path;
-  $("players-title").textContent = `Players in ${campaignName(path)}`;
-  $("players-error").textContent = $("players-status").textContent = "";
+function openParty(path, note = "") {
+  partyPath = path;
+  $("players-error").textContent = $("sharing-error").textContent = "";
+  $("players-status").textContent = note;
+  askKey = false;
+  $("party-key-input").value = "";
   clearLinks();
+  fillPcs($("party-me"), path, current.sharing?.[path]?.me ?? "");
+  renderParty();
+  refreshPcs(path);
   if (!$("players-dialog").open) $("players-dialog").showModal();
-  if (make) await makeInvites(make);
-  await loadPlayers();
+  const sh = current.sharing?.[path] ?? {};
+  $(sh.room && sh.me ? "players-close" : "party-me").focus();
+  if (sh.room && sh.role === "owner") loadPlayers();
 }
+
+function renderParty() {
+  const path = partyPath;
+  if (!path || !current) return;
+  const sh = current.sharing?.[path] ?? {}, setup = !sh.room, select = $("party-me");
+  $("players-title").textContent = setup ? `Share ${campaignName(path)} with your party` : `Party: ${campaignName(path)}`;
+  $("party-intro").hidden = !setup;
+  $("party-key").hidden = !askKey;
+  $("party-sync").textContent = setup ? "" : sharingText(path, false);
+  if (document.activeElement !== select) fillPcs(select, path, setup ? select.value : sh.me);
+  $("party-no-pcs").hidden = select.options.length > 1;
+  $("party-invites").hidden = !(sh.room && sh.role === "owner");
+  $("party-pause").hidden = setup && (!sh.shared || unshare === path); // also an old never-shared one, so it can be turned off
+  $("party-shared").checked = !!sh.shared;
+  $("party-cancel").hidden = $("party-share").hidden = !setup;
+  $("party-cancel").disabled = $("party-shared").disabled = sharingNow; // closing mid-Share would switch sharing off under it
+  $("players-close").hidden = setup;
+  $("party-share").disabled = sharingNow || !select.value;
+  select.disabled = sharingNow;
+}
+
+$("party-me").addEventListener("change", () => {
+  if (current.sharing?.[partyPath]?.room) changeSharing({ me: $("party-me").value });
+  else renderParty();
+});
+$("party-shared").addEventListener("change", () => changeSharing({ shared: $("party-shared").checked }));
+
+/** Share: turns sharing on with your character, then makes the campaign's room. Asks for the server's creation key
+ * when it wants one (the field stays open until it works). */
+async function share() {
+  const path = partyPath, me = $("party-me").value;
+  if (sharingNow || !me) return;
+  if (!current.sharing?.[path]?.shared) unshare = path;
+  sharingNow = true;
+  $("players-error").textContent = "";
+  $("players-status").textContent = "Sharing…";
+  renderParty();
+  changeSharing({ shared: true, me }, path);
+  await saves;
+  let shared = false;
+  if (current.sharing?.[path]?.shared) { // else the save's error shows
+    try {
+      await invoke("sync_share", { path, createKey: askKey ? $("party-key-input").value : null });
+      shared = true;
+    } catch (err) {
+      if (String(err) === "create_key_required") {
+        askKey = true;
+        $("players-status").textContent = "This server needs its creation key.";
+      } else {
+        $("players-error").textContent = String(err);
+      }
+    }
+  }
+  if (shared) unshare = null;
+  else if (!askKey) undoShare();
+  if (!shared && $("players-status").textContent === "Sharing…") $("players-status").textContent = "";
+  sharingNow = false;
+  if (partyPath !== path) return;
+  if (shared) {
+    askKey = false;
+    $("players-status").textContent = "Shared. Now invite your players: each one gets their own link.";
+    load(); // the room Share made: shows the invites
+    await saves;
+    $("invite-one").focus();
+    loadPlayers();
+  } else {
+    renderParty();
+    $(askKey ? "party-key-input" : "party-share").focus();
+  }
+}
+$("party-share").addEventListener("click", share);
+$("party-key-input").addEventListener("keydown", (e) => { if (e.key === "Enter") share(); });
+$("party-cancel").addEventListener("click", () => $("players-dialog").close());
 
 function clearLinks() {
   clearTimeout(linksTimer);
@@ -304,16 +355,14 @@ function clearLinks() {
   $("invite-links").hidden = true;
 }
 
-async function makeInvites(count) {
-  const path = playersPath;
+async function makeInvites() {
+  const path = partyPath;
   $("players-error").textContent = "";
   try {
-    const links = await invoke("sync_invite", { path, count });
-    if (playersPath !== path) return;
+    const links = await invoke("sync_invite", { path, count: 1 });
+    if (partyPath !== path) return;
     $("invite-text").value = links.join("\n");
-    $("invite-text").rows = Math.min(links.length, 6) + 1;
     $("invite-links").hidden = false;
-    $("invite-copy").textContent = links.length > 1 ? "Copy all" : "Copy";
     clearTimeout(linksTimer);
     linksTimer = setTimeout(clearLinks, 10 * 60 * 1000);
     $("invite-copy").focus();
@@ -326,9 +375,9 @@ async function makeInvites(count) {
 const lastSeen = (ms) => (ms ? `last seen ${when(new Date(ms).toISOString())}` : "hasn't connected yet");
 
 async function loadPlayers() {
-  const path = playersPath;
+  const path = partyPath;
   const [invites, players] = await Promise.allSettled([invoke("sync_invites", { path }), invoke("sync_members", { path })]);
-  if (playersPath !== path) return;
+  if (partyPath !== path) return;
   const failed = [invites, players].find((r) => r.status === "rejected");
   if (failed) $("players-error").textContent = String(failed.reason);
   const item = (text, button, action) => {
@@ -356,27 +405,34 @@ async function loadPlayers() {
     const name = p.name || "No character picked yet";
     if (p.owner) return item(`${name} (you, the owner)`);
     return item(`${name}, ${online.has(p.name) ? "online now" : lastSeen(p.lastSeen)}`, "Remove", async (b) => {
-      // Two clicks: the first asks.
+      // Two clicks: the first asks, out loud too (the status line is live).
       if (b.dataset.sure !== "yes") {
         b.dataset.sure = "yes";
         b.textContent = `Remove ${name}?`;
+        $("players-status").textContent = `Click Remove again to confirm removing ${name}.`;
         return;
       }
+      $("players-status").textContent = "";
       await invoke("sync_remove_member", { path, memberId: p.memberId }).catch((err) => { $("players-error").textContent = String(err); });
       loadPlayers();
     });
   }));
 }
 
-$("invite-one").addEventListener("click", () => makeInvites(1));
-$("invite-many").addEventListener("click", () => makeInvites(Math.max(2, Math.min(10, Number($("invite-count").value) || 2))));
+$("invite-one").addEventListener("click", makeInvites);
 $("invite-copy").addEventListener("click", () => navigator.clipboard.writeText($("invite-text").value)
   .then(() => { $("players-status").textContent = "Copied. Send each player their own link."; },
     (err) => { $("players-error").textContent = `Copy failed: ${err}`; }));
 $("players-close").addEventListener("click", () => $("players-dialog").close());
+$("players-dialog").addEventListener("cancel", (e) => { if (sharingNow) e.preventDefault(); });
+function undoShare() {
+  if (unshare && !current.sharing?.[unshare]?.room) changeSharing({ shared: false }, unshare);
+  unshare = null;
+}
 $("players-dialog").addEventListener("close", () => {
+  undoShare();
   clearLinks();
-  playersPath = null;
+  partyPath = null;
 });
 
 // Join: paste a link, see which server it's for, then join. The link holds the key: cleared when the dialog closes.
@@ -428,9 +484,7 @@ $("join-go").addEventListener("click", async () => {
     $("join-dialog").close();
     render(await invoke("get_settings")); // the joined campaign, before anything saves on top of older settings
     await addCampaign(path); // opens it: the download starts
-    syncErrors.set(path, "Downloading the campaign. Then pick the character you play under I play.");
-    render(current);
-    rowFor(path)?.querySelector(".campaign-me").focus();
+    openParty(path, "Downloading the campaign. Then pick the character you play.");
   } catch (err) {
     $("join-status").textContent = "";
     $("join-error").textContent = String(err);
@@ -439,24 +493,16 @@ $("join-go").addEventListener("click", async () => {
   $("join-go").disabled = $("join-cancel").disabled = false;
 });
 
-// PC pages arrive while a joined campaign downloads: refresh the I play lists.
-listen("vault-changed", () => {
-  for (const row of document.querySelectorAll(".campaign")) {
-    const path = row.querySelector(".campaign-path").textContent, select = row.querySelector(".campaign-me");
-    if (row.querySelector(".campaign-me-label").hidden || document.activeElement === select) continue;
-    invoke("campaign_pcs", { path }).then((list) => {
-      pcs.set(path, list);
-      if (select.isConnected) fillPcs(select, path, select.value);
-    }).catch(() => {});
-  }
-});
+// PC pages arrive while a joined campaign downloads: refresh the I play list.
+listen("vault-changed", () => { if (partyPath) refreshPcs(partyPath); });
 loadSyncInfo();
 
 function renderCampaigns(s) {
   // Redrawn on every settings change: a name being typed keeps its text and focus, a switch or list just used its focus.
   const typing = document.activeElement?.classList.contains("campaign-backup-name") ? document.activeElement : null;
-  const used = ["campaign-shared", "campaign-me"].find((c) => document.activeElement?.classList.contains(c));
+  const used = ["campaign-party-open", "campaign-more-toggle"].find((c) => document.activeElement?.classList.contains(c));
   const usedPath = used && document.activeElement.closest(".campaign")?.querySelector(".campaign-path").textContent;
+  const opened = new Set([...document.querySelectorAll(".campaign-more[open] .campaign-path")].map((p) => p.textContent));
   for (const row of document.querySelectorAll(".campaign")) row.remove();
   for (const path of s.campaigns) {
     const row = $("campaign-row").content.firstElementChild.cloneNode(true);
@@ -472,6 +518,8 @@ function renderCampaigns(s) {
     backupName.addEventListener("change", () => save({ backupNames: { ...current.backupNames, [path]: backupName.value.trim() } }));
     const remove = row.querySelector(".campaign-remove");
     remove.disabled = active; // switch to another campaign first
+    row.querySelector(".campaign-remove-why").hidden = !active;
+    row.querySelector(".campaign-more").open = opened.has(path);
     remove.addEventListener("click", () => save({ campaigns: current.campaigns.filter((c) => c !== path) }));
     renderSharing(row, s, path);
     $("campaign-add").before(row);
@@ -496,7 +544,6 @@ $("choose").addEventListener("click", async () => {
   $("campaigns-error").textContent = "";
   addCampaign(path).catch((err) => { $("campaigns-error").textContent = String(err); });
 });
-$("reveal").addEventListener("click", () => invoke("open_vault_folder"));
 
 // ---------- updates: the result shows in a native dialog ----------
 
@@ -532,8 +579,6 @@ function renderBackup(status) {
   $("folder-run-error").textContent = current.backupFolder ? status.folder.lastError : "";
   $("github-status").textContent = targetStatus(status.github, current.githubUser);
   $("github-run-error").textContent = current.githubUser ? status.github.lastError : "";
-  $("backup-now").disabled = $("gh-now").disabled = status.running;
-  $("backup-now").disabled ||= !current.backupFolder;
   $("folder-restore").disabled = $("folder-open").disabled = !current.backupFolder;
   $("gh-unavailable").hidden = status.githubAvailable;
   $("gh-sign-in").disabled = !status.githubAvailable;
@@ -541,12 +586,12 @@ function renderBackup(status) {
     const user = current[`${p}User`], t = status[p] ?? {};
     cloudEl(p, "cloud-status").textContent = targetStatus(t, user);
     cloudEl(p, "cloud-run-error").textContent = user ? t.lastError ?? "" : "";
-    const again = !!user && /Sign in again\.$/.test(t.lastError ?? "");
-    cloudEl(p, "cloud-again").hidden = !again;
-    cloudEl(p, "cloud-now").hidden = again; // it can't work until then
-    cloudEl(p, "cloud-now").disabled = status.running;
+    cloudEl(p, "cloud-again").hidden = !user || !/Sign in again\.$/.test(t.lastError ?? "");
     cloudEl(p, "cloud-unavailable").hidden = status[`${p}Available`];
     cloudEl(p, "cloud-sign-in").disabled = !status[`${p}Available`];
+  }
+  for (const t of ["dropbox", "google", "github"]) {
+    $("backup-target").querySelector(`[value="${t}"]`).disabled = !status[`${t}Available`] && !targetOn(t);
   }
 }
 
@@ -561,7 +606,6 @@ $("backup-choose").addEventListener("click", async () => {
   if (path) save({ backupFolder: path });
 });
 $("backup-off").addEventListener("click", () => save({ backupFolder: "" }));
-for (const id of ["backup-now", "gh-now"]) $(id).addEventListener("click", () => invoke("backup_now"));
 $("folder-restore").addEventListener("click", () => openRestore("folder", "your backup folder"));
 $("gh-restore").addEventListener("click", () => openRestore("github", "GitHub"));
 // The open campaign's backup: the folder in the file manager, the others in the browser.
@@ -616,9 +660,9 @@ $("gh-sign-out").addEventListener("click", () => {
 
 const CLOUDS = {
   dropbox: { name: "Dropbox", account: "Dropbox", where: (w) => `${["Apps/Lorekeeper", w.dropbox].filter(Boolean).join("/")} in your Dropbox`,
-    help: "Only new and changed notes are uploaded. A note you delete here is deleted there too, and Dropbox keeps deleted files for 30 days or more, so you can restore them." },
+    help: "Only changes are uploaded. A note you delete is deleted there too, but Dropbox keeps deleted files for at least 30 days." },
   google: { name: "Google Drive", account: "Google", where: (w) => `the ${w.drive} folder in your Google Drive`,
-    help: "Only new and changed notes are uploaded. A note you delete here moves to the Google Drive trash, where you can restore it for 30 days." },
+    help: "Only changes are uploaded. A note you delete goes to the Google Drive trash, where you can get it back for 30 days." },
 };
 const cloudCards = {};
 const cloudEl = (p, cls) => cloudCards[p].querySelector(`.${cls}`);
@@ -628,7 +672,8 @@ for (const [p, c] of Object.entries(CLOUDS)) {
   card.append($("cloud-card").content.cloneNode(true));
   cloudCards[p] = card;
   $("clouds").append(card);
-  card.querySelector("h2").textContent = `Back up to ${c.name}`;
+  card.className = "backup-target";
+  card.dataset.target = p;
   cloudEl(p, "cloud-label").textContent = `${c.account} account`;
   cloudEl(p, "cloud-sign-in").textContent = `Sign in with ${c.account}`;
   cloudEl(p, "cloud-unavailable").textContent = `${c.name} backup isn't set up in this build yet.`;
@@ -636,7 +681,6 @@ for (const [p, c] of Object.entries(CLOUDS)) {
   cloudEl(p, "cloud-help").textContent = c.help;
   cloudEl(p, "cloud-sign-in").addEventListener("click", () => cloudSignIn(p));
   cloudEl(p, "cloud-again").addEventListener("click", () => cloudSignIn(p));
-  cloudEl(p, "cloud-now").addEventListener("click", () => invoke("backup_now"));
   cloudEl(p, "cloud-restore").addEventListener("click", () => openRestore(p, c.name));
   cloudEl(p, "cloud-open").textContent = `Open in ${c.name}`;
   cloudEl(p, "cloud-open").addEventListener("click", () => invoke("open_backup", { source: p }).catch((err) => { cloudEl(p, "cloud-error").textContent = String(err); }));
@@ -681,7 +725,87 @@ function showClouds() {
     cloudEl(p, "cloud-flow").hidden = !flow;
     cloudEl(p, "cloud-in").hidden = flow || !user;
   }
+  showTarget();
 }
+
+// ---------- one backup target: the choice shows only its controls ----------
+// Backups that were already on stay on until you turn them off; finishing a new target's setup here turns the others
+// off (it says so first). Signing out keeps everything already backed up there.
+
+const TARGETS = { folder: "your folder", dropbox: "Dropbox", google: "Google Drive", github: "GitHub" };
+const targetOn = (t) => !!(t === "folder" ? current.backupFolder : current[`${t}User`]);
+const names = (list) => new Intl.ListFormat("en").format(list.map((t) => TARGETS[t]));
+let chosen = null, chosenOn = false, turningOff = false, offNote = "";
+
+function showTarget() {
+  if (!current) return;
+  const on = Object.keys(TARGETS).filter(targetOn);
+  if (chosen === null) { // on opening: the first backup that's on, and nothing turns off by itself
+    chosen = on[0] ?? "off";
+    chosenOn = chosen !== "off";
+  }
+  const isOn = chosen !== "off" && targetOn(chosen), others = on.filter((t) => t !== chosen);
+  if (isOn && !chosenOn && others.length) turnOff(others, true); // its setup just finished
+  chosenOn = isOn;
+  $("backup-target").value = chosen;
+  for (const el of document.querySelectorAll(".backup-target")) el.hidden = el.dataset.target !== chosen;
+  const waiting = chosen !== "off" && !isOn;
+  $("backup-others-text").textContent = !others.length ? offNote
+    : waiting ? `Backups to ${names(others)} keep running until you finish setting this up. Then they stop.`
+    : chosen === "off" ? `Backups to ${names(others)} are still on.`
+    : `Backups to ${names(others)} are on too.`;
+  $("backup-others").hidden = !$("backup-others-text").textContent;
+  const actions = $("backup-others-actions"), key = waiting ? "" : others.join();
+  if (actions.dataset.list !== key) {
+    actions.dataset.list = key;
+    actions.replaceChildren(...(waiting ? [] : others).map((t) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ghost";
+      b.textContent = `Turn off ${t === "folder" ? "folder" : TARGETS[t]}`;
+      b.addEventListener("click", () => turnOff([t], false));
+      return b;
+    }));
+  }
+  for (const b of actions.children) b.disabled = turningOff;
+}
+
+/** Turns backups off one at a time: the sign-outs each rewrite the settings file. */
+async function turnOff(list, auto) {
+  if (turningOff) return;
+  turningOff = true;
+  $("backup-others-error").textContent = "";
+  let failed = false;
+  for (const t of list) {
+    try {
+      if (t === "folder") {
+        save({ backupFolder: "" });
+        await saves;
+        if (current.backupFolder) throw $("backupFolder-error").textContent || "Couldn't turn off the folder backup."; // save shows, never throws
+      } else {
+        await invoke(t === "github" ? "github_sign_out" : "cloud_sign_out", t === "github" ? {} : { provider: t });
+        current = { ...current, [`${t}User`]: "" }; // settings-changed may come a moment later
+      }
+    } catch (err) {
+      $("backup-others-error").textContent = String(err);
+      failed = true;
+      break;
+    }
+  }
+  turningOff = false;
+  if (auto && !failed) offNote = `Backups to ${names(list)} are off now. The copies already there are kept.`;
+  render(current);
+}
+
+$("backup-target").addEventListener("change", () => {
+  if (signingIn) $("gh-cancel").click(); // a sign-in left open would finish out of sight
+  if (cloudSigningIn) cloudEl(cloudSigningIn, "cloud-cancel").click();
+  chosen = $("backup-target").value;
+  chosenOn = chosen !== "off" && targetOn(chosen);
+  offNote = "";
+  showTarget();
+  $("backup-target").focus();
+});
 
 // Starting another provider's sign-in cancels this one (one browser sign-in at a time).
 async function cloudSignIn(p) {
@@ -700,7 +824,7 @@ async function cloudSignIn(p) {
   if (attempt !== cloudAttempt) return; // cancelled, or another sign-in started meanwhile
   cloudSigningIn = null;
   showClouds();
-  cloudEl(p, current[`${p}User`] ? "cloud-now" : "cloud-sign-in").focus();
+  cloudEl(p, current[`${p}User`] ? "cloud-restore" : "cloud-sign-in").focus();
 }
 
 // ---------- D&D Beyond: sign-in happens in D&D Beyond's own page, in a window of its own ----------

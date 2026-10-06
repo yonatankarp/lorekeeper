@@ -21,7 +21,7 @@ On macOS, allow **Accessibility** the first time you use `⌘⇧S` (System Setti
 | off until you set it | New session, without opening a window. |
 | off until you set it | New page, opens the New page dialog. |
 
-Change them in **Settings > Hotkeys**. The save-selection shortcut must include `⌘` / `Ctrl`.
+Change them in **Settings > Shortcuts**. The save-selection shortcut must include `⌘` / `Ctrl`.
 
 The note box, and on macOS **Settings…** and **Open Lorekeeper…** from the menu bar icon, take you back to the app you were in (Discord, say) when you close them.
 
@@ -92,7 +92,7 @@ Each campaign backs up on its own, so switching never overwrites or deletes anot
 
 Backups made by older versions of Lorekeeper (in `Apps/Lorekeeper/Campaigns`, `Lorekeeper - <campaign>` folders or `lorekeeper-notes-<campaign>` repositories) stay where they are; new backups go to the places above.
 
-Name a campaign next to it in **Settings > General**; the name shows in the sidebar, on Home and in the tray. Each campaign needs its own name, since the names keep their backups apart. A new name starts a new backup: the old one stays where it was, and changing the name back carries it on. A campaign you remove keeps its name, so adding the folder again carries on its backups; so does a folder you add later with the name of a removed campaign, which is what you want after moving a folder (otherwise give it another name).
+Name a campaign under **Rename or remove** next to it in **Settings > General**; the name shows in the sidebar, on Home and in the tray. Each campaign needs its own name, since the names keep their backups apart. A new name starts a new backup: the old one stays where it was, and changing the name back carries it on. A campaign you remove keeps its name, so adding the folder again carries on its backups; so does a folder you add later with the name of a removed campaign, which is what you want after moving a folder (otherwise give it another name).
 
 ## Playing with your party
 
@@ -100,11 +100,11 @@ The whole party can keep one campaign together: everyone jots notes during the g
 
 **Sharing your campaign** (one person, say the DM):
 
-1. Open the campaign, then in **Settings > General** turn on **Shared with my party** next to it and pick your character under **I play** (characters are the pages in `PCs/`, so make or import them first; one person can import the whole party from D&D Beyond).
+1. Open the campaign, then in **Settings > General** click **Share with party…** next to it and pick your character under **I play** (characters are the pages in `PCs/`, so make or import them first; one person can import the whole party from D&D Beyond).
 2. Click **Share**. The sync server asks for its creation key the first time: ask the maintainer for it. Lorekeeper keeps it in your system's password storage and never asks again. Everything in the campaign then uploads.
-3. Click **Invite a player** and send the link to one player, privately (a message, not a public channel). Each link works once, for 7 days, and holds the campaign's key, so make one per player. **Players and invites…** makes several at once (**Copy all** copies them as a list), lists the pending invites so you can cancel one, and lists the players.
+3. Click **Invite a player** and send the link to one player, privately (a message, not a public channel). Each link works once, for 7 days, and holds the campaign's key, so make one per player. The same dialog, **Party…** next to the campaign from then on, lists the pending invites so you can cancel one, and the players.
 
-**Joining** (everyone else): in **Settings > General**, click **Join a shared campaign…**, paste your link, check which server it's for, then **Join**. Lorekeeper makes the campaign's folder in your Lorekeeper folder (named after the campaign), opens it and downloads everything. Then pick your character under **I play**. Opening the link in a browser only shows a page that says to paste it into Lorekeeper.
+**Joining** (everyone else): in **Settings > General**, click **Join a shared campaign…**, paste your link, check which server it's for, then **Join**. Lorekeeper makes the campaign's folder in your Lorekeeper folder (named after the campaign), opens it and downloads everything. The **Party** dialog then opens: pick your character under **I play**. Opening the link in a browser only shows a page that says to paste it into Lorekeeper.
 
 What changes in a shared campaign:
 
@@ -119,13 +119,13 @@ What changes in a shared campaign:
 
 It's not a live co-editor: two people changing the same page at the same time (say an NPC page) end up with two versions. Lorekeeper keeps yours and saves theirs next to it, named like `Mirela (conflict 2026-10-06 2015).md`, and lists it under **Sync conflicts** on Home. Open both, keep what you want in the original, then delete the copy. Your version is what the others get.
 
-**Removing a player:** the owner opens **Players and invites…** and clicks **Remove** (twice, to confirm). Their sync stops at once and Lorekeeper tells them they were removed; the notes already on their computer stay there. Removing a joined campaign from your own list (**Remove** next to it) stops its sync and deletes its token from your computer; the owner still sees you under Players until they remove you.
+**Removing a player:** the owner opens **Party…** next to the campaign and clicks **Remove** (twice, to confirm). Their sync stops at once and Lorekeeper tells them they were removed; the notes already on their computer stay there. Removing a joined campaign from your own list (**Remove** next to it) stops its sync and deletes its token from your computer; the owner still sees you under Players until they remove you.
 
 Keep the campaign folder where it is: Lorekeeper syncs one folder per campaign, and a folder it can't find doesn't sync until it's back. You can still keep the folder in a cloud drive or open it in Obsidian.
 
 ## Backups
 
-**Settings > Backups**, any of these:
+**Settings > Backups**: pick one under **Back up to**. Setting up a new one turns off the one you had (what's already backed up there stays).
 
 - **Back up to a folder:** pick a folder in Google Drive, Dropbox, OneDrive, iCloud Drive or on a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days.
 - **Dropbox or Google Drive:** click **Sign in**, then sign in and allow access in your browser (your password never goes through Lorekeeper). Lorekeeper only sees its own folders: **Apps/Lorekeeper** in Dropbox, and the **Lorekeeper** folder it made in Google Drive, with a folder for each campaign in both. Only new and changed notes are uploaded, and a note you delete is deleted there too. A deleted or overwritten note can be brought back from Dropbox's **Deleted files** or a file's **Version history**, or the Google Drive **Trash** (30 days or more).
@@ -135,13 +135,13 @@ Keep the campaign folder where it is: Lorekeeper syncs one folder per campaign, 
 
 To look at a backup of the campaign that's open: **Show in Finder** (Explorer on Windows) for the backup folder, or **Open in Dropbox**, **Open in Google Drive** or **Open on GitHub**, which open it in your browser.
 
-Backups run on each new session, every 30 minutes while notes change, once a day, and on **Back up now**. Keeping the notes folder itself in a cloud drive syncs it, but sync isn't a backup: deletions sync too.
+Backups run on each new session, every 30 minutes while notes change, and once a day. Keeping the notes folder itself in a cloud drive syncs it, but sync isn't a backup: deletions sync too.
 
 ## Settings
 
-- **General:** campaigns (notes folders), sharing them with your party, the D&D Beyond sign-in, launch at login, "saved" notifications, updates.
-- **Hotkeys:** record new shortcuts; a shortcut another app already uses is refused and the old one keeps working.
-- **Appearance:** Light (Tome), Dark (Dungeon) or System, editor font size, Timeline or Journal by default.
+- **General:** campaigns (notes folders), sharing them with your party, the D&D Beyond sign-in, launch at login, updates, and under **Advanced** the sync server.
+- **Shortcuts:** change the global shortcuts; a shortcut another app already uses is refused and the old one keeps working.
+- **Appearance:** Light (Tome), Dark (Dungeon) or Match my computer, and text size.
 - **Backups:** see above.
 
 ## Limits

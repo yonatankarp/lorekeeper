@@ -77,6 +77,23 @@ h2 { margin: 18px 0 6px 8px; color: var(--accent-text); font: 19px/1.25 var(--fo
   background: var(--surface-panel);
 }
 .panel > .hint { margin: 8px 8px 0; }
+.panel > .hint.intro { margin: 12px 8px 0; }
+/* Disclosures: "How to play with your party", "Advanced", and each campaign's "Rename or remove". */
+details.more { margin: 12px 0 0; }
+details.more > summary, .campaign-more > summary {
+  width: fit-content;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 20px;
+}
+details.more > summary:hover, .campaign-more > summary:hover { background: var(--hover); color: var(--fg); }
+details.more > :not(summary) { margin: 6px 8px 0; color: var(--muted); font-size: 14px; }
+details.more > .card { margin: 6px 0 0; color: var(--fg); font-size: 15px; }
+#advanced > summary { font-weight: 700; }
+#advanced input[type="text"] { width: 16em; }
 
 /* A row: label left, control right; errors, status and help span the full width below. */
 .row {
@@ -144,18 +161,25 @@ input[type="text"] {
   font: inherit;
 }
 .campaign-backup { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
-/* Shared with my party, and which PC you play: a line of its own under the campaign. */
-.campaign-party { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin-top: 8px; }
-.campaign-party [hidden] { display: none; }
+/* A campaign: its name across the top, then sharing, then the tucked-away rename and remove. */
+.campaign .campaign-name { font-weight: 700; }
+#campaign-add { grid-template-columns: minmax(0, 1fr); }
+#campaign-add .actions { justify-content: flex-start; }
+.campaign-more { grid-column: 1 / -1; margin: 6px 0 0 -8px; }
+/* Flex on an inner box, not on <details> itself, which WebKit lays out unreliably. */
+.campaign-more-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 0 8px; }
+.campaign-more-body > .path, .campaign-more-body > .hint { flex-basis: 100%; margin: 0; }
 output { min-width: 5ch; color: var(--muted); font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; }
 input[role="switch"] {
   appearance: none;
   position: relative;
-  width: 32px;
-  height: 20px;
+  flex: none;
+  width: 40px;
+  height: 24px;
   margin: 0;
+  padding: 0;
   border: 1px solid var(--control-border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--hover);
   cursor: pointer;
   transition: background-color 0.15s, border-color 0.15s;
@@ -165,14 +189,14 @@ input[role="switch"]::before {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: var(--control-border);
   transition: transform 0.15s;
 }
 input[role="switch"]:checked { background: var(--accent); border-color: var(--accent-text); }
-input[role="switch"]:checked::before { transform: translateX(12px); background: var(--on-accent); }
+input[role="switch"]:checked::before { transform: translateX(16px); background: var(--on-accent); }
 @media (prefers-reduced-motion: reduce) {
   input[role="switch"], input[role="switch"]::before { transition: none; }
 }
@@ -182,7 +206,9 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 :root[data-platform="macos"] .other-only { display: none; }
 /* The browser sign-in step: text left, Cancel right. */
 .row > p.cloud-step { grid-column: auto; margin: 0; }
-#clouds .cloud-help { margin: 8px 8px 0; }
+.backup-target > .hint { margin: 8px 8px 0; }
+.backup-target > .card { margin-top: 12px; }
+#backup-others > p:first-child { margin: 0; }
 /* Restore dialog. */
 #restore-dialog { width: min(480px, calc(100vw - 32px)); }
 .restore-label { margin: 0 0 4px; font-weight: 700; font-size: 15px; }
@@ -193,17 +219,17 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 #restore-status { margin: 8px 0; overflow-wrap: anywhere; }
 #restore-status:empty { display: none; }
 #restore-error:not(:empty) { margin-bottom: 12px; overflow-wrap: anywhere; }
-/* Shared campaigns: the sync line under a campaign, the creation key field, and the players and join dialogs. */
-.campaign-sync { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
-.campaign-sync[hidden], .campaign-sync [hidden] { display: none; }
-.campaign-sync .sub { flex: 1 1 14em; margin: 0; }
-.campaign-key { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; }
-.campaign-key .hint, .campaign-sync .error { flex-basis: 100%; }
+/* Shared campaigns: the Party and Join dialogs. The Party dialog scrolls inside the fixed-size window. */
 #players-dialog, #join-dialog { width: min(500px, calc(100vw - 32px)); }
+#players-dialog { max-height: calc(100vh - 32px); overflow-y: auto; }
+#party-intro, #party-no-pcs, #party-key .hint, #party-shared-help { margin: -6px 0 12px; }
+#party-intro { margin-top: 0; }
+#party-sync:empty, #players-status:empty { display: none; }
+#party-sync { margin: 0 0 12px; overflow-wrap: anywhere; }
+dialog label.party-switch { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; font-weight: 400; }
+#party-shared-help { margin: 0 0 12px; }
 #players-dialog h3 { margin: 16px 0 4px; font-size: 15px; }
 .players-make { justify-content: flex-start; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-.players-make label { display: flex; margin: 0; font-weight: 400; }
-#invite-count { width: 4em; }
 dialog textarea {
   width: 100%;
   box-sizing: border-box;
@@ -222,3 +248,5 @@ dialog textarea {
 .sync-list li:last-child { border-bottom: 0; }
 #join-server, #players-status { margin: 0 0 8px; overflow-wrap: anywhere; }
 #join-warning:not(:empty) { margin: 0 0 8px; }
+/* styles.css reserves room under the main window's D&D Beyond dialog error, which shares this id. */
+#ddb-error:empty { min-height: 0; margin: 0; }

@@ -440,7 +440,6 @@ fn merge_save(disk: &str, base: &str, content: &str) -> Option<String> {
 // ---------- settings.json (in the app's config folder) ----------
 
 const THEMES: [&str; 3] = ["system", "light", "dark"];
-const SESSION_VIEWS: [&str; 2] = ["timeline", "journal"];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -461,8 +460,6 @@ struct Settings {
     sync_server: String,
     theme: String,
     editor_font_size: u32,
-    session_view: String,
-    notifications: bool,
     /// Kept by the OS (autostart), never in the file; see current_settings.
     launch_at_login: bool,
     /// Where dated copies of the vault go; "" = off.
@@ -492,8 +489,6 @@ impl Default for Settings {
             sync_server: String::new(),
             theme: "system".into(),
             editor_font_size: 15,
-            session_view: "timeline".into(),
-            notifications: true,
             launch_at_login: false,
             backup_folder: String::new(),
             github_repo: "lorekeeper-notes".into(),
@@ -633,9 +628,6 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     if !THEMES.contains(&s.theme.as_str()) {
         return Err(format!("Unknown theme \"{}\".", s.theme));
     }
-    if !SESSION_VIEWS.contains(&s.session_view.as_str()) {
-        return Err(format!("Unknown session view \"{}\".", s.session_view));
-    }
     if !s.backup_folder.is_empty() {
         if !Path::new(&s.backup_folder).is_absolute() {
             return Err(format!("The backup folder must be a full path, not \"{}\".", s.backup_folder));
@@ -704,13 +696,6 @@ fn refresh_login_item(app: &AppHandle) {
 
 fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
-}
-
-/// Success messages, which can be turned off in Settings. Errors and warnings use notify.
-fn notify_saved(app: &AppHandle, title: &str, body: &str) {
-    if app.state::<Mutex<Settings>>().lock().unwrap().notifications {
-        notify(app, title, body);
-    }
 }
 
 fn preview(text: &str) -> String {
@@ -833,7 +818,7 @@ fn capture_selection(app: &AppHandle) {
         Ok(saved) if saved.is_empty() => notify(app, "Nothing to save", "No text selected or copied."),
         Ok(saved) => {
             emit_changed(app);
-            notify_saved(app, title, &preview(&saved));
+            notify(app, title, &preview(&saved));
         }
         Err(e) => notify(app, "Couldn't save note", &e),
     }
@@ -881,8 +866,8 @@ fn start_new_session(app: &AppHandle) {
     match note_target(app).and_then(|(dir, me)| new_session(&dir, me.as_deref()).map_err(|e| e.to_string())) {
         Ok(p) => {
             emit_changed(app);
-            backup::request(false); // captures the session that just ended
-            notify_saved(app, "New session started", &session_name(&p));
+            backup::request(); // captures the session that just ended
+            notify(app, "New session started", &session_name(&p));
         }
         Err(e) => notify(app, "Couldn't start session", &e),
     }
@@ -908,7 +893,7 @@ fn note_target(app: &AppHandle) -> Result<(PathBuf, Option<String>), String> {
 fn save_note(app: AppHandle, text: String, start_new: Option<bool>) -> Result<String, String> {
     let saved = note_target(&app).and_then(|(dir, me)| {
         let me = me.as_deref();
-        let fresh = if start_new == Some(true) { new_session(&dir, me).map(|_| backup::request(false)) } else { Ok(()) };
+        let fresh = if start_new == Some(true) { new_session(&dir, me).map(|_| backup::request()) } else { Ok(()) };
         fresh.and_then(|_| append_note(&dir, me, &text)).and_then(|_| current_session(&dir, me)).map_err(|e| e.to_string())
     });
     match saved {
@@ -1267,7 +1252,7 @@ fn start_session(app: AppHandle) -> Result<String, String> {
     let (root, me) = note_target(&app)?;
     let path = new_session(&root, me.as_deref()).map_err(|e| e.to_string())?;
     emit_changed(&app);
-    backup::request(false); // captures the session that just ended
+    backup::request(); // captures the session that just ended
     Ok(rel_path(&root, &path))
 }
 
@@ -1397,7 +1382,7 @@ fn switch_campaign(app: AppHandle, path: String) -> Result<(), String> {
     allow_vault_images(&app, &path);
     backup::left(&old.vault_path); // its last changes still get backed up
     emit_changed(&app);
-    backup::request(false);
+    backup::request();
     Ok(())
 }
 
@@ -1436,11 +1421,6 @@ async fn pick_folder(app: AppHandle, window: tauri::WebviewWindow, title: String
 }
 
 // ---------- backups (see backup.rs, github.rs and cloud.rs) ----------
-
-#[tauri::command]
-fn backup_now() {
-    backup::request(true);
-}
 
 #[tauri::command]
 fn backup_status() -> backup::Status {
@@ -1618,7 +1598,6 @@ pub fn run() {
             pick_folder,
             open_vault_folder,
             switch_campaign,
-            backup_now,
             backup_status,
             github_sign_in_start,
             github_sign_in_wait,
@@ -2043,12 +2022,12 @@ mod tests {
         let s = load_settings(&config, &vault).unwrap();
         let one = Settings { vault_path: vault_path.clone(), campaigns: vec![vault_path.clone()], ..Settings::default() };
         assert_eq!(s, one);
-        assert_eq!((s.theme.as_str(), s.editor_font_size, s.session_view.as_str(), s.notifications), ("system", 15, "timeline", true));
+        assert_eq!((s.theme.as_str(), s.editor_font_size), ("system", 15));
         let written = fs::read_to_string(&config).unwrap();
         assert!(written.contains("\"editorFontSize\": 15") && !written.contains("launchAtLogin"));
 
-        // A partial file keeps what it has and fills in the rest.
-        fs::write(&config, r#"{"theme":"dark","editorFontSize":18}"#).unwrap();
+        // A partial file keeps what it has and fills in the rest; settings that were removed are ignored.
+        fs::write(&config, r#"{"theme":"dark","editorFontSize":18,"sessionView":"journal","notifications":false}"#).unwrap();
         let s = load_settings(&config, &vault).unwrap();
         assert_eq!((s.theme.as_str(), s.editor_font_size, s.quick_note.as_str()), ("dark", 18, "CmdOrCtrl+Alt+N"));
         assert!(s.auto_update, "files from before automatic updates turn them on");
@@ -2114,7 +2093,6 @@ mod tests {
         let bad = [
             Settings { theme: "purple".into(), ..ok.clone() },
             Settings { theme: "tome".into(), ..ok.clone() }, // migrated by load_settings, never sent by the window
-            Settings { session_view: "grid".into(), ..ok.clone() },
             Settings { vault_path: "notes".into(), ..ok.clone() },
             Settings { quick_note: "CmdOrCtrl+Nope".into(), ..ok.clone() },
             Settings { capture: "Alt+Shift+S".into(), ..ok.clone() },

@@ -271,17 +271,17 @@ impl Status {
 static STATUS: LazyLock<Mutex<Status>> = LazyLock::new(Mutex::default);
 /// Bumped whenever the app writes a note; a target whose `done` differs has changes to back up.
 static VERSION: AtomicU64 = AtomicU64::new(0);
-/// Wakes the backup thread; true = back up even if nothing changed.
-static WAKE: OnceLock<mpsc::Sender<bool>> = OnceLock::new();
+/// Wakes the backup thread to run the backups that are due.
+static WAKE: OnceLock<mpsc::Sender<()>> = OnceLock::new();
 
 pub fn mark_changed() {
     VERSION.fetch_add(1, Relaxed);
 }
 
-/// Asks the backup thread to run the backups that are due (or all of them when `force`).
-pub fn request(force: bool) {
+/// Asks the backup thread to run the backups that are due.
+pub fn request() {
     if let Some(tx) = WAKE.get() {
-        let _ = tx.send(force);
+        let _ = tx.send(());
     }
 }
 
@@ -308,7 +308,7 @@ fn publish(app: &AppHandle) {
 pub fn reset(app: &AppHandle, kind: Kind) {
     *STATUS.lock().unwrap().target(kind) = Target::default();
     publish(app);
-    request(false);
+    request();
 }
 
 fn ran_today(t: &Target, today: NaiveDate) -> bool {
@@ -343,7 +343,7 @@ fn finish(app: &AppHandle, kind: Kind, version: u64, result: Result<String, Stri
 }
 
 /// Backs up each enabled target that has unsaved changes or no backup from today.
-fn run(app: &AppHandle, force: bool) {
+fn run(app: &AppHandle) {
     let settings = app.state::<Mutex<Settings>>().lock().unwrap().clone();
     let (version, today) = (VERSION.load(Relaxed), Local::now().date_naive());
     let on = [(Kind::Folder, &settings.backup_folder), (Kind::Github, &settings.github_user)]
@@ -352,7 +352,7 @@ fn run(app: &AppHandle, force: bool) {
         .filter(|(_, setting)| !setting.is_empty());
     let due: Vec<Kind> = {
         let mut s = STATUS.lock().unwrap();
-        on.map(|(kind, _)| kind).filter(|k| force || s.target(*k).done != version || !ran_today(s.target(*k), today)).collect()
+        on.map(|(kind, _)| kind).filter(|k| s.target(*k).done != version || !ran_today(s.target(*k), today)).collect()
     };
     if due.is_empty() {
         return;
@@ -403,14 +403,12 @@ pub fn start(app: AppHandle) {
     thread::spawn(move || {
         let mut wait = Duration::from_secs(60);
         loop {
-            let force = match rx.recv_timeout(wait) {
-                Ok(force) => force,
-                Err(mpsc::RecvTimeoutError::Timeout) => false,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            };
-            let force = rx.try_iter().fold(force, |a, b| a || b); // requests that piled up meanwhile
+            if let Err(mpsc::RecvTimeoutError::Disconnected) = rx.recv_timeout(wait) {
+                return;
+            }
+            rx.try_iter().for_each(drop); // requests that piled up meanwhile
             wait = Duration::from_secs(30 * 60);
-            run(&app, force);
+            run(&app);
         }
     });
 }
