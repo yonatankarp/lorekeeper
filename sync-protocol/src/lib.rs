@@ -40,6 +40,8 @@ pub enum Error {
     Decrypt,
     /// The invite link isn't one Lorekeeper made; the text says what's wrong.
     Invite(&'static str),
+    /// Not a sync server address Lorekeeper talks to; the text says what's wrong.
+    Server(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -48,6 +50,7 @@ impl fmt::Display for Error {
             Error::Encoding => f.write_str("bad encoding"),
             Error::Decrypt => f.write_str("can't decrypt"),
             Error::Invite(why) => write!(f, "bad invite link: {why}"),
+            Error::Server(why) => write!(f, "bad server address: {why}"),
         }
     }
 }
@@ -155,19 +158,75 @@ pub fn seal(key: &[u8; SECRET_LEN], room: &str, id: &str, file: &FileContent) ->
     seal_with_nonce(key, &random(), &associated_data(room, id), &json)
 }
 
-/// Decrypts a blob made by [`seal`] for the same key, room and id.
-pub fn open(key: &[u8; SECRET_LEN], room: &str, id: &str, blob: &[u8]) -> Result<FileContent, Error> {
+fn open_raw(key: &[u8; SECRET_LEN], aad: &[u8], blob: &[u8]) -> Result<Vec<u8>, Error> {
     if blob.len() < NONCE_LEN + TAG_LEN {
         return Err(Error::Decrypt);
     }
     let (nonce, ct) = blob.split_at(NONCE_LEN);
     let nonce: [u8; NONCE_LEN] = nonce.try_into().expect("split at NONCE_LEN");
     let cipher = XChaCha20Poly1305::new(&(*key).into());
-    let aad = associated_data(room, id);
-    let json = cipher
-        .decrypt(&XNonce::from(nonce), Payload { msg: ct, aad: &aad })
-        .map_err(|_| Error::Decrypt)?;
+    cipher.decrypt(&XNonce::from(nonce), Payload { msg: ct, aad }).map_err(|_| Error::Decrypt)
+}
+
+/// Decrypts a blob made by [`seal`] for the same key, room and id.
+pub fn open(key: &[u8; SECRET_LEN], room: &str, id: &str, blob: &[u8]) -> Result<FileContent, Error> {
+    let json = open_raw(key, &associated_data(room, id), blob)?;
     serde_json::from_slice(&json).map_err(|_| Error::Decrypt)
+}
+
+const MEMBER_CONTEXT: &[u8] = b"lorekeeper member name v1";
+/// Longest name [`seal_member`] keeps (bytes); the sealed display id then fits the server's 512.
+pub const MAX_MEMBER_NAME: usize = 300;
+
+fn member_aad(room: &str) -> Vec<u8> {
+    [room.as_bytes(), MEMBER_CONTEXT].concat()
+}
+
+/// A member display id: the player's name sealed with the room key (`nonce || ciphertext || tag`,
+/// standard base64), so only the party can read it. An empty name stays "". Names are cut to
+/// [`MAX_MEMBER_NAME`] bytes.
+pub fn seal_member(key: &[u8; SECRET_LEN], room: &str, name: &str) -> String {
+    let mut end = name.len().min(MAX_MEMBER_NAME);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return String::new();
+    }
+    BASE64.encode(&seal_with_nonce(key, &random(), &member_aad(room), &name.as_bytes()[..end]))
+}
+
+/// The name in a display id made by [`seal_member`] for the same key and room ("" for "").
+pub fn open_member(key: &[u8; SECRET_LEN], room: &str, member: &str) -> Result<String, Error> {
+    if member.is_empty() {
+        return Ok(String::new());
+    }
+    let blob = BASE64.decode(member.as_bytes()).map_err(|_| Error::Encoding)?;
+    String::from_utf8(open_raw(key, &member_aad(room), &blob)?).map_err(|_| Error::Decrypt)
+}
+
+/// A sync server address as `https://host[:port]` (plain `http://` only for localhost,
+/// 127.0.0.1 and [::1]), the same rule as invite links. Surrounding whitespace and one trailing
+/// `/` are ignored and the host is lowercased; anything else after the host is refused.
+pub fn server_origin(url: &str) -> Result<String, Error> {
+    let url = url.trim();
+    let url = url.strip_suffix('/').unwrap_or(url);
+    let (scheme, authority) = if let Some(rest) = url.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        return Err(Error::Server("not an https address"));
+    };
+    if authority.contains(['/', '?', '#', '@']) {
+        return Err(Error::Server("only the server's address, without a path"));
+    }
+    let authority = authority.to_ascii_lowercase();
+    let host = parse_authority(&authority).map_err(|_| Error::Server("bad host or port"))?;
+    if scheme == "http" && !matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
+        return Err(Error::Server("http is only allowed for localhost"));
+    }
+    Ok(format!("{scheme}://{authority}"))
 }
 
 /// An invite link: `<server>/join/<room>/<invite>#<key>`. The key stays in the fragment, which
@@ -590,6 +649,51 @@ mod tests {
         ];
         for link in bad {
             assert!(matches!(Invite::parse(&link), Err(Error::Invite(_))), "accepted {link:?}");
+        }
+    }
+
+    #[test]
+    fn member_names_round_trip_and_stay_private() {
+        let room = random_id();
+        let sealed = seal_member(&KEY, &room, "Lorelei");
+        assert!(!sealed.contains("Lorelei"));
+        assert_ne!(sealed, seal_member(&KEY, &room, "Lorelei"), "fresh nonce each time");
+        assert_eq!(open_member(&KEY, &room, &sealed), Ok("Lorelei".into()));
+        assert_eq!(open_member(&[8u8; 32], &room, &sealed), Err(Error::Decrypt), "wrong key");
+        assert_eq!(open_member(&KEY, &random_id(), &sealed), Err(Error::Decrypt), "another room");
+        assert_eq!(seal_member(&KEY, &room, ""), "");
+        assert_eq!(open_member(&KEY, &room, ""), Ok(String::new()));
+        assert_eq!(open_member(&KEY, &room, "not base64!"), Err(Error::Encoding));
+        assert_eq!(open_member(&KEY, &room, "AAAA"), Err(Error::Decrypt), "too short");
+        // A file blob can't pass for a member name, nor the other way round.
+        let id = file_id(&KEY, "a.md");
+        let blob = encode_blob(&seal(&KEY, &room, &id, &file()));
+        assert_eq!(open_member(&KEY, &room, &blob), Err(Error::Decrypt));
+        assert_eq!(open(&KEY, &room, &id, &decode_blob(&sealed).unwrap()), Err(Error::Decrypt));
+        // Long names are cut on a character boundary and still fit the server's 512 bytes.
+        let long = "é".repeat(400);
+        let sealed = seal_member(&KEY, &room, &long);
+        assert!(sealed.len() <= 512, "{}", sealed.len());
+        assert_eq!(open_member(&KEY, &room, &sealed).unwrap(), "é".repeat(MAX_MEMBER_NAME / 2));
+    }
+
+    #[test]
+    fn server_origins_are_strict() {
+        for (url, origin) in [
+            ("https://lorekeeper.yonatankarp.com", "https://lorekeeper.yonatankarp.com"),
+            (" https://Sync.Example.org:8443/ ", "https://sync.example.org:8443"),
+            ("http://127.0.0.1:18081", "http://127.0.0.1:18081"),
+            ("http://localhost:8080/", "http://localhost:8080"),
+            ("http://[::1]:8080", "http://[::1]:8080"),
+        ] {
+            assert_eq!(server_origin(url), Ok(origin.into()), "{url}");
+        }
+        for url in [
+            "", "lorekeeper.yonatankarp.com", "ftp://h.com", "http://h.com", "http://192.168.1.2:8080", "https://h.com/sub",
+            "https://h.com?x=1", "https://h.com#k", "https://user@h.com", "https://h.com:0", "https://h_x.com", "https://",
+            "https://h.com//", "wss://h.com", "http://localhost.evil.com",
+        ] {
+            assert!(matches!(server_origin(url), Err(Error::Server(_))), "accepted {url:?}");
         }
     }
 
