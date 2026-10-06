@@ -414,9 +414,10 @@ impl Core {
     }
 
     fn save(&mut self) {
-        if self.dirty && save_state(&self.cfg.state_file, &self.state).is_ok() {
-            self.dirty = false;
+        if self.dirty {
+            // On every try: a save that keeps failing (a full disk) is tried once a second, not in a tight loop.
             self.saved = Instant::now();
+            self.dirty = save_state(&self.cfg.state_file, &self.state).is_err();
         }
     }
 
@@ -470,7 +471,7 @@ impl Core {
                 cmd = rx.recv() => match cmd {
                     Some(Cmd::Poke) => s.rescan = true,
                     None | Some(Cmd::Stop) => {
-                        let _ = ws.close(None).await;
+                        let _ = tokio::time::timeout(Duration::from_secs(5), ws.close(None)).await;
                         return End::Stop;
                     }
                 },
@@ -862,6 +863,8 @@ impl Core {
             path.push(part);
             match fs::symlink_metadata(&path) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Local::Missing),
+                // A file where the path needs a folder (`Page.md/x.md`): refused like a symlink, not retried forever.
+                Err(e) if e.kind() == io::ErrorKind::NotADirectory => return Ok(Local::NotRegular),
                 Err(e) => return Err(e),
                 Ok(m) if m.file_type().is_symlink() => return Ok(Local::NotRegular),
                 Ok(_) => {}

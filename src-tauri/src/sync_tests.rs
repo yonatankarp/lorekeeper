@@ -112,6 +112,15 @@ fn a_hostile_server_cant_grow_memory_or_flood_the_windows() {
     assert_eq!(names.len(), MAX_PRESENCE);
     assert!(names.iter().all(|n| n.starts_with('P')), "an oversized display id is skipped");
     assert!(fs::read_dir(&dir).unwrap().next().is_none(), "nothing written");
+
+    // A state file that can't be saved is tried again a second later, not on every turn of the loop.
+    fs::write(dir.join("file"), "").unwrap();
+    core.cfg.state_file = dir.join("file/state.json");
+    let before = core.saved;
+    std::thread::sleep(Duration::from_millis(5));
+    core.dirty = true;
+    core.save();
+    assert!(core.dirty && core.saved > before);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -540,11 +549,12 @@ async fn hostile_names_neither_stall_sync_nor_reach_templates() {
     let too_long = format!("{}/x.md", vec!["abcdefghi"; 100].join("/"));
     let files = [
         (at_limit.as_str(), "long name"), (too_long.as_str(), "deep"), ("templates/NPC.md", "planted"), ("Templateſ/Evil.md", "planted"),
-        ("TEMPLA~1/Evil.md", "planted"), ("NPCs/Marker.md", "after them"),
+        ("TEMPLA~1/Evil.md", "planted"), ("Lore/Page.md", "page"), ("Lore/Page.md/x.md", "under a file"), ("NPCs/Marker.md", "after them"),
     ];
     put_sealed(&room, &token, &files).await;
     until("the page after them", || player.read("NPCs/Marker.md").as_deref() == Some("after them")).await;
     assert_eq!(player.read(&at_limit).as_deref(), Some("long name"));
+    assert_eq!(player.read("Lore/Page.md").as_deref(), Some("page"));
     until("synced", || player.rec.last() == Some(Status::Synced)).await;
 
     // Changed here while another player changed it too: the copy's name is cut to fit.
