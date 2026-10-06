@@ -241,7 +241,7 @@ function showSyncStatus(row, path) {
   let text = syncText(snap, sh, path === current.vaultPath);
   if (sh.shared && !sh.room && !sh.removed) {
     const server = syncInfo?.server?.Ok;
-    text = sharing === path ? "Sharing…" : `Not synced yet. Share uploads it, encrypted, to ${server ?? "the sync server"}.`;
+    text = sharing === path ? "Sharing…" : `Not shared yet. Next: Share, which uploads it encrypted to ${server ?? "the sync server"}, then Invite a player for each friend.`;
   }
   const online = path === current.vaultPath && sh.room ? onlineText(snap) : "";
   row.querySelector(".campaign-sync-status").textContent = [text, online].filter(Boolean).join(" · ");
