@@ -512,7 +512,7 @@ pub fn open_backup(app: AppHandle, source: Source) -> Result<(), String> {
         crate::open_external(dir.ok_or("The backup folder isn't there. If it's on a drive, connect it.")?);
         return Ok(());
     }
-    let config = app.path().app_config_dir().ok();
+    let config = crate::config_dir(&app).ok();
     let drive_id = config.and_then(|dir| cloud::drive_folder_id(&dir, &s.google_user, &w.name));
     crate::open_external(web_page(source, &s, &w, drive_id.as_deref()));
     Ok(())

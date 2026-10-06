@@ -96,11 +96,9 @@ fn conflict_name(rel: &str, when: &str, n: u32) -> String {
     if dir.is_empty() { file } else { format!("{dir}/{file}") }
 }
 
-/// The campaign name from a joined campaign's metadata file, made safe as a folder name; None when it's missing or
-/// unusable.
-pub(crate) fn campaign_name(root: &Path) -> Option<String> {
-    let bytes = fs::read(root.join(METADATA)).ok().filter(|b| b.len() < 64 * 1024)?;
-    let v: Value = serde_json::from_slice(&bytes).ok()?;
+/// The campaign name in the metadata file's content, made safe as a folder name; None when it's unusable.
+fn metadata_name(bytes: &[u8]) -> Option<String> {
+    let v: Value = serde_json::from_slice(bytes).ok().filter(|_| bytes.len() < 64 * 1024)?;
     folder_name(v["name"].as_str()?)
 }
 
@@ -941,8 +939,7 @@ pub async fn fetch_name(server: &str, room: &str, key: &[u8; SECRET_LEN], token:
             if let Some(blob) = found {
                 let _ = ws.close(None).await;
                 let file = open(key, room, &id, &decode_blob(&blob).ok()?).ok()?;
-                let v: Value = serde_json::from_slice(&file.content).ok()?;
-                return folder_name(v["name"].as_str()?);
+                return metadata_name(&file.content);
             }
             if !more {
                 break;

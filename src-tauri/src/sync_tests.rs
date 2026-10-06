@@ -64,6 +64,10 @@ fn campaign_names_from_the_network_are_safe_folder_names() {
     for bad in ["", "  ", "../Documents", "a/b", "a\\b", ".hidden", "CON", "nul.txt", "a:b", "line\nbreak", "..", "."] {
         assert_eq!(folder_name(bad), None, "{bad:?}");
     }
+    assert_eq!(metadata_name(br#"{"name":"Curse of Strahd"}"#).as_deref(), Some("Curse of Strahd"));
+    assert_eq!(metadata_name(br#"{"name":"../../Library"}"#), None);
+    assert_eq!(metadata_name(br#"{"name":42}"#), None);
+    assert_eq!(metadata_name(b"not json"), None);
 }
 
 #[test]
@@ -286,7 +290,7 @@ async fn two_players_sync_through_the_server() {
     until("the first download", || member.rec.last() == Some(Status::Synced)).await;
     assert_eq!(member.tree(), owner.tree());
     assert_eq!(fs::read(member_dir.join("Attachments/map.png")).unwrap(), portrait);
-    assert_eq!(campaign_name(&member_dir).as_deref(), Some("Curse of Strahd"));
+    assert_eq!(metadata_name(&fs::read(member_dir.join(METADATA)).unwrap()).as_deref(), Some("Curse of Strahd"));
     for private in ["Templates/NPC.md", ".obsidian/app.md", "notes.txt", "Lore/run.sh"] {
         assert!(!member_dir.join(private).exists(), "{private} must not sync");
     }

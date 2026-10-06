@@ -61,6 +61,9 @@ pub(crate) fn start(app: AppHandle) {
                 crate::backup::mark_changed(); // a teammate's notes get backed up too
                 let _ = app.emit("vault-changed", ());
             }
+            if dir == root && last != now {
+                crate::shared::poke(); // anything changed, the app's own writes too: a shared campaign syncs it
+            }
             (root, last) = (dir, now);
         }
     });

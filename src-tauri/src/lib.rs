@@ -28,6 +28,7 @@ mod gdrive;
 mod github;
 mod obsidian;
 mod restore;
+mod shared;
 mod sync;
 mod updater;
 mod watch;
@@ -66,9 +67,32 @@ pub(crate) fn notes_dir(app: &AppHandle) -> PathBuf {
 }
 
 /// Documents/Lorekeeper: the default notes folder, and the folder that holds your campaigns and their shared Templates/.
+/// A test profile's is Documents/Lorekeeper (<profile>).
 fn default_vault(app: &AppHandle) -> PathBuf {
     let base = app.path().document_dir().or_else(|_| app.path().home_dir());
-    base.expect("no home directory").join("Lorekeeper")
+    let name = profile().map_or_else(|| "Lorekeeper".to_string(), |p| format!("Lorekeeper ({p})"));
+    base.expect("no home directory").join(name)
+}
+
+/// `LOREKEEPER_PROFILE=<name>`: a test profile with its own settings, keychain entries and default notes folder, so two
+/// copies of the app can run side by side (docs/DEVELOPMENT.md, "Testing sync locally"). Letters, digits, - and _.
+pub(crate) fn profile() -> Option<&'static str> {
+    static PROFILE: std::sync::LazyLock<Option<String>> =
+        std::sync::LazyLock::new(|| std::env::var("LOREKEEPER_PROFILE").ok().filter(|p| !p.is_empty()));
+    PROFILE.as_deref()
+}
+
+fn valid_profile(p: &str) -> bool {
+    p.len() <= 32 && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The app's config folder: settings, backup status, sync state. A test profile's is <config>/profiles/<name>.
+pub(crate) fn config_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
+    let dir = app.path().app_config_dir()?;
+    Ok(match profile() {
+        Some(p) => dir.join("profiles").join(p),
+        None => dir,
+    })
 }
 pub(crate) use default_vault as library_dir;
 
@@ -432,6 +456,8 @@ struct Settings {
     backup_names: BTreeMap<String, String>,
     /// Notes folder -> how it's shared with your party; a campaign not in here is yours alone.
     sharing: BTreeMap<String, Sharing>,
+    /// The sync server new shared campaigns go to; "" = LOREKEEPER_SYNC_SERVER, else the maintainer's (see shared.rs).
+    sync_server: String,
     theme: String,
     editor_font_size: u32,
     session_view: String,
@@ -462,6 +488,7 @@ impl Default for Settings {
             campaigns: Vec::new(),
             backup_names: BTreeMap::new(),
             sharing: BTreeMap::new(),
+            sync_server: String::new(),
             theme: "system".into(),
             editor_font_size: 15,
             session_view: "timeline".into(),
@@ -479,13 +506,22 @@ impl Default for Settings {
     }
 }
 
-/// A campaign folder the party shares (say through Google Drive): each player's quick notes go to a file of their own.
+/// A campaign the party shares: each player's quick notes go to a file of their own. It syncs through a Lorekeeper
+/// sync server once it has a room (see shared.rs and sync.rs); the room's key and token are in the keychain.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct Sharing {
     shared: bool,
     /// The PC you play in it ("PCs/Sibling 5.md"); its name names your files.
     me: String,
+    /// The sync server its room is on. This and the next three are set only by Share and Join.
+    server: String,
+    /// Its room on the server; "" = not synced.
+    room: String,
+    /// "owner" (shared it: invites and removes players) or "member" (joined from an invite).
+    role: String,
+    /// The owner removed you: it no longer syncs.
+    removed: bool,
 }
 
 const PICK_PC: &str = "Pick your character in Settings > General first";
@@ -517,7 +553,7 @@ impl Settings {
 }
 
 fn settings_file(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(app.path().app_config_dir()?.join("settings.json"))
+    Ok(config_dir(app)?.join("settings.json"))
 }
 
 fn write_settings(file: &Path, s: &Settings) -> io::Result<()> {
@@ -590,6 +626,9 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     if let Some(c) = s.sharing.values().find(|c| !c.me.is_empty() && !(c.me.starts_with("PCs/") && vault_file(Path::new("/"), &c.me).is_ok())) {
         return Err(format!("\"{}\" isn't a page in PCs/.", c.me));
     }
+    if !s.sync_server.trim().is_empty() {
+        s.sync_server = sync_protocol::server_origin(&s.sync_server).map_err(|e| format!("Sync server: {e}."))?;
+    }
     if !THEMES.contains(&s.theme.as_str()) {
         return Err(format!("Unknown theme \"{}\".", s.theme));
     }
@@ -620,6 +659,9 @@ fn current_settings(app: &AppHandle) -> Settings {
 
 /// Turns launch at login on or off and keeps the tray's checkmark in step.
 fn set_launch_at_login(app: &AppHandle, on: bool) -> Result<(), String> {
+    if profile().is_some() {
+        return Err("Launch at login stays off in a test profile.".into()); // the login item is shared by every profile
+    }
     let al = app.autolaunch();
     let result = if on { al.enable() } else { al.disable() };
     if on && result.is_ok() {
@@ -633,7 +675,7 @@ fn set_launch_at_login(app: &AppHandle, on: bool) -> Result<(), String> {
 /// elsewhere. Records the path it was registered with, so refresh_login_item only acts once.
 fn login_item_marker(app: &AppHandle) -> Option<(PathBuf, String)> {
     let exe = std::env::current_exe().ok()?.to_string_lossy().into_owned();
-    Some((app.path().app_config_dir().ok()?.join("login-item"), exe))
+    Some((config_dir(app).ok()?.join("login-item"), exe))
 }
 
 fn remember_login_item(app: &AppHandle) {
@@ -644,6 +686,9 @@ fn remember_login_item(app: &AppHandle) {
 
 /// Re-registers an existing login item that points at an old program path (once per move).
 fn refresh_login_item(app: &AppHandle) {
+    if profile().is_some() {
+        return;
+    }
     let al = app.autolaunch();
     let Some((marker, exe)) = login_item_marker(app) else { return };
     if !al.is_enabled().unwrap_or(false) || fs::read_to_string(&marker).ok().as_deref() == Some(exe.as_str()) {
@@ -1290,6 +1335,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     let active = app.state::<Mutex<Settings>>().lock().unwrap().clone();
     let mut new = validate(Settings { vault_path: active.vault_path, ..settings })?;
     let old = current_settings(&app);
+    shared::guard_settings(&app, &old, &mut new);
     new.github_user = old.github_user.clone();
     for p in cloud::ALL {
         new = new.with_cloud_user(p, old.cloud_user(p).clone());
@@ -1330,6 +1376,7 @@ fn store_settings(app: &AppHandle, new: &Settings) -> Result<(), String> {
     *app.state::<Mutex<Settings>>().lock().unwrap() = new.clone();
     let _ = app.emit("settings-changed", new);
     fill_campaign_menu(app);
+    shared::restart(app); // the open campaign, its room or your PC may have changed
     Ok(())
 }
 
@@ -1442,7 +1489,7 @@ async fn github_sign_out(app: AppHandle) -> Result<(), String> {
 /// the browser comes back, or fails when cancelled or after 5 minutes.
 #[tauri::command]
 async fn cloud_sign_in(app: AppHandle, provider: cloud::Provider) -> Result<String, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = config_dir(&app).map_err(|e| e.to_string())?;
     let account = off_main(move || cloud::sign_in(provider, &dir)).await?;
     store_settings(&app, &current_settings(&app).with_cloud_user(provider, account.clone()))?;
     backup::reset(&app, backup::Kind::Cloud(provider)); // first backup right away
@@ -1495,7 +1542,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let tray = TrayIconBuilder::new().icon(app.default_window_icon().unwrap().clone());
 
     tray
-        .tooltip("Lorekeeper")
+        .tooltip(profile().map_or_else(|| "Lorekeeper".to_string(), |p| format!("Lorekeeper ({p})")))
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -1526,6 +1573,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if profile().is_some_and(|p| !valid_profile(p)) {
+        // Never fall back to the real profile by accident.
+        eprintln!("LOREKEEPER_PROFILE may only hold letters, digits, - and _ (at most 32).");
+        std::process::exit(2);
+    }
     // Release builds abort on panic with no console (Windows), so leave the reason in a file.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1586,7 +1638,16 @@ pub fn run() {
             restore::restore_open,
             restore::campaign_places,
             restore::open_backup,
-            updater::check_for_updates
+            updater::check_for_updates,
+            shared::sync_info,
+            shared::sync_share,
+            shared::sync_invite,
+            shared::sync_invites,
+            shared::sync_cancel_invite,
+            shared::sync_members,
+            shared::sync_remove_member,
+            shared::sync_check_invite,
+            shared::sync_join
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon.
@@ -1609,12 +1670,19 @@ pub fn run() {
             // Windows are created here ("create": false in tauri.conf.json), after the state their
             // commands read. On Windows a page can call a command while Tauri is still building windows.
             for config in &handle.config().app.windows {
-                tauri::WebviewWindowBuilder::from_config(handle, config)?.build()?;
+                let window = tauri::WebviewWindowBuilder::from_config(handle, config)?;
+                match profile() {
+                    Some(p) => window.title(format!("{} ({p})", config.title)).build()?,
+                    None => window.build()?,
+                };
             }
             refresh_login_item(handle);
             backup::start(handle.clone());
-            updater::start(handle.clone());
+            if profile().is_none() {
+                updater::start(handle.clone()); // a test profile never calls out on its own
+            }
             watch::start(handle.clone());
+            shared::restart(handle);
             for keys in register_shortcuts(handle, &settings) {
                 notify(handle, "Shortcut unavailable", &format!("{keys} couldn't be registered. Change it in Settings."));
             }
@@ -1828,7 +1896,7 @@ mod tests {
 
     #[test]
     fn shared_campaigns_need_a_character() {
-        let sharing = |shared: bool, me: &str| [("/v".to_string(), Sharing { shared, me: me.into() })].into();
+        let sharing = |shared: bool, me: &str| [("/v".to_string(), Sharing { shared, me: me.into(), ..Sharing::default() })].into();
         let s = |sharing| Settings { vault_path: "/v".into(), sharing, ..Settings::default() };
         assert_eq!(author(&s(sharing(true, ""))), Err(PICK_PC.to_string()));
         assert_eq!(author(&s(sharing(true, "PCs/Sibling 5.md"))), Ok(Some("Sibling 5".into())));
@@ -1987,7 +2055,7 @@ mod tests {
         assert!(s.sharing.is_empty(), "files from before sharing: every campaign is yours alone");
         fs::write(&config, r#"{"sharing":{"/b/Side":{"shared":true,"me":"PCs/Arn.md"},"/old/Lore":{"shared":true}}}"#).unwrap();
         let s = load_settings(&config, &vault).unwrap();
-        assert_eq!(s.sharing["/b/Side"], Sharing { shared: true, me: "PCs/Arn.md".into() });
+        assert_eq!(s.sharing["/b/Side"], Sharing { shared: true, me: "PCs/Arn.md".into(), ..Sharing::default() });
         assert_eq!(s.sharing["/old/Lore"].me, "");
 
         // Tome and Dungeon from 0.3.0 become Light and Dark; anything else is left for validate to judge.
@@ -2087,7 +2155,7 @@ mod tests {
         let kept = Settings { backup_names: names(&[("/gone/Side", "Side")]), ..ok.clone() };
         assert_eq!(validate(kept.clone()).unwrap(), kept);
         // The PC you play in a shared campaign is a page in its PCs/ folder, or none yet.
-        let playing = |me: &str| Settings { sharing: [(tmp.clone(), Sharing { shared: true, me: me.into() })].into(), ..ok.clone() };
+        let playing = |me: &str| Settings { sharing: [(tmp.clone(), Sharing { shared: true, me: me.into(), ..Sharing::default() })].into(), ..ok.clone() };
         for me in ["", "PCs/Sibling 5.md", "PCs/Retired/Arn.md"] {
             assert_eq!(validate(playing(me)).unwrap(), playing(me));
         }

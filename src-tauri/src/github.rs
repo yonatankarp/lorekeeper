@@ -34,9 +34,14 @@ pub(crate) static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
 
 // ---------- token in the OS credential store ----------
 
-/// One entry per account ("github", "dropbox", "google") under the app's identifier.
+/// One entry per account ("github", "dropbox", "google", sync rooms) under the app's identifier; a test profile's
+/// entries have a service of their own.
 pub(crate) fn keychain(account: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("com.yonatankarp.dndnotes", account).map_err(|e| format!("Can't use the system's password storage: {e}"))
+    let service = match crate::profile() {
+        Some(p) => format!("com.yonatankarp.dndnotes.profile.{p}"),
+        None => "com.yonatankarp.dndnotes".to_string(),
+    };
+    keyring::Entry::new(&service, account).map_err(|e| format!("Can't use the system's password storage: {e}"))
 }
 
 pub fn save_token(token: &str) -> Result<(), String> {

@@ -294,7 +294,7 @@ pub fn status() -> Status {
 }
 
 fn status_file(app: &AppHandle) -> Option<PathBuf> {
-    Some(app.path().app_config_dir().ok()?.join("backup-status.json"))
+    Some(crate::config_dir(app).ok()?.join("backup-status.json"))
 }
 
 fn publish(app: &AppHandle) {
@@ -376,9 +376,7 @@ fn run(app: &AppHandle, force: bool) {
                 Kind::Folder => backup_campaign_to_folder(vault, Path::new(&settings.backup_folder), &name, today).map(|()| String::new()),
                 Kind::Github => github::load_token()
                     .and_then(|token| github::backup(&token, &settings.github_user, &settings.github_repo, &name, vault)),
-                Kind::Cloud(p) => app
-                    .path()
-                    .app_config_dir()
+                Kind::Cloud(p) => crate::config_dir(app)
                     .map_err(|e| e.to_string())
                     .and_then(|dir| cloud::backup(p, settings.cloud_user(p), &dir, vault, &name)),
             };
