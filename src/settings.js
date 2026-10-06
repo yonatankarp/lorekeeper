@@ -178,15 +178,17 @@ $("editorFontSize").addEventListener("input", (e) => { $("editorFontSize-value")
 
 // ---------- campaigns: one row each, above the Add row ----------
 
-const campaignName = (path) => path.split(/[\\/]/).filter(Boolean).pop() || path;
+const folderName = (path) => path.split(/[\\/]/).filter(Boolean).pop() || path;
+/** A campaign's name: the one given here, else its folder's name. */
+const campaignName = (path) => current.backupNames?.[path] || folderName(path);
 
 function renderCampaigns(s) {
-  // Redrawn on every settings change: a backup name being typed keeps its text and focus.
+  // Redrawn on every settings change: a name being typed keeps its text and focus.
   const typing = document.activeElement?.classList.contains("campaign-backup-name") ? document.activeElement : null;
   for (const row of document.querySelectorAll(".campaign")) row.remove();
   for (const path of s.campaigns) {
     const row = $("campaign-row").content.firstElementChild.cloneNode(true);
-    const name = campaignName(path), active = path === s.vaultPath;
+    const name = s.backupNames?.[path] || folderName(path), active = path === s.vaultPath;
     row.querySelector(".campaign-name").textContent = active ? `${name} (open now)` : name;
     row.querySelector(".campaign-path").textContent = path;
     for (const el of row.querySelectorAll(".campaign-sr")) el.textContent = ` ${name}`;
@@ -194,7 +196,7 @@ function renderCampaigns(s) {
     const backupName = row.querySelector(".campaign-backup-name");
     backupName.value = typing?.dataset.path === path ? typing.value : s.backupNames?.[path] ?? "";
     backupName.dataset.path = path;
-    backupName.placeholder = name;
+    backupName.placeholder = folderName(path);
     backupName.addEventListener("change", () => save({ backupNames: { ...current.backupNames, [path]: backupName.value.trim() } }));
     const remove = row.querySelector(".campaign-remove");
     remove.disabled = active; // switch to another campaign first

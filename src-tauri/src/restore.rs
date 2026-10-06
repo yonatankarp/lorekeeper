@@ -83,7 +83,7 @@ pub fn places(s: &Settings) -> Places {
         base => Path::new(base).join(&name).to_string_lossy().into_owned(),
     };
     Places {
-        campaign: backup::campaign_name(&s.vault_path),
+        campaign: name.clone(),
         folder,
         repo: format!("{}/{name}", s.github_repo),
         dropbox: dropbox::root(&name).trim_start_matches('/').to_string(),
@@ -637,9 +637,9 @@ mod tests {
         assert_eq!(places_of(&main), ["Lore", "Lore", path(&backups.join("Lore")).as_str(), "lorekeeper-notes/Lore", "Lore", "Lorekeeper/Lore"]);
         // Another campaign: its own folders, next to the first one's.
         assert_eq!(places_of(&other), ["Side", "Side", path(&backups.join("Side")).as_str(), "lorekeeper-notes/Side", "Side", "Lorekeeper/Side"]);
-        // A backup name of your own moves every place, and a repository of your own is shared the same way.
+        // A name of your own names the campaign and moves every place; a repository of your own is shared the same way.
         let named = Settings { backup_names: [(path(&side), "Curse of Strahd".to_string())].into(), github_repo: "dnd".into(), ..other.clone() };
-        assert_eq!(places_of(&named), ["Side", "Curse of Strahd", path(&backups.join("Curse of Strahd")).as_str(), "dnd/Curse of Strahd", "Curse of Strahd", "Lorekeeper/Curse of Strahd"]);
+        assert_eq!(places_of(&named), ["Curse of Strahd", "Curse of Strahd", path(&backups.join("Curse of Strahd")).as_str(), "dnd/Curse of Strahd", "Curse of Strahd", "Lorekeeper/Curse of Strahd"]);
         let named_main = Settings { backup_names: [(path(&lore), "Lorekeeper".to_string()), (path(&side), "Strahd".to_string())].into(), ..main.clone() };
         assert_eq!(places_of(&named_main)[3..], ["lorekeeper-notes/Lorekeeper", "Lorekeeper", "Lorekeeper/Lorekeeper"]);
         assert_eq!(places_of(&Settings { vault_path: path(&side), ..named_main.clone() })[3..], ["lorekeeper-notes/Strahd", "Strahd", "Lorekeeper/Strahd"]);

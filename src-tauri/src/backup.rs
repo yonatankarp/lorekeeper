@@ -151,9 +151,9 @@ pub fn slug(name: &str) -> String {
     out.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
 }
 
-/// Where a campaign's backups go: the backup name you gave it in Settings, else its folder's name.
-/// Each campaign is a folder of that name in every backup, so a backup of one never overwrites or
-/// deletes another's.
+/// A campaign's name: the one you gave it in Settings, else its folder's name. It's shown everywhere,
+/// and each campaign is a folder of that name in every backup, so a backup of one never overwrites
+/// or deletes another's.
 pub fn backup_name(s: &Settings, vault: &str) -> String {
     s.backup_names.get(vault).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| campaign_name(vault))
 }
@@ -175,9 +175,9 @@ pub fn check_campaigns(s: &Settings) -> Result<(), String> {
         let bad_chars = || name != name.trim() || name.ends_with('.') || name.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c));
         if (!typed && Path::new(a).file_name().is_none()) || is_snapshot(&name) || slug(&name).is_empty() || (typed && bad_chars()) {
             return Err(if typed {
-                format!("\"{name}\" can't be a backup name. Leave out / \\ : * ? \" < > |, and spaces or a dot at the end.")
+                format!("\"{name}\" can't be a campaign name. Leave out / \\ : * ? \" < > |, and spaces or a dot at the end.")
             } else {
-                format!("\"{name}\" can't name a campaign's backups. Give it a backup name, or rename the folder.")
+                format!("\"{name}\" can't name a campaign's backups. Give it a name in Settings, or rename the folder.")
             });
         }
         let same = |b: &&String| {
@@ -185,7 +185,7 @@ pub fn check_campaigns(s: &Settings) -> Result<(), String> {
             !other.is_empty() && (other.to_lowercase() == name.to_lowercase() || slug(&other) == slug(&name))
         };
         if let Some(b) = s.campaigns[i + 1..].iter().find(same) {
-            return Err(format!("\"{folder}\" and \"{}\" would back up to the same place. Give one of them another backup name.", campaign_name(b)));
+            return Err(format!("\"{folder}\" and \"{}\" would back up to the same place. Give one of them another name.", campaign_name(b)));
         }
     }
     Ok(())

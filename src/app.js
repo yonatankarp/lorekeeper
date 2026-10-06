@@ -1081,9 +1081,9 @@ function applySettings(next) {
 
 // ---------- campaigns: one notes folder each ----------
 
-/** A campaign is named after its notes folder. */
+/** A campaign's name: the one given in Settings, else its notes folder's name. */
 function campaignName(path) {
-  return path?.split(/[\\/]/).filter(Boolean).pop() || "Your campaign";
+  return settings.backupNames?.[path] || path?.split(/[\\/]/).filter(Boolean).pop() || "Your campaign";
 }
 
 /** Saves the open page into the campaign it belongs to, then switches; Home shows the new campaign. */

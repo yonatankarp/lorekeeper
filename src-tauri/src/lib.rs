@@ -1036,7 +1036,7 @@ fn get_settings(app: AppHandle) -> Settings {
 /// Checks and applies every setting, saves them, then tells all windows. On error nothing changes.
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
-    // The open campaign only changes through switch_campaign (and the main one never), so a window
+    // The open campaign only changes through switch_campaign, so a window
     // that hasn't heard of a switch yet can't switch back or remove the campaign that's open now.
     let active = app.state::<Mutex<Settings>>().lock().unwrap().clone();
     let mut new = validate(Settings { vault_path: active.vault_path, ..settings })?;
@@ -1070,6 +1070,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     } else if new.backup_folder != old.backup_folder {
         backup::reset(&app, backup::Kind::Folder); // a new place: back up there right away
     }
+    fill_campaign_menu(&app); // names and the list may have changed
     Ok(new)
 }
 
@@ -1112,7 +1113,7 @@ fn fill_campaign_menu(app: &AppHandle) {
     }
     for path in &s.campaigns {
         let id = format!("{CAMPAIGN_ITEM}{path}");
-        if let Ok(item) = CheckMenuItem::with_id(app, id, backup::campaign_name(path), true, *path == s.vault_path, None::<&str>) {
+        if let Ok(item) = CheckMenuItem::with_id(app, id, backup::backup_name(&s, path), true, *path == s.vault_path, None::<&str>) {
             let _ = menu.append(&item);
         }
     }
@@ -1660,7 +1661,7 @@ mod tests {
         // Every campaign's name names its backups, the first one's too; a backup name fixes an odd one.
         let restored = std::env::temp_dir().join("Lorekeeper backup 2026-03-07").to_string_lossy().into_owned();
         let odd = Settings { vault_path: restored.clone(), campaigns: vec![restored.clone()], ..ok.clone() };
-        assert!(validate(odd.clone()).unwrap_err().contains("backup name"));
+        assert!(validate(odd.clone()).unwrap_err().contains("Give it a name"));
         let fixed_odd = Settings { backup_names: [(restored, "Old".to_string())].into(), ..odd };
         assert_eq!(validate(fixed_odd.clone()).unwrap(), fixed_odd);
         // A backup name fixes a folder name that can't name backups, and is saved trimmed; an empty one is dropped.

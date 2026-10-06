@@ -43,7 +43,7 @@
           <p class="error" id="backupNames-error" role="alert"></p>
         </div>
       </div>
-      <p class="hint">Switch campaigns at the top of the sidebar or from the tray menu. Remove only forgets a campaign here: its notes and backups stay where they are. Each campaign backs up separately, under its backup name: its folder's name unless you give it one. A new backup name starts a new backup; the old one stays, and changing the name back carries it on. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
+      <p class="hint">Switch campaigns at the top of the sidebar or from the tray menu. Remove only forgets a campaign here: its notes and backups stay where they are. A campaign is called after its folder unless you give it a name; the name shows in the sidebar and the tray, and each campaign backs up separately under it. A new name starts a new backup; the old one stays, and changing the name back carries it on. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
       <template id="campaign-row">
         <div class="row campaign">
           <div class="row-label">
@@ -51,7 +51,7 @@
             <p class="sub path campaign-path"></p>
           </div>
           <div class="actions">
-            <label class="campaign-backup"><span>Backup name<span class="sr-only campaign-sr"></span></span>
+            <label class="campaign-backup"><span>Name<span class="sr-only campaign-sr"></span></span>
               <input type="text" class="campaign-backup-name" spellcheck="false" autocomplete="off" /></label>
             <button type="button" class="ghost campaign-remove">Remove<span class="sr-only campaign-sr"></span></button>
           </div>
