@@ -37,15 +37,24 @@
           <span>Each campaign has its own notes folder</span>
           <div class="actions">
             <button type="button" class="ghost" id="choose">Add campaign…</button>
+            <button type="button" class="ghost" id="join-open">Join a shared campaign…</button>
             <button type="button" class="ghost" id="reveal">Show in <span class="file-manager">Finder</span></button>
           </div>
           <p class="error" id="campaigns-error" role="alert"></p>
           <p class="error" id="backupNames-error" role="alert"></p>
           <p class="error" id="sharing-error" role="alert"></p>
         </div>
+        <div class="row">
+          <div class="row-label">
+            <label for="syncServer">Sync server</label>
+            <p class="sub" id="sync-server-in-use"></p>
+          </div>
+          <input type="text" id="syncServer" data-setting="syncServer" spellcheck="false" autocomplete="off" placeholder="Default" />
+          <p class="error" id="syncServer-error" role="alert"></p>
+        </div>
       </div>
       <p class="hint">Switch campaigns at the top of the sidebar or from the tray menu. Remove only forgets a campaign here: its notes and backups stay where they are. A campaign is called after its folder unless you give it a name; the name shows in the sidebar and the tray, and each campaign backs up separately under it. A new name starts a new backup; the old one stays, and changing the name back carries it on. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
-      <p class="hint">Playing with your party: put the campaign folder in a shared Google Drive folder, and have everyone add it here as a campaign, turn on Shared with my party and pick their character. Each player's quick notes then go to a file of their own, and every session shows everyone's notes together.</p>
+      <p class="hint">Playing with your party: turn on Shared with my party, pick your character, then Share. Invite a player makes a one-time link for each player; they paste it into Join a shared campaign. Everyone's quick notes go to a file of their own, and every session shows everyone's notes together. Notes are encrypted on your computer before they reach the sync server, which can't read them. Leave the sync server empty to use the default one.</p>
       <template id="campaign-row">
         <div class="row campaign">
           <div class="row-label">
@@ -62,6 +71,21 @@
               <span>Shared with my party<span class="sr-only campaign-sr"></span></span></label>
             <label class="campaign-backup campaign-me-label"><span>I play<span class="sr-only campaign-sr"></span></span>
               <select class="campaign-me"></select></label>
+          </div>
+          <div class="campaign-sync" hidden>
+            <p class="sub campaign-sync-status" role="status"></p>
+            <div class="actions">
+              <button type="button" class="ghost campaign-share">Share<span class="sr-only campaign-sr"></span></button>
+              <button type="button" class="ghost campaign-invite">Invite a player<span class="sr-only campaign-sr"></span></button>
+              <button type="button" class="ghost campaign-players">Players and invites…<span class="sr-only campaign-sr"></span></button>
+            </div>
+            <div class="campaign-key" hidden>
+              <label class="campaign-backup"><span>Creation key<span class="sr-only campaign-sr"></span></span>
+                <input type="password" class="campaign-key-input" spellcheck="false" autocomplete="off" /></label>
+              <button type="button" class="ghost campaign-key-go">Share</button>
+              <p class="hint">This sync server only lets people with its creation key share campaigns. Ask whoever runs it. Lorekeeper keeps it in your system's password storage, for this server only. Players who join with an invite never need it.</p>
+            </div>
+            <p class="error campaign-sync-error" role="alert"></p>
           </div>
         </div>
       </template>
@@ -316,6 +340,48 @@
         <button type="button" class="ghost" id="restore-open">Show in <span class="file-manager">Finder</span></button>
         <button type="button" class="ghost" id="restore-use">Open as a new campaign</button>
         <button type="button" class="seal" id="restore-close">Done</button>
+      </div>
+    </dialog>
+    <!-- Shared campaigns (settings.js, shared.rs). Invite links hold the campaign's key: shown only here, cleared on close. -->
+    <dialog id="players-dialog" aria-labelledby="players-title">
+      <h2 id="players-title">Players and invites</h2>
+      <div class="dialog-actions players-make">
+        <button type="button" class="ghost" id="invite-one">Invite a player</button>
+        <label class="campaign-backup">Invite several
+          <input type="number" id="invite-count" min="2" max="10" value="3" /></label>
+        <button type="button" class="ghost" id="invite-many">Make links</button>
+      </div>
+      <div id="invite-links" hidden>
+        <textarea id="invite-text" readonly rows="3" spellcheck="false" aria-label="Invite links"></textarea>
+        <div class="dialog-actions">
+          <button type="button" class="ghost" id="invite-copy">Copy</button>
+        </div>
+        <p class="hint">Each link lets one player join, once, within 7 days. Send each player their own, privately: a link holds the campaign's key.</p>
+      </div>
+      <h3>Pending invites</h3>
+      <ul class="sync-list" id="invite-list"></ul>
+      <h3>Players</h3>
+      <ul class="sync-list" id="player-list"></ul>
+      <p id="players-status" role="status"></p>
+      <p class="error" id="players-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="seal" id="players-close">Done</button>
+      </div>
+    </dialog>
+
+    <dialog id="join-dialog" aria-labelledby="join-title">
+      <h2 id="join-title">Join a shared campaign</h2>
+      <label>Invite link
+        <textarea id="join-link" rows="3" spellcheck="false" autocomplete="off" placeholder="https://lorekeeper.yonatankarp.com/join/…"></textarea></label>
+      <div id="join-confirm" hidden>
+        <p id="join-server"></p>
+        <p class="error" id="join-warning"></p>
+      </div>
+      <p id="join-status" role="status"></p>
+      <p class="error" id="join-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="join-cancel">Cancel</button>
+        <button type="button" class="seal" id="join-go">Continue</button>
       </div>
     </dialog>
     <script type="module" src="settings.js"></script>
