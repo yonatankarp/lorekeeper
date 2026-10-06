@@ -62,12 +62,13 @@ function ed() {
   return editor;
 }
 
-/** Reads the vault, keeping Templates/ out of the tree, search, links and backlinks. */
+/** Reads the vault, keeping Templates/ out of the tree, search, links and backlinks, and Attachments/ (images) out of the tree. */
 async function loadVault() {
   const v = await invoke("read_vault");
-  const internal = (p) => p === "Templates" || p.startsWith("Templates/");
+  const under = (dir) => (p) => p === dir || p.startsWith(`${dir}/`);
+  const internal = under("Templates"), images = under(ATTACHMENTS);
   templates = v.notes.filter((n) => internal(n.path));
-  vault = { ...v, notes: v.notes.filter((n) => !internal(n.path)), folders: v.folders.filter((f) => !internal(f)) };
+  vault = { ...v, notes: v.notes.filter((n) => !internal(n.path)), folders: v.folders.filter((f) => !internal(f) && !images(f)) };
 }
 
 let statusTimer;
