@@ -57,9 +57,8 @@ pub struct Done {
 
 // ---------- where the open campaign's backups are ----------
 
-/// The open campaign's backups (see backup::backup_name): the main campaign's are the places from
-/// before there were campaigns, every other campaign's are its own. Restore only reads these, and
-/// the Settings window shows them.
+/// The open campaign's backups (see backup::backup_name). Restore only reads these, and the
+/// Settings window shows them.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Places {
@@ -69,40 +68,24 @@ pub struct Places {
     folder: String,
     /// Its GitHub repository.
     repo: String,
-    /// Its folder in the Dropbox app folder: "" (the app folder itself) or "Campaigns/<name>".
+    /// Its folder in the Dropbox app folder, "Campaigns/<name>".
     dropbox: String,
     /// The name of its folder in My Drive.
     drive: String,
-    /// The main campaign only: the Dropbox folders of other campaigns, which aren't its notes.
-    #[serde(skip)]
-    others: Vec<String>,
 }
 
 pub fn places(s: &Settings) -> Places {
     let name = backup::backup_name(s, &s.vault_path);
-    let dropbox_dir = |name: &str| dropbox::root(name).trim_start_matches('/').to_string();
-    // The main campaign's Dropbox backup is the app folder itself, with the other campaigns' in
-    // Campaigns/: all of that is left out, renamed and removed campaigns' too, unless the notes have
-    // a Campaigns folder of their own; then only the current campaigns' folders are.
-    let others = match name.as_str() {
-        "" if Path::new(&s.vault_path).join("Campaigns").is_dir() => {
-            s.campaigns.iter().map(|c| backup::backup_name(s, c)).filter(|n| !n.is_empty()).map(|n| dropbox_dir(&n)).collect()
-        }
-        "" => vec!["Campaigns".to_string()],
-        _ => Vec::new(),
-    };
-    let folder = match (s.backup_folder.as_str(), name.as_str()) {
-        ("", _) => String::new(),
-        (base, "") => base.to_string(),
-        (base, name) => Path::new(base).join(name).to_string_lossy().into_owned(),
+    let folder = match s.backup_folder.as_str() {
+        "" => String::new(),
+        base => Path::new(base).join(&name).to_string_lossy().into_owned(),
     };
     Places {
         campaign: backup::campaign_name(&s.vault_path),
         folder,
         repo: backup::campaign_repo(&s.github_repo, &name),
-        dropbox: dropbox_dir(&name),
+        dropbox: dropbox::root(&name).trim_start_matches('/').to_string(),
         drive: gdrive::top_folder(&name),
-        others,
     }
 }
 
@@ -309,8 +292,8 @@ fn download(p: Provider, send: impl Fn() -> Result<ureq::http::Response<ureq::Bo
     }
 }
 
-/// (path, file id) of every file in the campaign's folder (`root`, see Places), leaving out the `others`.
-fn dropbox_files(token: &str, root: &str, others: &[String]) -> Result<Vec<(String, String)>, String> {
+/// (path, file id) of every file in the campaign's folder (`root`, see Places).
+fn dropbox_files(token: &str, root: &str) -> Result<Vec<(String, String)>, String> {
     let p = Provider::Dropbox;
     let mut v = ok(p, dropbox::rpc(token, "files/list_folder", &json!({ "path": "", "recursive": true, "limit": 2000 }))?)?;
     let mut out = Vec::new();
@@ -321,7 +304,6 @@ fn dropbox_files(token: &str, root: &str, others: &[String]) -> Result<Vec<(Stri
             }
         }
         if v["has_more"] != true {
-            out.retain(|(rel, _)| !others.iter().any(|o| under_root(rel, o).is_some()));
             return Ok(rooted(out, root));
         }
         let cursor = v["cursor"].as_str().unwrap_or("").to_string();
@@ -408,7 +390,7 @@ pub fn list(source: Source, s: &Settings, w: &Places) -> Result<Vec<Choice>, Str
             names.into_iter().map(|n| Choice { label: n.rsplit(' ').next().unwrap_or(&n).to_string(), id: n }).collect()
         }
         Source::Github => github_commits(&github::load_token()?, &s.github_user, &w.repo)?,
-        Source::Dropbox => current(Provider::Dropbox, dropbox_files(&cloud::access_token(Provider::Dropbox)?, &w.dropbox, &w.others)?.len())?,
+        Source::Dropbox => current(Provider::Dropbox, dropbox_files(&cloud::access_token(Provider::Dropbox)?, &w.dropbox)?.len())?,
         Source::Google => {
             let token = cloud::access_token(Provider::Google)?;
             let roots = drive_roots(&token, &w.drive)?;
@@ -451,7 +433,7 @@ pub fn restore(source: Source, id: &str, s: &Settings, w: &Places, target: &Path
         }
         Source::Dropbox => {
             let token = cloud::access_token(Provider::Dropbox)?;
-            let found = dropbox_files(&token, &w.dropbox, &w.others)?;
+            let found = dropbox_files(&token, &w.dropbox)?;
             write_all(at, found, |fid| dropbox_file(&token, fid), progress)
         }
         Source::Google => {
@@ -623,7 +605,7 @@ mod tests {
         let (lore, side, backups) = (dir.join("Lore"), dir.join("Side"), dir.join("Backups"));
         let day = NaiveDate::from_ymd_opt(2026, 10, 4).unwrap();
         fs::create_dir_all(&backups).unwrap();
-        for (vault, note, name) in [(&lore, "Vex.md", ""), (&side, "Bob.md", "Side")] {
+        for (vault, note, name) in [(&lore, "Vex.md", "Lore"), (&side, "Bob.md", "Side")] {
             fs::create_dir_all(vault).unwrap();
             fs::write(vault.join(note), note).unwrap();
             backup::backup_campaign_to_folder(vault, &backups, name, day).unwrap();
@@ -632,38 +614,31 @@ mod tests {
         let main = Settings {
             vault_path: path(&lore),
             campaigns: vec![path(&lore), path(&side)],
-            main_campaign: path(&lore),
             backup_folder: path(&backups),
             ..Settings::default()
         };
         let other = Settings { vault_path: path(&side), ..main.clone() };
 
-        // The main campaign: the places from before campaigns, minus the other campaigns' Dropbox folders,
-        // all of Campaigns/, so a renamed or removed campaign's old folder isn't restored with it either.
+        // Every campaign, the first one too, backs up to places named after it.
         let w = places(&main);
-        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups).as_str(), "lorekeeper-notes", "", "Lorekeeper"));
-        assert_eq!((w.campaign.as_str(), w.others.clone()), ("Lore", vec!["Campaigns".to_string()]));
-        // Notes with a Campaigns folder of their own keep it: then only the campaigns' folders are left out.
-        fs::create_dir_all(lore.join("Campaigns")).unwrap();
-        assert_eq!(places(&main).others, ["Campaigns/Side"]);
-        fs::remove_dir_all(lore.join("Campaigns")).unwrap();
-        // Another campaign: only its own places.
+        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str(), w.campaign.as_str()),
+            (path(&backups.join("Lore")).as_str(), "lorekeeper-notes-lore", "Campaigns/Lore", "Lorekeeper - Lore", "Lore"));
+        // Another campaign: its own places.
         let w = places(&other);
         assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups.join("Side")).as_str(), "lorekeeper-notes-side", "Campaigns/Side", "Lorekeeper - Side"));
-        assert!(w.others.is_empty());
-        // A backup name of your own moves every place, the main campaign's too.
+        // A backup name of your own moves every place.
         let named = Settings { backup_names: [(path(&side), "Curse of Strahd".to_string())].into(), ..other.clone() };
         let w = places(&named);
         assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str(), w.campaign.as_str()),
             (path(&backups.join("Curse of Strahd")).as_str(), "lorekeeper-notes-curse-of-strahd", "Campaigns/Curse of Strahd", "Lorekeeper - Curse of Strahd", "Side"));
         let w = places(&Settings { backup_names: [(path(&lore), "Phandelver".to_string())].into(), ..main.clone() });
-        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.others.len()), (path(&backups.join("Phandelver")).as_str(), "lorekeeper-notes-phandelver", "Campaigns/Phandelver", 0));
+        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str()), (path(&backups.join("Phandelver")).as_str(), "lorekeeper-notes-phandelver", "Campaigns/Phandelver"));
 
         // Their pages on the web.
         let signed_in = Settings { github_user: "vex".into(), ..main.clone() };
         let page = |source, s: &Settings, id| web_page(source, s, &places(s), id);
-        assert_eq!(page(Source::Github, &signed_in, None), "https://github.com/vex/lorekeeper-notes");
-        assert_eq!(page(Source::Dropbox, &main, None), "https://www.dropbox.com/home/Apps/Lorekeeper");
+        assert_eq!(page(Source::Github, &signed_in, None), "https://github.com/vex/lorekeeper-notes-lore");
+        assert_eq!(page(Source::Dropbox, &main, None), "https://www.dropbox.com/home/Apps/Lorekeeper/Campaigns/Lore");
         assert_eq!(page(Source::Dropbox, &other, None), "https://www.dropbox.com/home/Apps/Lorekeeper/Campaigns/Side");
         assert_eq!(page(Source::Google, &other, Some("abc123")), "https://drive.google.com/drive/folders/abc123");
         assert_eq!(page(Source::Google, &other, None), "https://drive.google.com/drive/search?q=Lorekeeper+-+Side");
@@ -748,11 +723,11 @@ mod tests {
         fs::write(vault.join("NPCs/Villains/Vex.md"), "# Vex").unwrap();
         fs::write(vault.join("Loot.md"), "gold").unwrap();
         let day = NaiveDate::from_ymd_opt(2026, 10, 4).unwrap();
-        backup::backup_to_folder(&vault, &backups, day).unwrap();
+        backup::backup_campaign_to_folder(&vault, &backups, "Lorekeeper", day).unwrap();
         fs::write(vault.join("Loot.md"), "changed since").unwrap();
 
         let vault_path = vault.to_string_lossy().into_owned();
-        let s = Settings { main_campaign: vault_path.clone(), vault_path, backup_folder: backups.to_string_lossy().into_owned(), ..Settings::default() };
+        let s = Settings { vault_path, backup_folder: backups.to_string_lossy().into_owned(), ..Settings::default() };
         let id = &list(Source::Folder, &s, &places(&s)).unwrap()[0].id;
         let target = dir.join("Lorekeeper restored 2026-10-05");
         let done = restore(Source::Folder, id, &s, &places(&s), &target, &mut |_, _| {}).unwrap();

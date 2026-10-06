@@ -50,10 +50,9 @@ fn start_over(m: &mut Manifest) -> String {
     "A Lorekeeper folder in Google Drive was removed. The next backup will upload all your notes again.".into()
 }
 
-/// The folder in My Drive a campaign's notes go in: "Lorekeeper" for the main campaign (""), else
-/// "Lorekeeper - <name>".
+/// The folder in My Drive a campaign's notes go in: "Lorekeeper - <name>".
 pub fn top_folder(campaign: &str) -> String {
-    if campaign.is_empty() { "Lorekeeper".into() } else { format!("Lorekeeper - {campaign}") }
+    format!("Lorekeeper - {campaign}")
 }
 
 /// `top` from top_folder(): the name of the folder "" when it has to be created.

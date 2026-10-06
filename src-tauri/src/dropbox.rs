@@ -37,10 +37,9 @@ pub fn header_json(v: &Value) -> String {
     out
 }
 
-/// Where a campaign's notes go: the app folder itself for the main campaign (""), else
-/// Campaigns/<name> in it.
+/// Where a campaign's notes go: Campaigns/<name> in the app folder.
 pub fn root(campaign: &str) -> String {
-    if campaign.is_empty() { String::new() } else { format!("/Campaigns/{campaign}") }
+    format!("/Campaigns/{campaign}")
 }
 
 /// `root` from root(): every path is `{root}/{rel}`.

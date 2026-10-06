@@ -4,7 +4,7 @@ title: Privacy policy
 
 # Lorekeeper privacy policy
 
-*Last updated: 5 October 2026*
+*Last updated: 6 October 2026*
 
 Lorekeeper is a free, open-source desktop app for keeping D&D session notes. It is made by Yonatan Karp-Rudin ([yonvata@gmail.com](mailto:yonvata@gmail.com)). The source code is at [github.com/yonatankarp/lorekeeper](https://github.com/yonatankarp/lorekeeper).
 
@@ -25,8 +25,8 @@ Nothing is sent to the developer. Lorekeeper does not collect usage data, crash 
 Backups are optional and off until you sign in. When you do, Lorekeeper uploads your notes from your computer directly to your own account:
 
 - **Dropbox:** Lorekeeper can only access its own folder, `Apps/Lorekeeper`.
-- **Google Drive:** Lorekeeper uses the `drive.file` permission, so it can only see and change files it created itself, in a `Lorekeeper` folder (and a `Lorekeeper - <name>` folder for each further campaign). It cannot see the rest of your Drive.
-- **GitHub:** Lorekeeper creates a private repository called `lorekeeper-notes` in your account and backs up to it, plus a private `lorekeeper-notes-<name>` repository for each further campaign. GitHub's sign-in grants access to your repositories in general; Lorekeeper only uses the repositories it created for your notes.
+- **Google Drive:** Lorekeeper uses the `drive.file` permission, so it can only see and change files it created itself, in a `Lorekeeper - <name>` folder for each campaign. It cannot see the rest of your Drive.
+- **GitHub:** Lorekeeper creates a private repository called `lorekeeper-notes-<name>` in your account for each campaign and backs up to it. GitHub's sign-in grants access to your repositories in general; Lorekeeper only uses the repositories it created for your notes.
 
 Lorekeeper only uses this access to back up your notes and, when you click Restore, to download that backup to your computer. It does not read other data, and nothing is shared with, sold to or used by anyone else, including the developer.
 

@@ -328,9 +328,6 @@ struct Settings {
     /// Every campaign's notes folder, vault_path (the active one) among them. Older files have none;
     /// load_settings makes vault_path the only one.
     campaigns: Vec<String>,
-    /// The campaign that backs up where Lorekeeper always did (see backup::backup_name): the notes
-    /// folder from before there were campaigns. The settings window can't change it.
-    main_campaign: String,
     /// Notes folder -> the name its backups go under, when you gave it one (see backup::backup_name).
     /// Kept after a campaign is removed, so adding the folder again carries on its backups.
     backup_names: BTreeMap<String, String>,
@@ -362,7 +359,6 @@ impl Default for Settings {
             capture: "CmdOrCtrl+Shift+S".into(),
             vault_path: String::new(),
             campaigns: Vec::new(),
-            main_campaign: String::new(),
             backup_names: BTreeMap::new(),
             theme: "system".into(),
             editor_font_size: 15,
@@ -424,7 +420,6 @@ fn load_settings(file: &Path, default_vault: &Path) -> Result<Settings, String> 
     }
     if s.campaigns.is_empty() {
         s.campaigns = vec![s.vault_path.clone()];
-        s.main_campaign = s.vault_path.clone();
     }
     // 0.3.0 had Tome and Dungeon next to plain Light and Dark; now they are the light and dark themes.
     match s.theme.as_str() {
@@ -1044,7 +1039,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     // The open campaign only changes through switch_campaign (and the main one never), so a window
     // that hasn't heard of a switch yet can't switch back or remove the campaign that's open now.
     let active = app.state::<Mutex<Settings>>().lock().unwrap().clone();
-    let mut new = validate(Settings { vault_path: active.vault_path, main_campaign: active.main_campaign, ..settings })?;
+    let mut new = validate(Settings { vault_path: active.vault_path, ..settings })?;
     let old = current_settings(&app);
     new.github_user = old.github_user.clone();
     for p in cloud::ALL {
@@ -1342,7 +1337,6 @@ pub fn run() {
             let vault = default_vault(handle);
             let settings = load_settings(&settings_file(handle)?, &vault).unwrap_or_else(|e| {
                 notify(handle, "Using default settings", &format!("{e}. Fix the file, or change a setting to replace it."));
-                // No main campaign: defaults never take over the backups of the folder in the broken file.
                 let vault = vault.to_string_lossy().into_owned();
                 Settings { vault_path: vault.clone(), campaigns: vec![vault], ..Settings::default() }
             });
@@ -1562,7 +1556,7 @@ mod tests {
 
         // First run: defaults, pointing at the default vault, written to the config folder.
         let s = load_settings(&config, &vault).unwrap();
-        let one = Settings { vault_path: vault_path.clone(), campaigns: vec![vault_path.clone()], main_campaign: vault_path.clone(), ..Settings::default() };
+        let one = Settings { vault_path: vault_path.clone(), campaigns: vec![vault_path.clone()], ..Settings::default() };
         assert_eq!(s, one);
         assert_eq!((s.theme.as_str(), s.editor_font_size, s.session_view.as_str(), s.notifications), ("system", 15, "timeline", true));
         let written = fs::read_to_string(&config).unwrap();
@@ -1575,16 +1569,15 @@ mod tests {
         assert!(s.auto_update, "files from before automatic updates turn them on");
         assert_eq!(s.vault_path, vault_path);
 
-        // A file from before campaigns: its notes folder becomes the only campaign, and the main one,
-        // which keeps backing up where it always did.
+        // A file from before campaigns: its notes folder becomes the only campaign.
         let old_file = r#"{"vaultPath":"/old/Lore","dropboxUser":"me@x.com"}"#;
         fs::write(&config, old_file).unwrap();
         let s = load_settings(&config, &vault).unwrap();
-        assert_eq!((s.campaigns, s.main_campaign.as_str(), s.dropbox_user.as_str()), (vec!["/old/Lore".to_string()], "/old/Lore", "me@x.com"));
+        assert_eq!((s.campaigns, s.dropbox_user.as_str()), (vec!["/old/Lore".to_string()], "me@x.com"));
         assert_eq!(fs::read_to_string(&config).unwrap(), old_file, "loading never rewrites the file");
         fs::write(&config, r#"{"vaultPath":"/b/Side","campaigns":["/old/Lore","/b/Side"],"mainCampaign":"/old/Lore"}"#).unwrap();
         let s = load_settings(&config, &vault).unwrap();
-        assert_eq!((s.campaigns.len(), s.main_campaign.as_str(), s.vault_path.as_str()), (2, "/old/Lore", "/b/Side"));
+        assert_eq!((s.campaigns.len(), s.vault_path.as_str()), (2, "/b/Side"));
 
         // Tome and Dungeon from 0.3.0 become Light and Dark; anything else is left for validate to judge.
         for (old, new) in [("tome", "light"), ("dungeon", "dark"), ("purple", "purple")] {
@@ -1659,15 +1652,17 @@ mod tests {
             Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "Who?".into())].into(), ..ok.clone() },
             Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "Side.".into())].into(), ..ok.clone() },
             Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "!!!".into())].into(), ..ok.clone() },
-            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [(tmp.clone(), "side".into())].into(), main_campaign: tmp.clone(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [(tmp.clone(), "side".into())].into(), ..ok.clone() },
         ];
         let strahd = std::env::temp_dir().join("Curse of Strahd").to_string_lossy().into_owned();
         let two = Settings { campaigns: vec![tmp.clone(), strahd], ..ok.clone() };
         assert_eq!(validate(two.clone()).unwrap(), two);
-        // The main campaign's name names no backups, so an odd one never blocks saving settings.
+        // Every campaign's name names its backups, the first one's too; a backup name fixes an odd one.
         let restored = std::env::temp_dir().join("Lorekeeper backup 2026-03-07").to_string_lossy().into_owned();
-        let odd = Settings { vault_path: restored.clone(), campaigns: vec![restored.clone()], main_campaign: restored, ..ok.clone() };
-        assert_eq!(validate(odd.clone()).unwrap(), odd);
+        let odd = Settings { vault_path: restored.clone(), campaigns: vec![restored.clone()], ..ok.clone() };
+        assert!(validate(odd.clone()).unwrap_err().contains("backup name"));
+        let fixed_odd = Settings { backup_names: [(restored, "Old".to_string())].into(), ..odd };
+        assert_eq!(validate(fixed_odd.clone()).unwrap(), fixed_odd);
         // A backup name fixes a folder name that can't name backups, and is saved trimmed; an empty one is dropped.
         let side = "/x/Side".to_string();
         let names = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
@@ -1863,10 +1858,10 @@ mod tests {
         }
         fs::create_dir_all(&config).unwrap();
         let path = |p: &Path| p.to_string_lossy().into_owned();
-        let s = Settings { vault_path: path(&lore), campaigns: vec![path(&lore), path(&side)], main_campaign: path(&lore), ..Settings::default() };
+        let s = Settings { vault_path: path(&lore), campaigns: vec![path(&lore), path(&side)], ..Settings::default() };
         let (main, other) = (backup::backup_name(&s, &path(&lore)), backup::backup_name(&s, &path(&side)));
-        assert_eq!((main.as_str(), other.as_str()), ("", "Side"));
-        // A backup name of your own wins, for the main campaign too; an empty one doesn't count.
+        assert_eq!((main.as_str(), other.as_str()), ("Lore", "Side"));
+        // A backup name of your own wins; an empty one doesn't count.
         let named = Settings { backup_names: [(path(&lore), "Phandelver".into()), (path(&side), String::new())].into(), ..s.clone() };
         assert_eq!((backup::backup_name(&named, &path(&lore)), backup::backup_name(&named, &path(&side))), ("Phandelver".into(), "Side".into()));
 
@@ -1882,16 +1877,16 @@ mod tests {
             fs::write(file, serde_json::to_string(&m).unwrap()).unwrap();
             (uploaded, deleted)
         };
-        // The main campaign keeps its manifest from before campaigns, so nothing is uploaded again.
+        // A second backup of the same campaign uploads nothing again.
         assert_eq!(back_up(&lore, &main).0.len(), 2);
-        let before = fs::read_to_string(config.join("cloud-dropbox.json")).unwrap();
+        let before = fs::read_to_string(config.join("cloud-dropbox-lore.json")).unwrap();
         assert_eq!(back_up(&lore, &main), (vec![], vec![]));
 
-        // Switch: the other campaign has its own manifest, so the main one's files never look deleted,
+        // Switch: the other campaign has its own manifest, so the first one's files never look deleted,
         // and it uploads to its own place.
         let (up, deleted) = back_up(&side, &other);
         assert_eq!((up.len(), deleted.len()), (2, 0));
-        assert_eq!(fs::read_to_string(config.join("cloud-dropbox.json")).unwrap(), before, "the main campaign's manifest is untouched");
+        assert_eq!(fs::read_to_string(config.join("cloud-dropbox-lore.json")).unwrap(), before, "the first campaign's manifest is untouched");
         assert!(config.join("cloud-dropbox-side.json").exists());
         // Switch back: still nothing to upload or delete for either.
         assert_eq!(back_up(&lore, &main), (vec![], vec![]));
@@ -1902,17 +1897,17 @@ mod tests {
         assert_eq!(back_up(&lore, &main), (vec![], vec![]));
 
         // A manifest is only started over for another account, never for one that names none.
-        fs::write(config.join("cloud-google.json"), r#"{"account":"","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
-        assert_eq!(prepare(Provider::Google, "me@x.com", &config, &lore, "").unwrap().1.files.len(), 1);
-        fs::write(config.join("cloud-google.json"), r#"{"account":"you@x.com","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
-        let (_, m, _, _) = prepare(Provider::Google, "me@x.com", &config, &lore, "").unwrap();
+        fs::write(config.join("cloud-google-lore.json"), r#"{"account":"","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
+        assert_eq!(prepare(Provider::Google, "me@x.com", &config, &lore, &main).unwrap().1.files.len(), 1);
+        fs::write(config.join("cloud-google-lore.json"), r#"{"account":"you@x.com","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
+        let (_, m, _, _) = prepare(Provider::Google, "me@x.com", &config, &lore, &main).unwrap();
         assert_eq!((m.account.as_str(), m.files.len()), ("me@x.com", 0));
 
-        // Every destination differs; the main campaign's are exactly the ones from before campaigns.
-        assert_eq!((dropbox::root(&main), dropbox::root(&other)), (String::new(), "/Campaigns/Side".to_string()));
-        assert_eq!((gdrive::top_folder(&main), gdrive::top_folder(&other)), ("Lorekeeper".to_string(), "Lorekeeper - Side".to_string()));
+        // Every destination differs, each named after its campaign.
+        assert_eq!((dropbox::root(&main), dropbox::root(&other)), ("/Campaigns/Lore".to_string(), "/Campaigns/Side".to_string()));
+        assert_eq!((gdrive::top_folder(&main), gdrive::top_folder(&other)), ("Lorekeeper - Lore".to_string(), "Lorekeeper - Side".to_string()));
         let repo = |name: &str| backup::campaign_repo("lorekeeper-notes", name);
-        assert_eq!((repo(&main), repo(&other), repo("Curse of Strahd!")), ("lorekeeper-notes".into(), "lorekeeper-notes-side".into(), "lorekeeper-notes-curse-of-strahd".into()));
+        assert_eq!((repo(&main), repo(&other), repo("Curse of Strahd!")), ("lorekeeper-notes-lore".into(), "lorekeeper-notes-side".into(), "lorekeeper-notes-curse-of-strahd".into()));
         assert_eq!(backup::slug("Café Ω"), "caf-e9-3a9");
 
         // Folder backup: each campaign's dated copy survives the other's backup.
@@ -1921,10 +1916,10 @@ mod tests {
         backup::backup_campaign_to_folder(&lore, &folder, &main, day).unwrap();
         backup::backup_campaign_to_folder(&side, &folder, &other, day).unwrap();
         let snap = backup::snapshot_name(day);
-        assert!(folder.join(&snap).join("NPCs/Vex.md").exists() && !folder.join(&snap).join("NPCs/Bob.md").exists());
+        assert!(folder.join("Lore").join(&snap).join("NPCs/Vex.md").exists() && !folder.join("Lore").join(&snap).join("NPCs/Bob.md").exists());
         assert!(folder.join("Side").join(&snap).join("NPCs/Bob.md").exists());
         backup::backup_campaign_to_folder(&lore, &folder, &main, day).unwrap();
-        assert!(folder.join("Side").join(&snap).join("NPCs/Bob.md").exists(), "the main campaign's backup leaves the other's folder alone");
+        assert!(folder.join("Side").join(&snap).join("NPCs/Bob.md").exists(), "one campaign's backup leaves the other's folder alone");
         // A backup folder that isn't there is never created, not even the campaign's folder inside it.
         assert!(backup::backup_campaign_to_folder(&side, &dir.join("Unplugged"), &other, day).is_err());
         assert!(!dir.join("Unplugged").exists());

@@ -468,12 +468,9 @@ pub struct Manifest {
     pub folders: BTreeMap<String, String>,
 }
 
-/// `campaign` is "" for the main campaign; see backup::backup_name.
+/// One manifest per campaign (see backup::backup_name).
 fn manifest_file(config_dir: &Path, p: Provider, campaign: &str) -> PathBuf {
-    match campaign {
-        "" => config_dir.join(format!("cloud-{}.json", p.key())),
-        _ => config_dir.join(format!("cloud-{}-{}.json", p.key(), crate::backup::slug(campaign))),
-    }
+    config_dir.join(format!("cloud-{}-{}.json", p.key(), crate::backup::slug(campaign)))
 }
 
 /// The id of a campaign's Google Drive folder, once `account` has backed it up.

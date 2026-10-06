@@ -194,7 +194,7 @@ function renderCampaigns(s) {
     const backupName = row.querySelector(".campaign-backup-name");
     backupName.value = typing?.dataset.path === path ? typing.value : s.backupNames?.[path] ?? "";
     backupName.dataset.path = path;
-    backupName.placeholder = path === s.mainCampaign ? "Original backup" : name;
+    backupName.placeholder = name;
     backupName.addEventListener("change", () => save({ backupNames: { ...current.backupNames, [path]: backupName.value.trim() } }));
     const remove = row.querySelector(".campaign-remove");
     remove.disabled = active; // switch to another campaign first

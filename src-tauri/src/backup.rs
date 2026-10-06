@@ -151,21 +151,15 @@ pub fn slug(name: &str) -> String {
     out.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
 }
 
-/// Where a campaign's backups go: the backup name you gave it in Settings; else "" for the main
-/// campaign (the notes folder from before there were campaigns), which keeps backing up exactly
-/// where it always did; else its folder's name. A name gives a campaign places of its own, so a
-/// backup of one campaign never overwrites or deletes another's.
+/// Where a campaign's backups go: the backup name you gave it in Settings, else its folder's name.
+/// Every campaign has places of its own, so a backup of one never overwrites or deletes another's.
 pub fn backup_name(s: &Settings, vault: &str) -> String {
-    match s.backup_names.get(vault).filter(|n| !n.is_empty()) {
-        Some(name) => name.clone(),
-        None if vault == s.main_campaign => String::new(),
-        None => campaign_name(vault),
-    }
+    s.backup_names.get(vault).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| campaign_name(vault))
 }
 
-/// The GitHub repository: the main campaign's, or "lorekeeper-notes-<slug>" for another campaign.
+/// A campaign's GitHub repository: "lorekeeper-notes-<slug>".
 pub fn campaign_repo(repo: &str, name: &str) -> String {
-    if name.is_empty() { repo.to_string() } else { format!("{repo}-{}", slug(name)) }
+    format!("{repo}-{}", slug(name))
 }
 
 /// Campaign folder names must differ (ignoring case, as Dropbox does) to tell them apart, and the
@@ -201,12 +195,8 @@ pub fn check_campaigns(s: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-/// A campaign's folder backup: the main campaign's dated copies go straight into the backup folder
-/// as always, another campaign's into a folder named after it there.
+/// A campaign's folder backup: its dated copies go into a folder named after it in the backup folder.
 pub fn backup_campaign_to_folder(vault: &Path, folder: &Path, name: &str, today: NaiveDate) -> Result<(), String> {
-    if name.is_empty() {
-        return backup_to_folder(vault, folder, today);
-    }
     // Only inside a backup folder that's there, as in backup_to_folder.
     if folder.is_dir() {
         let _ = fs::create_dir(folder.join(name));
