@@ -4,7 +4,7 @@ import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, parse, removeLine, sessions, stripLinks, timeline, toHtml, toText } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, renameLinks,
-  resolve, search, shownProps, splitFrontmatter,
+  kindOf, resolve, search, shownProps, splitFrontmatter,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -126,12 +126,13 @@ const prettyDate = (v) =>
   /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : null;
 
 /** A page's properties, as a small stat block: see shownProps. */
-function propsHtml(props) {
-  const rows = shownProps(props, paths()).map(({ key, label, value, icon: name, path }) => {
+function propsHtml(props, path) {
+  const shown = shownProps(props, paths(), kindOf(path));
+  const rows = shown.rows.map(({ key, label, value, icon: name, path }) => {
     let html;
-    if (key === "status") {
+    if (key === "status" || key === "rarity") {
       const word = value.toLowerCase();
-      html = `<span class="status status-${escape(word.replace(/[^a-z]/g, ""))}">${STATUS_ICONS[word] ? icon(STATUS_ICONS[word]) : ""}${escape(value)}</span>`;
+      html = `<span class="${key} ${key}-${escape(word.replace(/[^a-z]/g, ""))}">${STATUS_ICONS[word] ? icon(STATUS_ICONS[word]) : ""}${escape(value)}</span>`;
     } else if (path) {
       html = `<a class="wikilink" data-target="${escape(value)}" href="#">${icon(name)}${escape(value)}</a>`;
     } else {
@@ -140,7 +141,8 @@ function propsHtml(props) {
     }
     return `<dt>${escape(label)}</dt><dd>${html}</dd>`;
   });
-  return rows.length ? `<dl class="props">${rows.join("")}</dl>` : "";
+  const sum = shown.summary ? `<p class="props-summary">${icon(kindOf(path))}${escape(shown.summary)}</p>` : "";
+  return sum || rows.length ? `<div class="props">${sum}${rows.length ? `<dl>${rows.join("")}</dl>` : ""}</div>` : "";
 }
 
 // ---------- sidebar ----------
@@ -341,7 +343,7 @@ function render() {
   if (!n) return setView(homeHtml());
   if (!editing) {
     const { props, body } = splitFrontmatter(n.content);
-    setView(isSession(current) ? sessionHtml(n.content) : propsHtml(props) + marked.parse(body));
+    setView(isSession(current) ? sessionHtml(n.content) : propsHtml(props, current) + marked.parse(body));
   }
   const links = backlinks(current, vault.notes);
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length

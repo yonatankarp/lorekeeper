@@ -129,21 +129,39 @@ export const kindOf = (path) => FOLDER_KINDS[path.split("/")[0]] ?? "note";
 /** Icons for well-known properties; a value naming a page shows that page's icon instead. */
 const PROP_ICONS = { reward: "loot", rarity: "item", giver: "npc", leader: "npc", owner: "npc", player: "pc", location: "location", base: "location", region: "location" };
 
+/** Labels that read better than the property's name. */
+const PROP_LABELS = { player: "Played by", "first-met": "First met" };
+const capital = (s) => s.replace(/^./, (c) => c.toUpperCase());
+
+/** The line that sums up a PC ("Human Barbarian, level 1") or an NPC ("Human, miner's exchange"), and the keys it uses. */
+function summary(kind, props) {
+  const get = (k) => prop(props, k);
+  if (kind === "pc") {
+    const level = get("level") && `level ${get("level")}`;
+    return { text: capital([[get("race"), get("class")].filter(Boolean).join(" "), level].filter(Boolean).join(", ")), keys: ["race", "class", "level"] };
+  }
+  if (kind === "npc") return { text: capital([get("race"), get("role")].filter(Boolean).join(", ")), keys: ["race", "role"] };
+  return { text: "", keys: [] };
+}
+
 /**
- * A page's properties as shown above it: `type` and empty ones left out (the page already says what it is),
- * labels in words ("first-met" is "First met"), and a value that names a page linked to it.
+ * A page's properties as shown above it, for a page of `kind` (see kindOf; its `type` property wins): a summary line
+ * for PCs and NPCs, then rows with `type`, empty ones and the summed-up ones left out (the page already says what it
+ * is), labels in words ("first-met" is "First met"), and a value that names a page linked to it.
  * Each row: { key, label, value, icon, path } with path "" when the value isn't a page.
  */
-export function shownProps(props, paths) {
-  return props
+export function shownProps(props, paths, kind = "note") {
+  const sum = summary(prop(props, "type").toLowerCase() || kind, props);
+  const rows = props
     .map(([key, raw]) => [key, raw.replace(/^["']|["']$/g, "").trim()])
-    .filter(([key, value]) => value && key.toLowerCase() !== "type")
+    .filter(([key, value]) => value && key.toLowerCase() !== "type" && !sum.keys.includes(key.toLowerCase()))
     .map(([key, value]) => {
       const k = key.toLowerCase();
       const path = value.includes("[[") ? "" : resolve(value, paths) ?? "";
-      const label = key.replace(/[-_]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+      const label = PROP_LABELS[k] ?? capital(key.replace(/[-_]+/g, " "));
       return { key: k, label, value, icon: path ? kindOf(path) : PROP_ICONS[k] ?? "", path };
     });
+  return { summary: sum.text, rows };
 }
 
 const MENTIONED = { NPCs: "npc", Locations: "location", Items: "item", Factions: "faction", Lore: "lore" };

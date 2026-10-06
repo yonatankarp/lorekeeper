@@ -138,7 +138,8 @@ test("renaming a page rewrites the links to it, and only those", async () => {
 test("shownProps leaves out the type and empty values, names labels, and links page names", () => {
   const paths = ["NPCs/Harbin Wester.md", "Locations/Phandalin.md", "Quests/Umbrage Hill Quest.md"];
   const props = [["type", "quest"], ["status", "open"], ["giver", "Harbin Wester"], ["location", ""], ["reward", "25gp"], ["first-met", '"2026-10-04"'], ["base", "[[Phandalin]]"]];
-  assert.deepEqual(shownProps(props, paths), [
+  assert.deepEqual(shownProps(props, paths, "quest").summary, "");
+  assert.deepEqual(shownProps(props, paths, "quest").rows, [
     { key: "status", label: "Status", value: "open", icon: "", path: "" },
     { key: "giver", label: "Giver", value: "Harbin Wester", icon: "npc", path: "NPCs/Harbin Wester.md" },
     { key: "reward", label: "Reward", value: "25gp", icon: "loot", path: "" },
@@ -146,5 +147,14 @@ test("shownProps leaves out the type and empty values, names labels, and links p
     { key: "base", label: "Base", value: "[[Phandalin]]", icon: "location", path: "" },
   ]);
   assert.equal(kindOf("Lore/Tymora.md"), "lore");
+
+  // PCs and NPCs open with a summary line; its properties aren't repeated as rows.
+  const pc = shownProps([["type", "pc"], ["player", "Ofer"], ["class", "Barbarian"], ["race", "Human"], ["level", "1"]], paths, "pc");
+  assert.equal(pc.summary, "Human Barbarian, level 1");
+  assert.deepEqual(pc.rows.map((r) => [r.label, r.value, r.icon]), [["Played by", "Ofer", "pc"]]);
+  const npc = shownProps([["race", "human"], ["role", "Miner's exchange"], ["location", "Phandalin"], ["status", "alive"]], paths, "npc");
+  assert.equal(npc.summary, "Human, Miner's exchange");
+  assert.deepEqual(npc.rows.map((r) => [r.key, r.path]), [["location", "Locations/Phandalin.md"], ["status", ""]]);
+  assert.equal(shownProps([["type", "pc"], ["level", "3"]], paths, "note").summary, "Level 3", "the type property wins over the folder");
   assert.equal(kindOf("Ideas.md"), "note");
 });

@@ -427,10 +427,6 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 #view hr { margin: 24px 0; }
 #view .session-title::after { margin-top: 10px; }
 .props {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  align-items: baseline;
-  gap: 2px 16px;
   margin: 0 0 18px;
   padding: 10px 14px;
   border: 1px solid var(--line);
@@ -438,10 +434,20 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
   background: var(--surface-panel);
   font-size: 15px;
 }
+.props dl { display: grid; grid-template-columns: max-content 1fr; align-items: baseline; gap: 2px 16px; margin: 0; }
+/* "Human Barbarian, level 1": the stat block's first line, as under a monster's name. */
+.props-summary { margin: 0; font-style: italic; color: var(--accent-text); }
+.props-summary:not(:last-child) { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 /* Stat-block labels, as in the Monster Manual: bold sans in the rubric ink. */
 .props dt { color: var(--accent-text); font: 700 14.5px var(--font-ui); }
 .props dd { margin: 0; overflow-wrap: anywhere; }
 /* A quest's or NPC's status: a small badge; finished quests and the dead in muted ink. */
+/* Item rarity in the usual D&D colours, borrowed from the note kinds. */
+.props .rarity { padding: 0 7px; border-radius: 3px; font: 14.5px/20px var(--font-display); letter-spacing: 0.04em; --k: var(--muted); color: var(--k); background: color-mix(in srgb, var(--k) 14%, transparent); }
+.props .rarity-uncommon { --k: var(--kind-quest); }
+.props .rarity-rare { --k: var(--kind-npc); }
+.props .rarity-veryrare { --k: var(--kind-mystery); }
+.props :is(.rarity-legendary, .rarity-artifact) { --k: var(--kind-loot); }
 .props .status { padding: 0 7px; border-radius: 3px; font: 14.5px/20px var(--font-display); letter-spacing: 0.04em; color: var(--kind-quest); background: color-mix(in srgb, var(--kind-quest) 14%, transparent); }
 .props :is(.status-done, .status-failed, .status-dead) { color: var(--muted); background: var(--hover); }
 .props .status .icon { margin-right: 0.25em; }
