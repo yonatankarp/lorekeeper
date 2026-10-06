@@ -9,7 +9,9 @@ import {
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
 import { icon } from "./icons.js";
-import { ATTACHMENTS, freeName, imageLabel, isImage, pastedName, resolveImage, safeName } from "./images.js";
+import { GRAPH_KINDS, connections, neighbourhood } from "./graph.js";
+import { drawGraph, forgetPictures } from "./graph-view.js";
+import { ATTACHMENTS, freeName, imageLabel, isImage, pastedName, portraitTarget, resolveImage, safeName } from "./images.js";
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -132,7 +134,7 @@ function propsHtml(props, path) {
   // A portrait ("[[Attachments/Demus.jpg]]" or a plain path) shows as a picture in the corner, not as a row.
   const pic = shown.rows.find((r) => r.key === "portrait");
   shown.rows = shown.rows.filter((r) => r !== pic);
-  const portrait = pic ? `<div class="props-portrait">${imageHtml(pic.value.replace(/^!?\[\[|\]\]$/g, "").split("|")[0], baseName(path))}</div>` : "";
+  const portrait = pic ? `<div class="props-portrait">${imageHtml(portraitTarget(pic.value), baseName(path))}</div>` : "";
   const rows = shown.rows.map(({ key, label, value, icon: name, path }) => {
     let html;
     if (key === "status" || key === "rarity") {
@@ -264,8 +266,11 @@ function sessionHtml(content) {
 
 // ---------- home ----------
 
+/** Puts a zoomed or moved map back to showing everything (graph-view.js); the same markup is in index.html. */
+const FIT_BUTTON = `<button type="button" class="ghost graph-fit" title="Fit the whole map (or double-click it)" disabled>Fit</button>`;
+
 /** The campaign's contents page: latest session, open quests, the party, who and what came up lately, the sessions. */
-function homeHtml() {
+function homeHtml(graph) {
   const list = sessions(vault.notes);
   const latest = list.find((s) => s.path === vault.currentSession) ?? list[0]; // where hotkey notes go
   const quests = openQuests(vault.notes);
@@ -309,6 +314,12 @@ function homeHtml() {
     cards.push(card("sessions", "Sessions", "note", `<ul class="home-list contents">${items.join("")}</ul>
       <button type="button" class="ghost" data-action="newSession">+ New session</button>`));
   }
+  if (graph.edges.length) {
+    const zoom = mac ? "Pinch" : "Ctrl+scroll";
+    cards.push(card("map", "Connections", "faction", `<div class="graph-box"><canvas class="graph" role="img"
+      aria-label="Map of ${graph.nodes.length} people, places and factions and who links to whom"></canvas>${FIT_BUTTON}</div>
+      <p class="home-meta">${zoom} to zoom, drag to move, Fit to see it all. Pages show their portrait or first picture.</p>`, true));
+  }
   if (!cards.length) {
     return `<div class="empty-state">${icon("home")}<h1>Welcome to Lorekeeper</h1>
       <p>This page gathers your campaign at a glance: the latest session, open quests, the party and who you've met.</p>
@@ -342,6 +353,7 @@ function render() {
   $("delete").disabled = !n;
   $("rename").disabled = !n;
   $("backlinks").hidden = !n;
+  $("connections").hidden = true; // until it has pages to show
   $("toggle").hidden = !n;
   $("obsidian").hidden = !n || !canObsidian();
   $("copy").hidden = !n || !isSession(current);
@@ -351,10 +363,24 @@ function render() {
   $("editor-hint").hidden = !editing || !n || !isSession(current);
   $("view").hidden = editing && !!n;
 
-  if (!n) return setView(homeHtml());
+  const graph = !n || GRAPH_KINDS.includes(kindOf(current)) ? connections(vault.notes, vault.images ?? []) : null;
+  if (!n) {
+    setView(homeHtml(graph));
+    const canvas = $("view").querySelector("canvas.graph");
+    if (canvas) drawGraph(canvas, graph, { onOpen: open });
+    return;
+  }
   if (!editing) {
     const { props, body } = splitFrontmatter(n.content);
     setView(isSession(current) ? sessionHtml(n.content) : propsHtml(props, current) + marked.parse(body));
+  }
+  const near = graph && neighbourhood(graph, current);
+  if (near?.nodes.length > 1) {
+    const others = near.nodes.filter((p) => p.path !== current).map((p) => baseName(p.path));
+    const canvas = $("connections").querySelector("canvas");
+    $("connections").hidden = false;
+    canvas.setAttribute("aria-label", `${baseName(current)} is linked with ${others.join(", ")}`);
+    drawGraph(canvas, near, { focus: current, onOpen: open });
   }
   const links = backlinks(current, vault.notes);
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length
@@ -1267,7 +1293,10 @@ function applySettings(next) {
   tauriWindow?.setTheme(nativeTheme(settings.theme)).catch(() => {});
   editor?.setFontSize(settings.editorFontSize);
   if (settings.sessionView !== prev.sessionView) sessionView = settings.sessionView;
-  if (prev.vaultPath !== undefined && settings.vaultPath !== prev.vaultPath) refresh();
+  if (prev.vaultPath !== undefined && settings.vaultPath !== prev.vaultPath) {
+    forgetPictures();
+    refresh();
+  }
   else render();
   $("campaign").textContent = campaignName(settings.vaultPath);
 }
@@ -1307,6 +1336,13 @@ $("home").insertAdjacentHTML("afterbegin", icon("home"));
 $("back").innerHTML = icon("back");
 $("forward").innerHTML = icon("forward");
 $("delete").innerHTML = icon("trash");
+// A pinch is Ctrl+scroll, which Tauri's zoom script (and WebView2) turn into zooming the whole window, a step per
+// event; the map takes pinches for itself first. The app zooms with Cmd/Ctrl +, - and 0 only.
+document.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  e.stopPropagation(); // Tauri's listener is on window, past the document
+}, { passive: false });
 // Mouse back / forward buttons.
 window.addEventListener("mouseup", (e) => {
   if (e.button !== 3 && e.button !== 4) return;

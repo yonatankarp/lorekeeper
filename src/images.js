@@ -28,6 +28,9 @@ export function resolveImage(target, images) {
   return hits.sort((a, b) => exact(b) - exact(a) || attached(b) - attached(a) || a.length - b.length || naturally(a, b))[0] ?? null;
 }
 
+/** A `portrait` property's image: "[[Attachments/Demus.jpg]]" (quoted or not, maybe "|200" or "!") or a plain path. */
+export const portraitTarget = (value) => value.trim().replace(/^["']|["']$/g, "").replace(/^!?\[\[|\]\]$/g, "").split("|")[0].trim();
+
 /** "300", "300x200" or "Map|300" -> { alt, width, height }; any other label is all alt text. Sizes are digits only. */
 export function imageLabel(label, fallbackAlt = "") {
   const m = /^(?:(.*)\|)?\s*(\d+)(?:x(\d+))?\s*$/.exec(label);
