@@ -62,16 +62,53 @@ pub(crate) fn notes_dir(app: &AppHandle) -> PathBuf {
     PathBuf::from(&app.state::<Mutex<Settings>>().lock().unwrap().vault_path)
 }
 
+/// Documents/Lorekeeper: the default notes folder, and the folder that holds your campaigns and their shared Templates/.
 fn default_vault(app: &AppHandle) -> PathBuf {
     let base = app.path().document_dir().or_else(|_| app.path().home_dir());
     base.expect("no home directory").join("Lorekeeper")
 }
+pub(crate) use default_vault as library_dir;
 
-/// Creates the standard folders and writes each default template at most once ever (recorded in
-/// Templates/.seeded), so a template you delete stays deleted and new defaults still reach old vaults.
-fn create_vault_folders(dir: &Path) -> io::Result<()> {
-    let fresh_templates = !dir.join("Templates").exists();
-    VAULT_FOLDERS.iter().try_for_each(|f| fs::create_dir_all(dir.join(f)))?;
+/// The folder whose Templates/ a campaign uses: the Lorekeeper folder's, shared by every campaign in it, unless the
+/// campaign lives elsewhere and has a Templates/ of its own.
+pub(crate) fn templates_home(vault: &Path, library: &Path) -> PathBuf {
+    let elsewhere = vault != library && vault.parent() != Some(library);
+    if elsewhere && vault.join("Templates").is_dir() { vault.to_path_buf() } else { library.to_path_buf() }
+}
+
+/// Moves a campaign's own Templates/ into the Lorekeeper folder's, once, for a campaign inside it. A template the shared
+/// folder already has with other text stays where it was; the record of seeded defaults is merged.
+fn share_templates(vault: &Path, library: &Path) -> io::Result<()> {
+    let own = vault.join("Templates");
+    if vault.parent() != Some(library) || !own.is_dir() {
+        return Ok(());
+    }
+    let shared = library.join("Templates");
+    fs::create_dir_all(&shared)?;
+    for entry in fs::read_dir(&own)?.flatten() {
+        let (from, to) = (entry.path(), shared.join(entry.file_name()));
+        if !to.exists() {
+            fs::rename(&from, &to)?;
+        } else if entry.file_name() == ".seeded" {
+            let mut names: Vec<String> = fs::read_to_string(&to)?.lines().map(str::to_owned).collect();
+            names.extend(fs::read_to_string(&from)?.lines().map(str::to_owned).filter(|n| !names.contains(n)).collect::<Vec<_>>());
+            fs::write(&to, names.join("\n") + "\n")?;
+            fs::remove_file(&from)?;
+        } else if fs::read(&from)? == fs::read(&to)? {
+            fs::remove_file(&from)?;
+        }
+    }
+    let _ = fs::remove_dir(&own); // only goes when empty
+    Ok(())
+}
+
+/// Creates the standard folders and writes each default template into `home`/Templates (see templates_home) at most once
+/// ever (recorded in Templates/.seeded), so a template you delete stays deleted and new defaults still reach old vaults.
+fn create_vault_folders(dir: &Path, home: &Path) -> io::Result<()> {
+    let fresh_templates = !home.join("Templates").exists();
+    VAULT_FOLDERS.iter().filter(|f| **f != "Templates").try_for_each(|f| fs::create_dir_all(dir.join(f)))?;
+    fs::create_dir_all(home.join("Templates"))?;
+    let dir = home;
     let record = dir.join("Templates/.seeded");
     let mut seeded: Vec<String> = match fs::read_to_string(&record) {
         Ok(text) => text.lines().map(str::to_owned).collect(),
@@ -858,7 +895,30 @@ fn read_vault(app: AppHandle) -> Result<Vault, String> {
     }
     vault.has_obsidian = obsidian::vault_root(&root).is_some();
     vault.obsidian_installed = obsidian::installed();
+    add_shared_templates(&root, &library_dir(&app), &mut vault);
     Ok(vault)
+}
+
+/// The shared templates (see templates_home), listed as the campaign's Templates/ so "New page" finds them.
+fn add_shared_templates(root: &Path, library: &Path, vault: &mut Vault) {
+    let home = templates_home(root, library);
+    if home == root {
+        return; // in the campaign itself: walk listed them
+    }
+    let Ok(entries) = fs::read_dir(home.join("Templates")) else { return };
+    vault.folders.push("Templates".into());
+    for path in entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "md")) {
+        if let (Some(name), Ok(content)) = (path.file_name(), fs::read_to_string(&path)) {
+            vault.notes.push(Note { path: format!("Templates/{}", name.to_string_lossy()), content });
+        }
+    }
+}
+
+/// Shares a campaign's templates (see share_templates), then makes its folders and seeds the templates.
+fn prepare_campaign(app: &AppHandle, vault: &Path) -> io::Result<()> {
+    let library = library_dir(app);
+    share_templates(vault, &library)?;
+    create_vault_folders(vault, &templates_home(vault, &library))
 }
 
 /// Note names for the quick box's suggestions; an unreadable vault just means no suggestions.
@@ -1096,7 +1156,7 @@ fn switch_campaign(app: AppHandle, path: String) -> Result<(), String> {
     if !old.campaigns.contains(&path) {
         return Err(format!("{path} isn't one of your campaigns."));
     }
-    create_vault_folders(Path::new(&path)).map_err(|e| format!("{}: {e}", backup::campaign_name(&path)))?;
+    prepare_campaign(&app, Path::new(&path)).map_err(|e| format!("{}: {e}", backup::campaign_name(&path)))?;
     store_settings(&app, &Settings { vault_path: path.clone(), ..old.clone() })?;
     allow_vault_images(&app, &path);
     backup::left(&old.vault_path); // its last changes still get backed up
@@ -1349,7 +1409,7 @@ pub fn run() {
                 Settings { vault_path: vault.clone(), campaigns: vec![vault], ..Settings::default() }
             });
             // A folder on an unplugged drive shouldn't stop the app from starting.
-            if let Err(e) = create_vault_folders(Path::new(&settings.vault_path)) {
+            if let Err(e) = prepare_campaign(handle, Path::new(&settings.vault_path)) {
                 notify(handle, "Notes folder unavailable", &format!("{}: {e}", settings.vault_path));
             }
             app.manage(Mutex::new(settings.clone()));
@@ -1418,11 +1478,11 @@ mod tests {
     fn sessions_and_notes() {
         let dir = std::env::temp_dir().join(format!("dnd-notes-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        create_vault_folders(&dir).unwrap();
+        create_vault_folders(&dir, &dir).unwrap();
         assert!(dir.join("NPCs").is_dir());
         assert!(fs::read_to_string(dir.join("Templates/NPC.md")).unwrap().contains("{{title}}"));
         fs::remove_file(dir.join("Templates/NPC.md")).unwrap();
-        create_vault_folders(&dir).unwrap();
+        create_vault_folders(&dir, &dir).unwrap();
         assert!(!dir.join("Templates/NPC.md").exists(), "deleted template must stay deleted");
 
         // First note creates Session 1 (with properties); multi-line text becomes one line.
@@ -1515,6 +1575,47 @@ mod tests {
     }
 
     #[test]
+    fn campaigns_in_the_lorekeeper_folder_share_its_templates() {
+        let library = temp_dir("library");
+        let (campaign, outside) = (library.join("Strahd"), temp_dir("outside"));
+        // A campaign made before templates were shared: its own templates move up, once.
+        fs::create_dir_all(campaign.join("Templates")).unwrap();
+        fs::write(campaign.join("Templates/NPC.md"), "# my NPC").unwrap();
+        fs::write(campaign.join("Templates/.seeded"), "PC\nNPC\n").unwrap();
+        share_templates(&campaign, &library).unwrap();
+        assert!(!campaign.join("Templates").exists());
+        assert_eq!(fs::read_to_string(library.join("Templates/NPC.md")).unwrap(), "# my NPC");
+        assert_eq!(templates_home(&campaign, &library), library);
+        create_vault_folders(&campaign, &library).unwrap();
+        assert!(campaign.join("NPCs").is_dir() && !campaign.join("Templates").exists(), "no Templates/ of its own any more");
+        assert_eq!(fs::read_to_string(library.join("Templates/NPC.md")).unwrap(), "# my NPC", "never over your own");
+        assert!(library.join("Templates/Lore.md").exists(), "new defaults go to the shared folder");
+
+        // A second old campaign: a template with other text stays put, the same text goes, the record merges.
+        let other = library.join("Side");
+        fs::create_dir_all(other.join("Templates")).unwrap();
+        fs::write(other.join("Templates/NPC.md"), "# other NPC").unwrap();
+        fs::write(other.join("Templates/Lore.md"), fs::read(library.join("Templates/Lore.md")).unwrap()).unwrap();
+        fs::write(other.join("Templates/.seeded"), "Weird\n").unwrap();
+        share_templates(&other, &library).unwrap();
+        assert_eq!(fs::read_to_string(other.join("Templates/NPC.md")).unwrap(), "# other NPC");
+        assert!(!other.join("Templates/Lore.md").exists());
+        assert!(fs::read_to_string(library.join("Templates/.seeded")).unwrap().ends_with("Weird\n"));
+
+        // The shared templates show as the campaign's Templates/; a campaign elsewhere with its own keeps them.
+        let mut vault = Vault::default();
+        add_shared_templates(&campaign, &library, &mut vault);
+        assert!(vault.notes.iter().any(|n| n.path == "Templates/NPC.md" && n.content == "# my NPC"));
+        fs::create_dir_all(outside.join("Templates")).unwrap();
+        assert_eq!(templates_home(&outside, &library), outside);
+        share_templates(&outside, &library).unwrap();
+        assert!(outside.join("Templates").is_dir(), "a campaign outside the Lorekeeper folder keeps its own");
+        assert_eq!(templates_home(&library, &library), library);
+        fs::remove_dir_all(&library).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
     fn default_templates_are_written_once_ever() {
         let names = |dir: &Path| {
             let mut v: Vec<String> = fs::read_dir(dir.join("Templates")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
@@ -1523,7 +1624,7 @@ mod tests {
         };
         // A fresh vault gets all seven, and Quests/ and Lore/.
         let fresh = temp_dir("seed-fresh");
-        create_vault_folders(&fresh).unwrap();
+        create_vault_folders(&fresh, &fresh).unwrap();
         assert_eq!(names(&fresh), [".seeded", "Faction.md", "Item.md", "Location.md", "Lore.md", "NPC.md", "PC.md", "Quest.md"]);
         assert!(fresh.join("Quests").is_dir());
         assert!(fresh.join("Lore").is_dir());
@@ -1532,7 +1633,7 @@ mod tests {
 
         // A deleted template is not recreated.
         fs::remove_file(fresh.join("Templates/Quest.md")).unwrap();
-        create_vault_folders(&fresh).unwrap();
+        create_vault_folders(&fresh, &fresh).unwrap();
         assert!(!fresh.join("Templates/Quest.md").exists(), "deleted template must stay deleted");
 
         // A vault from before the record: the original five count as seeded, so only Quest and Lore are added.
@@ -1542,14 +1643,14 @@ mod tests {
         for name in ["NPC", "Location", "Item", "Faction"] {
             fs::write(old.join(format!("Templates/{name}.md")), format!("# my {name}")).unwrap();
         }
-        create_vault_folders(&old).unwrap();
+        create_vault_folders(&old, &old).unwrap();
         assert_eq!(names(&old), [".seeded", "Faction.md", "Item.md", "Location.md", "Lore.md", "NPC.md", "Quest.md"]);
         assert_eq!(fs::read_to_string(old.join("Templates/NPC.md")).unwrap(), "# my NPC");
         assert_eq!(fs::read_to_string(old.join("Templates/.seeded")).unwrap(), "PC\nNPC\nLocation\nItem\nFaction\nQuest\nLore\n");
         let mine = temp_dir("seed-mine");
         fs::create_dir_all(mine.join("Templates")).unwrap();
         fs::write(mine.join("Templates/Quest.md"), "# my quest").unwrap();
-        create_vault_folders(&mine).unwrap();
+        create_vault_folders(&mine, &mine).unwrap();
         assert_eq!(fs::read_to_string(mine.join("Templates/Quest.md")).unwrap(), "# my quest");
         for dir in [fresh, old, mine] {
             fs::remove_dir_all(dir).unwrap();

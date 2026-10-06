@@ -171,6 +171,9 @@ pub fn check_campaigns(s: &Settings) -> Result<(), String> {
         if name.is_empty() {
             continue;
         }
+        if name.eq_ignore_ascii_case("templates") {
+            return Err("\"Templates\" is where the shared templates are backed up. Give the campaign another name.".into());
+        }
         let typed = s.backup_names.contains_key(a);
         let bad_chars = || name != name.trim() || name.ends_with('.') || name.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c));
         if (!typed && Path::new(a).file_name().is_none()) || is_snapshot(&name) || slug(&name).is_empty() || (typed && bad_chars()) {
@@ -358,6 +361,12 @@ fn run(app: &AppHandle, force: bool) {
     publish(app);
     let mut vaults: Vec<String> = LEFT.lock().unwrap().drain(..).filter(|v| *v != settings.vault_path).collect();
     vaults.push(settings.vault_path.clone());
+    // The shared templates (see templates_home) back up next to the campaigns, as their own "Templates" folder.
+    let library = crate::library_dir(app);
+    let shared = library.join("Templates");
+    if shared.is_dir() && Path::new(&settings.vault_path) != library && crate::templates_home(Path::new(&settings.vault_path), &library) == library {
+        vaults.push(shared.to_string_lossy().into_owned());
+    }
     for kind in due {
         // Every campaign is tried; the first failure is the one reported.
         let mut result = Ok(String::new());

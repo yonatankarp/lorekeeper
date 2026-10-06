@@ -59,19 +59,21 @@ PC pages can come straight from D&D Beyond character sheets:
 2. **Import:** **+ New page**, choose **PC**, then **Import from D&D Beyond…**. Paste a character link (`dndbeyond.com/characters/…`) or a campaign link (`dndbeyond.com/campaigns/…`) and click **Look up**. A character brings the rest of its campaign's party along. Tick the characters you want and click **Import**. Each one updates its page in `PCs/` (the one linking to its sheet, else the one with its name) or gets a new page from the PC template.
 3. **Refresh:** on a PC page, **Refresh** next to **Character sheet** reads the character again, say after a level up. **Edit > Undo** puts the page back, after an import too.
 
-What D&D Beyond updates: `race`, `class`, `level` and the `dndbeyond` sheet link. `player` is only filled in when it's empty, so a player's real name you typed stays. Nothing else on the page changes: your other properties and the notes below them are never touched.
+What D&D Beyond updates: `race`, `class` (with subclass), `level`, `background`, `alignment` and the `dndbeyond` sheet link. `player` and the `portrait` (saved into `Attachments/`) are only filled in when empty, so a player's real name you typed stays. **Appearance** and **Personality** are written from the sheet only while those sections are empty. Nothing else changes: your other properties and notes are never touched.
 
 ## Your notes
 
-Notes are plain Markdown in `Documents/Lorekeeper` (change it in **Settings > General**):
+Notes are plain Markdown. `Documents/Lorekeeper` holds your campaigns, one folder each, and the templates they share:
 
 ```
-Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Lore/  Templates/
+Documents/Lorekeeper/
+  Templates/
+  Scale & Frost/   Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Lore/  Attachments/
 ```
 
 `Lore/` is for anything that isn't a person, place or thing: gods, history, legends.
 
-`Templates/` holds the starting text for new pages (Obsidian's `{{title}}` and `{{date}}` work). Edit them in Obsidian or any editor. A template of your own, say `Templates/Monster.md`, adds **Monster** to **+ New page**; its pages go into a `Monsters` or `Monster` folder if you make one.
+`Templates/` holds the starting text for new pages (Obsidian's `{{title}}` and `{{date}}` work), shared by every campaign in `Documents/Lorekeeper` and backed up as its own `Templates` folder. Edit them in Obsidian or any editor. A campaign kept somewhere else uses its own `Templates/` if it has one. A template of your own, say `Templates/Monster.md`, adds **Monster** to **+ New page**; its pages go into a `Monsters` or `Monster` folder if you make one.
 
 **Obsidian:** open the notes folder as a vault (or put it inside an existing vault) and the **Obsidian** button opens pages there. Until then the button shows how.
 
