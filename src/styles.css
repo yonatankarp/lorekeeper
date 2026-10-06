@@ -290,7 +290,8 @@ kbd {
   box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.3);
 }
 #search::placeholder { color: var(--muted); }
-#tree, #results { flex: 1; overflow: auto; padding: 0 6px 12px; }
+/* The folder list scrolls; position: relative keeps the counts' hidden .sr-only labels inside it, otherwise they hang below the window and the whole page scrolls. */
+#tree, #results { flex: 1; overflow: auto; padding: 0 6px 12px; position: relative; }
 /* Home, pinned above the folders. */
 #home { width: auto; margin: 0 6px 6px; padding-left: 8px; font: 17px/1.75 var(--font-display); letter-spacing: 0.03em; color: var(--accent-text); }
 #home .icon { margin-right: 0.4em; }
