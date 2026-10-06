@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backlinks, badName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, resolve, search, sessionPaths, splitFrontmatter } from "./vault.js";
+import { backlinks, badName, buildTree, fillTemplate, folderFor, kindOf, openQuests, party, questStatus, recentlyMentioned, resolve, search, sessionPaths, shownProps, splitFrontmatter } from "./vault.js";
 
 const notes = [
   { path: "Sessions/Session 2.md", content: "# Session 2\n- 20:15 @[[Mirela]] again\n- 20:30 went to [[Locations/Phandalin|town]]" },
@@ -133,4 +133,18 @@ test("renaming a page rewrites the links to it, and only those", async () => {
   assert.equal(renameLinks("[[Phandalin]]", "Locations/Phandalin.md", "Locations/Mirela.md", paths), "[[Locations/Mirela]]");
   assert.equal(renameLinks("[[Mirela]]", "NPCs/Mirela.md", "NPCs/Ca$$ Shop.md", paths), "[[Ca$$ Shop]]");
   assert.equal(renameLinks("no links", "NPCs/Mirela.md", "NPCs/Mira.md", paths), "no links");
+});
+
+test("shownProps leaves out the type and empty values, names labels, and links page names", () => {
+  const paths = ["NPCs/Harbin Wester.md", "Locations/Phandalin.md", "Quests/Umbrage Hill Quest.md"];
+  const props = [["type", "quest"], ["status", "open"], ["giver", "Harbin Wester"], ["location", ""], ["reward", "25gp"], ["first-met", '"2026-10-04"'], ["base", "[[Phandalin]]"]];
+  assert.deepEqual(shownProps(props, paths), [
+    { key: "status", label: "Status", value: "open", icon: "", path: "" },
+    { key: "giver", label: "Giver", value: "Harbin Wester", icon: "npc", path: "NPCs/Harbin Wester.md" },
+    { key: "reward", label: "Reward", value: "25gp", icon: "loot", path: "" },
+    { key: "first-met", label: "First met", value: "2026-10-04", icon: "", path: "" },
+    { key: "base", label: "Base", value: "[[Phandalin]]", icon: "location", path: "" },
+  ]);
+  assert.equal(kindOf("Lore/Tymora.md"), "lore");
+  assert.equal(kindOf("Ideas.md"), "note");
 });

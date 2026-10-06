@@ -439,8 +439,12 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
   font-size: 15px;
 }
 /* Stat-block labels, as in the Monster Manual: bold sans in the rubric ink. */
-.props dt { color: var(--accent-text); font: 700 14.5px var(--font-ui); text-transform: capitalize; }
+.props dt { color: var(--accent-text); font: 700 14.5px var(--font-ui); }
 .props dd { margin: 0; overflow-wrap: anywhere; }
+/* A quest's or NPC's status: a small badge; finished quests and the dead in muted ink. */
+.props .status { padding: 0 7px; border-radius: 3px; font: 14.5px/20px var(--font-display); letter-spacing: 0.04em; color: var(--kind-quest); background: color-mix(in srgb, var(--kind-quest) 14%, transparent); }
+.props :is(.status-done, .status-failed, .status-dead) { color: var(--muted); background: var(--hover); }
+.props .status .icon { margin-right: 0.25em; }
 .session-note { margin: 0 0 16px; color: var(--muted); font-size: 15px; font-style: italic; }
 .welcome { color: var(--muted); padding-top: 40px; text-align: center; }
 .view-switch { display: inline-flex; gap: 2px; margin: 0 0 14px; padding: 2px; border-radius: 8px; background: var(--hover); }

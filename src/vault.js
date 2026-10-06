@@ -122,6 +122,30 @@ export const party = (notes) =>
     })
     .sort((a, b) => naturally(baseName(a.path), baseName(b.path)));
 
+/** The kind of page a folder holds, for its icon ("NPCs/Vex.md" is an npc). */
+const FOLDER_KINDS = { NPCs: "npc", PCs: "pc", Locations: "location", Items: "item", Factions: "faction", Quests: "quest", Lore: "lore" };
+export const kindOf = (path) => FOLDER_KINDS[path.split("/")[0]] ?? "note";
+
+/** Icons for well-known properties; a value naming a page shows that page's icon instead. */
+const PROP_ICONS = { reward: "loot", rarity: "item", giver: "npc", leader: "npc", owner: "npc", player: "pc", location: "location", base: "location", region: "location" };
+
+/**
+ * A page's properties as shown above it: `type` and empty ones left out (the page already says what it is),
+ * labels in words ("first-met" is "First met"), and a value that names a page linked to it.
+ * Each row: { key, label, value, icon, path } with path "" when the value isn't a page.
+ */
+export function shownProps(props, paths) {
+  return props
+    .map(([key, raw]) => [key, raw.replace(/^["']|["']$/g, "").trim()])
+    .filter(([key, value]) => value && key.toLowerCase() !== "type")
+    .map(([key, value]) => {
+      const k = key.toLowerCase();
+      const path = value.includes("[[") ? "" : resolve(value, paths) ?? "";
+      const label = key.replace(/[-_]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+      return { key: k, label, value, icon: path ? kindOf(path) : PROP_ICONS[k] ?? "", path };
+    });
+}
+
 const MENTIONED = { NPCs: "npc", Locations: "location", Items: "item", Factions: "faction", Lore: "lore" };
 
 /** NPC, Location, Item, Faction and Lore pages linked from the latest two sessions: [{ path, kind, count }], most mentioned first. */

@@ -4,7 +4,7 @@ import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, parse, removeLine, sessions, stripLinks, timeline, toHtml, toText } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, renameLinks,
-  resolve, search, splitFrontmatter,
+  resolve, search, shownProps, splitFrontmatter,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -118,10 +118,29 @@ marked.use({
 /** Raw text with its [[links]] made clickable and its ![[images]] shown. */
 const inlineLinks = (text) => linkify(text, (target, label, m) => (m[1] && isImage(target) ? imageHtml(target, m[4] ?? target) : linkHtml(target, label)));
 
+/** Status words that end a quest or a life get their own badge and icon. */
+const STATUS_ICONS = { done: "done", failed: "failed", dead: "failed" };
+
+/** "2026-10-04" as "4 Oct 2026"; anything else as written. */
+const prettyDate = (v) =>
+  /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : null;
+
+/** A page's properties, as a small stat block: see shownProps. */
 function propsHtml(props) {
-  if (!props.length) return "";
-  const rows = props.map(([k, v]) => `<dt>${escape(k)}</dt><dd>${inlineLinks(v.replace(/^["']|["']$/g, ""))}</dd>`);
-  return `<dl class="props">${rows.join("")}</dl>`;
+  const rows = shownProps(props, paths()).map(({ key, label, value, icon: name, path }) => {
+    let html;
+    if (key === "status") {
+      const word = value.toLowerCase();
+      html = `<span class="status status-${escape(word.replace(/[^a-z]/g, ""))}">${STATUS_ICONS[word] ? icon(STATUS_ICONS[word]) : ""}${escape(value)}</span>`;
+    } else if (path) {
+      html = `<a class="wikilink" data-target="${escape(value)}" href="#">${icon(name)}${escape(value)}</a>`;
+    } else {
+      const date = prettyDate(value);
+      html = date ? `<time datetime="${escape(value)}">${escape(date)}</time>` : `${name ? icon(name) : ""}${inlineLinks(value)}`;
+    }
+    return `<dt>${escape(label)}</dt><dd>${html}</dd>`;
+  });
+  return rows.length ? `<dl class="props">${rows.join("")}</dl>` : "";
 }
 
 // ---------- sidebar ----------
