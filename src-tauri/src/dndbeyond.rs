@@ -259,7 +259,15 @@ fn appearance(d: &Value) -> String {
 fn personality(traits: &Value) -> String {
     [("Traits", "personalityTraits"), ("Ideals", "ideals"), ("Bonds", "bonds"), ("Flaws", "flaws")]
         .iter()
-        .filter_map(|(label, key)| Some(text(&traits[*key])).filter(|t| !t.is_empty()).map(|t| format!("**{label}:** {}", t.replace('\n', " "))))
+        .filter_map(|(label, key)| {
+            // One line stays on the label's line; several (one per trait on the sheet) become a list.
+            let lines: Vec<String> = text(&traits[*key]).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+            match lines.as_slice() {
+                [] => None,
+                [one] => Some(format!("**{label}:** {one}")),
+                many => Some(format!("**{label}:**\n{}", many.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n"))),
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -538,7 +546,7 @@ mod tests {
                 background: "Folk Hero".into(),
                 alignment: "Chaotic Good".into(),
                 appearance: "Age 52 · Eyes Grey\n\nA braided beard.".into(),
-                personality: "**Ideals:** Family. Always.".into(),
+                personality: "**Ideals:**\n- Family.\n- Always.".into(),
                 portrait: "https://www.dndbeyond.com/avatars/1/2/demus.jpeg".into(),
                 error: String::new(),
             }
