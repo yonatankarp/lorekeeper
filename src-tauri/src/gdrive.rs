@@ -1,6 +1,6 @@
-//! Google Drive backup into a "Lorekeeper" folder the app creates in My Drive. The drive.file
-//! permission only lets Lorekeeper see files it made. Drive has ids instead of paths, so the
-//! manifest keeps the id of every folder and file.
+//! Google Drive backup into a "Lorekeeper" folder the app creates in My Drive, with a folder per
+//! campaign in it. The drive.file permission only lets Lorekeeper see files it made. Drive has ids
+//! instead of paths, so the manifest keeps the id of every folder and file.
 
 use serde_json::{json, Value};
 
@@ -21,12 +21,12 @@ pub fn account(token: &str) -> Result<String, String> {
     user["emailAddress"].as_str().or(user["displayName"].as_str()).map(String::from).ok_or_else(|| "Google Drive sent an unexpected reply.".into())
 }
 
-/// The folder a path is in: "NPCs/Villains" for "NPCs/Villains/Vex.md", "" (Lorekeeper) at the top.
+/// The folder a path is in: "NPCs/Villains" for "NPCs/Villains/Vex.md", "" (the campaign's folder) at the top.
 pub fn parent(rel: &str) -> &str {
     rel.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
-/// The folders to create before `rel` can be uploaded, outermost first; "" is the Lorekeeper folder.
+/// The folders to create before `rel` can be uploaded, outermost first; "" is the campaign's folder.
 pub fn missing_folders(rel: &str, known: &std::collections::BTreeMap<String, String>) -> Vec<String> {
     let dir = parent(rel);
     let mut all = vec![String::new()];
@@ -43,20 +43,62 @@ fn id_of(v: &Value) -> Result<String, String> {
 }
 
 /// A folder was deleted in Drive: forget every id, so the next backup uploads everything into a new
-/// Lorekeeper folder.
+/// campaign folder.
 fn start_over(m: &mut Manifest) -> String {
     m.files.clear();
     m.folders.clear();
     "A Lorekeeper folder in Google Drive was removed. The next backup will upload all your notes again.".into()
 }
 
-/// The folder in My Drive a campaign's notes go in: "Lorekeeper - <name>".
-pub fn top_folder(campaign: &str) -> String {
-    format!("Lorekeeper - {campaign}")
+/// The folder in My Drive that holds a folder per campaign.
+pub const SHARED: &str = "Lorekeeper";
+
+/// Every file matching a Drive query, page by page.
+pub fn list(token: &str, query: &str, fields: &str) -> Result<Vec<Value>, String> {
+    let (mut out, mut page) = (Vec::new(), String::new());
+    loop {
+        let mut params = vec![("q", query), ("fields", fields), ("pageSize", "1000")];
+        if !page.is_empty() {
+            params.push(("pageToken", page.as_str()));
+        }
+        let url = tauri::Url::parse_with_params(FILES, &params).expect("valid URL");
+        let v = ok(P, call(P, || AGENT.get(url.as_str()).header("Authorization", bearer(token)).call())?)?;
+        out.extend(v["files"].as_array().cloned().unwrap_or_default());
+        match v["nextPageToken"].as_str() {
+            Some(t) if !t.is_empty() => page = t.to_string(),
+            _ => return Ok(out),
+        }
+    }
 }
 
-/// `top` from top_folder(): the name of the folder "" when it has to be created.
-pub fn push(token: &str, plan: &Plan, m: &mut Manifest, top: &str) -> Result<(), String> {
+/// The `name` folders the app made in `parent` ("root" = My Drive, else a folder id), newest first.
+pub fn folders(token: &str, name: &str, parent: &str) -> Result<Vec<Value>, String> {
+    let name = name.replace('\\', "\\\\").replace('\'', "\\'"); // quoted for Drive's query language
+    let q = format!("name = '{name}' and mimeType = '{FOLDER}' and '{parent}' in parents and trashed = false");
+    let mut found = list(token, &q, "nextPageToken,files(id,createdTime)")?;
+    found.sort_by(|a, b| b["createdTime"].as_str().cmp(&a["createdTime"].as_str()));
+    Ok(found)
+}
+
+/// Creates a folder (in My Drive without a parent): (status, reply).
+fn create_folder(token: &str, name: &str, parent: Option<&str>) -> Result<(u16, Value), String> {
+    let mut meta = json!({ "name": name, "mimeType": FOLDER });
+    if let Some(parent) = parent {
+        meta["parents"] = json!([parent]);
+    }
+    call(P, || AGENT.post(format!("{FILES}?fields=id")).header("Authorization", bearer(token)).send_json(&meta))
+}
+
+/// The id of the Lorekeeper folder in My Drive: the oldest when there are several, else a new one.
+fn shared_folder(token: &str) -> Result<String, String> {
+    match folders(token, SHARED, "root")?.last() {
+        Some(f) => id_of(f),
+        None => id_of(&ok(P, create_folder(token, SHARED, None)?)?),
+    }
+}
+
+/// Uploads a campaign's changes into its folder `campaign` (folder "") in the Lorekeeper folder.
+pub fn push(token: &str, plan: &Plan, m: &mut Manifest, campaign: &str) -> Result<(), String> {
     // Moved to the Drive trash, never deleted for good. Files without an id were never uploaded.
     for rel in &plan.delete {
         let id = m.files.get(rel).map(|u| u.id.clone()).unwrap_or_default();
@@ -71,12 +113,11 @@ pub fn push(token: &str, plan: &Plan, m: &mut Manifest, top: &str) -> Result<(),
     }
     for f in &plan.upload {
         for dir in missing_folders(&f.rel, &m.folders) {
-            let name = dir.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or(top);
-            let mut meta = json!({ "name": name, "mimeType": FOLDER });
-            if !dir.is_empty() {
-                meta["parents"] = json!([m.folders[parent(&dir)]]);
-            }
-            let (status, v) = call(P, || AGENT.post(format!("{FILES}?fields=id")).header("Authorization", bearer(token)).send_json(&meta))?;
+            let (status, v) = if dir.is_empty() {
+                create_folder(token, campaign, Some(&shared_folder(token)?))?
+            } else {
+                create_folder(token, dir.rsplit('/').next().unwrap_or(&dir), Some(&m.folders[parent(&dir)]))?
+            };
             if status == 404 {
                 return Err(start_over(m));
             }

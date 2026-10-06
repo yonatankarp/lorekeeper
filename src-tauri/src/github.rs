@@ -217,9 +217,23 @@ pub fn git_blob_sha(bytes: &[u8]) -> String {
 /// write limits doesn't upload them again on the next try.
 static UPLOADED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 
-/// Commits an exact snapshot of the vault (deletions included) to `owner/repo`, creating the
-/// private repo if needed. Returns a warning for the status line ("" if none).
-pub fn backup(token: &str, owner: &str, repo: &str, vault: &Path) -> Result<String, String> {
+/// The root tree with the campaign folder `name` pointing at `subtree`: every other top-level entry
+/// (other campaigns, README.md, older backups) stays exactly as it is.
+pub fn root_entries(current: &[Value], name: &str, subtree: &str) -> Vec<Value> {
+    let ours = json!({ "path": name, "mode": "040000", "type": "tree", "sha": subtree });
+    let mut out: Vec<Value> = current
+        .iter()
+        .filter(|e| e["path"] != name)
+        .map(|e| json!({ "path": e["path"], "mode": e["mode"], "type": e["type"], "sha": e["sha"] }))
+        .collect();
+    out.push(ours);
+    out
+}
+
+/// Commits an exact snapshot of the vault (deletions included) to the folder `name` in `owner/repo`,
+/// creating the private repo if needed. Nothing outside that folder changes. Returns a warning for
+/// the status line ("" if none).
+pub fn backup(token: &str, owner: &str, repo: &str, name: &str, vault: &Path) -> Result<String, String> {
     // Read the vault first: a missing folder must never turn into a commit that deletes everything.
     let mut files = Vec::new();
     let mut skipped = Vec::new();
@@ -264,6 +278,12 @@ pub fn backup(token: &str, owner: &str, repo: &str, vault: &Path) -> Result<Stri
         };
         let head = head["object"]["sha"].as_str().ok_or("GitHub sent an unexpected reply.")?.to_string();
         let tree = sha_of(&get(token, &format!("{base}/git/commits/{head}"))?["tree"])?;
+        // The top level, read on its own: a truncated listing must never drop another campaign.
+        let root = get(token, &format!("{base}/git/trees/{tree}"))?;
+        if root["truncated"] == true || !root["tree"].is_array() {
+            return Err("GitHub sent an unexpected reply.".into());
+        }
+        // Everything, only to skip uploading what's already there (a truncated list just skips less).
         let remote = get(token, &format!("{base}/git/trees/{tree}?recursive=1"))?;
         let mut have: HashSet<String> = remote["tree"].as_array().into_iter().flatten().filter(|e| e["type"] == "blob").filter_map(|e| e["sha"].as_str().map(String::from)).collect();
         have.extend(UPLOADED.lock().unwrap().iter().filter_map(|k| k.strip_prefix(&format!("{owner}/{repo}/")).map(String::from)));
@@ -283,11 +303,13 @@ pub fn backup(token: &str, owner: &str, repo: &str, vault: &Path) -> Result<Stri
         }
 
         let entries: Vec<Value> = files.iter().map(|(rel, sha, _)| json!({ "path": rel, "mode": "100644", "type": "blob", "sha": sha })).collect();
-        let new_tree = sha_of(&post(token, &format!("{base}/git/trees"), json!({ "tree": entries }))?)?;
+        let subtree = sha_of(&post(token, &format!("{base}/git/trees"), json!({ "tree": entries }))?)?;
+        let top = root_entries(root["tree"].as_array().unwrap(), name, &subtree);
+        let new_tree = sha_of(&post(token, &format!("{base}/git/trees"), json!({ "tree": top }))?)?;
         if new_tree == tree {
             return Ok(warning); // nothing changed
         }
-        let message = format!("Backup {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
+        let message = format!("Backup {name} {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
         let commit = sha_of(&post(token, &format!("{base}/git/commits"), json!({ "message": message, "tree": new_tree, "parents": [head] }))?)?;
         let moved = api(token, "PATCH", &format!("{base}/git/refs/heads/{branch}"), Some(json!({ "sha": commit, "force": false })))?;
         if moved.0 == 422 && attempt == 0 {

@@ -382,7 +382,7 @@ for (const [p, c] of Object.entries(CLOUDS)) {
   });
 }
 
-// Where the open campaign backs up (restore.rs Places): another campaign than the first has places of its own.
+// Where the open campaign backs up (restore.rs Places): a folder named after it in each backup.
 let places = null;
 function showPlaces(w) {
   places = w;
@@ -395,7 +395,7 @@ function showPlaces(w) {
     $("backupFolder").textContent = w.folder || "Off";
   }
 }
-showPlaces({ dropbox: "", drive: "Lorekeeper" }); // the first campaign's, until campaign_places answers
+showPlaces({ dropbox: "", drive: "Lorekeeper" }); // the shared folders, until campaign_places answers
 
 function showClouds() {
   if (!current) return;

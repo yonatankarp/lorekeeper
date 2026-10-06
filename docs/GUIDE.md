@@ -69,12 +69,14 @@ Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Lore/  Templates
 
 Running more than one game? Give each campaign its own notes folder: **Settings > General > Add campaign…**. Switch with the campaign name at the top of the sidebar or the tray's **Campaign** menu. The window, the hotkey notes and the backups all follow the campaign you switch to. **Remove** only forgets a campaign in Lorekeeper; its notes folder and backups stay.
 
-Each campaign backs up on its own, so switching never overwrites or deletes another campaign's backup. Every campaign, your first one included, goes under its **backup name**, which is its folder's name unless you give it one (say `Strahd`):
+Each campaign backs up on its own, so switching never overwrites or deletes another campaign's backup. Every campaign, your first one included, is a folder named after its **backup name**, which is its folder's name unless you give it one (say `Strahd`). All your campaigns share one place per backup, each in its own folder:
 
 - **Folder backup:** a `Strahd` folder inside your backup folder.
-- **Dropbox:** `Apps/Lorekeeper/Campaigns/Strahd`.
-- **Google Drive:** a `Lorekeeper - Strahd` folder.
-- **GitHub:** its own private repository, `lorekeeper-notes-strahd`.
+- **Dropbox:** `Apps/Lorekeeper/Strahd`.
+- **Google Drive:** a `Strahd` folder inside the `Lorekeeper` folder in My Drive.
+- **GitHub:** a `Strahd` folder in your private `lorekeeper-notes` repository.
+
+Backups made by older versions of Lorekeeper (in `Apps/Lorekeeper/Campaigns`, `Lorekeeper - <campaign>` folders or `lorekeeper-notes-<campaign>` repositories) stay where they are; new backups go to the places above.
 
 Set a campaign's backup name next to it in **Settings > General**. Each campaign needs its own backup name, since the names keep their backups apart. A new name starts a new backup: the old one stays where it was, and changing the name back carries it on. A campaign you remove keeps its backup name, so adding the folder again carries on its backups; so does a folder you add later with the name of a removed campaign, which is what you want after moving a folder (otherwise give it another backup name).
 
@@ -83,10 +85,10 @@ Set a campaign's backup name next to it in **Settings > General**. Each campaign
 **Settings > Backups**, any of these:
 
 - **Back up to a folder:** pick a folder in Google Drive, Dropbox, OneDrive, iCloud Drive or on a USB drive. Lorekeeper keeps a dated copy for each of the last 30 days.
-- **Dropbox or Google Drive:** click **Sign in**, then sign in and allow access in your browser (your password never goes through Lorekeeper). Lorekeeper only sees its own folders: **Apps/Lorekeeper** in Dropbox, and the **Lorekeeper - <campaign>** folders it made in Google Drive. Only new and changed notes are uploaded, and a note you delete is deleted there too. A deleted or overwritten note can be brought back from Dropbox's **Deleted files** or a file's **Version history**, or the Google Drive **Trash** (30 days or more).
-- **Back up to GitHub:** sign in with a code (no password in Lorekeeper). Every backup is a version in a private repository for the campaign, `lorekeeper-notes-<campaign>`. A file's **History** on github.com shows every older version.
+- **Dropbox or Google Drive:** click **Sign in**, then sign in and allow access in your browser (your password never goes through Lorekeeper). Lorekeeper only sees its own folders: **Apps/Lorekeeper** in Dropbox, and the **Lorekeeper** folder it made in Google Drive, with a folder for each campaign in both. Only new and changed notes are uploaded, and a note you delete is deleted there too. A deleted or overwritten note can be brought back from Dropbox's **Deleted files** or a file's **Version history**, or the Google Drive **Trash** (30 days or more).
+- **Back up to GitHub:** sign in with a code (no password in Lorekeeper). Every backup is a version in one private repository, `lorekeeper-notes`, with a folder for each campaign; a campaign's backup only ever changes its own folder. A file's **History** on github.com shows every older version.
 
-**To restore**, click **Restore…** next to a backup (it restores the campaign that's open), pick a day (folder), a version (GitHub) or the current backup (Dropbox, Google Drive), and choose where the restored notes go. They're downloaded into a new folder (by default `<campaign> restored <date>` next to your notes folder); your notes folder and the backup are never changed. Then **Show in Finder** (Explorer on Windows) to copy back what you need, or **Open as a new campaign** to switch to it. It then backs up on its own like any other campaign, so it never touches the backup it came from. You can also restore by hand: copy from a dated folder, download from the Dropbox or Google Drive website, or use **Code > Download ZIP** on GitHub.
+**To restore**, click **Restore…** next to a backup (it restores the campaign that's open), pick a day (folder), a version (GitHub) or the current backup (Dropbox, Google Drive), and choose where the restored notes go. They're downloaded into a new folder (by default `<campaign> restored <date>` next to your notes folder); your notes folder and the backup are never changed. Then **Show in Finder** (Explorer on Windows) to copy back what you need, or **Open as a new campaign** to switch to it. It then backs up on its own like any other campaign, so it never touches the backup it came from. You can also restore by hand: copy from a dated folder, download from the Dropbox or Google Drive website, or use **Code > Download ZIP** on GitHub (the campaign is its own folder in it).
 
 To look at a backup of the campaign that's open: **Show in Finder** (Explorer on Windows) for the backup folder, or **Open in Dropbox**, **Open in Google Drive** or **Open on GitHub**, which open it in your browser.
 

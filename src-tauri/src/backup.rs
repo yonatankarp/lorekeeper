@@ -130,14 +130,14 @@ pub fn backup_to_folder(vault: &Path, folder: &Path, today: NaiveDate) -> Result
     Ok(())
 }
 
-// ---------- campaigns: each backs up to places of its own ----------
+// ---------- campaigns: each backs up to a folder of its own ----------
 
 /// A campaign's name: its notes folder's name.
 pub fn campaign_name(vault: &str) -> String {
     Path::new(vault).file_name().map_or_else(|| vault.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// The name as lowercase ASCII letters, digits and dashes, for GitHub repository and file names.
+/// The name as lowercase ASCII letters, digits and dashes, for file names.
 /// Other letters become their hex code, so a name in any script gets one.
 pub fn slug(name: &str) -> String {
     let mut out = String::new();
@@ -152,14 +152,10 @@ pub fn slug(name: &str) -> String {
 }
 
 /// Where a campaign's backups go: the backup name you gave it in Settings, else its folder's name.
-/// Every campaign has places of its own, so a backup of one never overwrites or deletes another's.
+/// Each campaign is a folder of that name in every backup, so a backup of one never overwrites or
+/// deletes another's.
 pub fn backup_name(s: &Settings, vault: &str) -> String {
     s.backup_names.get(vault).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| campaign_name(vault))
-}
-
-/// A campaign's GitHub repository: "lorekeeper-notes-<slug>".
-pub fn campaign_repo(repo: &str, name: &str) -> String {
-    format!("{repo}-{}", slug(name))
 }
 
 /// Campaign folder names must differ (ignoring case, as Dropbox does) to tell them apart, and the
@@ -370,7 +366,7 @@ fn run(app: &AppHandle, force: bool) {
             let r = match kind {
                 Kind::Folder => backup_campaign_to_folder(vault, Path::new(&settings.backup_folder), &name, today).map(|()| String::new()),
                 Kind::Github => github::load_token()
-                    .and_then(|token| github::backup(&token, &settings.github_user, &campaign_repo(&settings.github_repo, &name), vault)),
+                    .and_then(|token| github::backup(&token, &settings.github_user, &settings.github_repo, &name, vault)),
                 Kind::Cloud(p) => app
                     .path()
                     .app_config_dir()

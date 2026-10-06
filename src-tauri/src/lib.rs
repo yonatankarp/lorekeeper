@@ -1896,19 +1896,35 @@ mod tests {
         assert_eq!(back_up(&side, &other), (vec![], vec!["Sessions/Session 1.md".to_string()]));
         assert_eq!(back_up(&lore, &main), (vec![], vec![]));
 
-        // A manifest is only started over for another account, never for one that names none.
-        fs::write(config.join("cloud-google-lore.json"), r#"{"account":"","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
+        // A manifest is only started over for another account (or place), never for one that names no account.
+        fs::write(config.join("cloud-google-lore.json"), r#"{"account":"","place":"google:Lorekeeper/Lore","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
         assert_eq!(prepare(Provider::Google, "me@x.com", &config, &lore, &main).unwrap().1.files.len(), 1);
-        fs::write(config.join("cloud-google-lore.json"), r#"{"account":"you@x.com","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
+        fs::write(config.join("cloud-google-lore.json"), r#"{"account":"you@x.com","place":"google:Lorekeeper/Lore","files":{"NPCs/Vex.md":{"hash":"x"}}}"#).unwrap();
         let (_, m, _, _) = prepare(Provider::Google, "me@x.com", &config, &lore, &main).unwrap();
         assert_eq!((m.account.as_str(), m.files.len()), ("me@x.com", 0));
 
-        // Every destination differs, each named after its campaign.
-        assert_eq!((dropbox::root(&main), dropbox::root(&other)), ("/Campaigns/Lore".to_string(), "/Campaigns/Side".to_string()));
-        assert_eq!((gdrive::top_folder(&main), gdrive::top_folder(&other)), ("Lorekeeper - Lore".to_string(), "Lorekeeper - Side".to_string()));
-        let repo = |name: &str| backup::campaign_repo("lorekeeper-notes", name);
-        assert_eq!((repo(&main), repo(&other), repo("Curse of Strahd!")), ("lorekeeper-notes-lore".into(), "lorekeeper-notes-side".into(), "lorekeeper-notes-curse-of-strahd".into()));
+        // Every destination differs: a folder named after each campaign in one shared place.
+        assert_eq!((dropbox::root(&main), dropbox::root(&other)), ("/Lore".to_string(), "/Side".to_string()));
+        assert_eq!((cloud::place(Provider::Google, &main), cloud::place(Provider::Google, &other)), ("google:Lorekeeper/Lore".to_string(), "google:Lorekeeper/Side".to_string()));
         assert_eq!(backup::slug("Café Ω"), "caf-e9-3a9");
+
+        // GitHub: a backup of one campaign replaces only its own folder in the shared repository.
+        let tree = |path: &str, sha: &str| serde_json::json!({ "path": path, "mode": "040000", "type": "tree", "sha": sha, "url": "u" });
+        let readme = serde_json::json!({ "path": "README.md", "mode": "100644", "type": "blob", "sha": "r1", "size": 9 });
+        let root = [readme.clone(), tree("Lore", "l1"), tree("Side", "s1"), tree("NPCs", "old")];
+        let after = github::root_entries(&root, &other, "s2");
+        let sha_of = |path: &str| after.iter().filter(|e| e["path"] == path).map(|e| e["sha"].as_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(after.len(), 4);
+        assert_eq!((sha_of("README.md"), sha_of("Lore"), sha_of("NPCs"), sha_of("Side")), (vec!["r1"], vec!["l1"], vec!["old"], vec!["s2"]));
+        assert!(after.iter().all(|e| e.as_object().unwrap().len() == 4), "only path, mode, type and sha go back to GitHub");
+        assert_eq!(after.iter().find(|e| e["path"] == "README.md").unwrap()["mode"], "100644");
+        // The first backup of a campaign adds its folder next to the others.
+        let first = github::root_entries(&root, "Strahd", "t1");
+        assert_eq!(first.len(), 5);
+        assert_eq!(first[..4].iter().map(|e| e["sha"].as_str().unwrap()).collect::<Vec<_>>(), ["r1", "l1", "s1", "old"]);
+        assert_eq!(first[4], serde_json::json!({ "path": "Strahd", "mode": "040000", "type": "tree", "sha": "t1" }));
+        // A name that only starts the same is another campaign.
+        assert_eq!(github::root_entries(&[tree("Strahd 2", "x")], "Strahd", "t1").len(), 2);
 
         // Folder backup: each campaign's dated copy survives the other's backup.
         let (folder, day) = (dir.join("Backups"), chrono::NaiveDate::from_ymd_opt(2026, 3, 7).unwrap());

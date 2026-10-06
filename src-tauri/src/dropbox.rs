@@ -37,9 +37,9 @@ pub fn header_json(v: &Value) -> String {
     out
 }
 
-/// Where a campaign's notes go: Campaigns/<name> in the app folder.
+/// Where a campaign's notes go: a folder named after it in the app folder.
 pub fn root(campaign: &str) -> String {
-    format!("/Campaigns/{campaign}")
+    format!("/{campaign}")
 }
 
 /// `root` from root(): every path is `{root}/{rel}`.
