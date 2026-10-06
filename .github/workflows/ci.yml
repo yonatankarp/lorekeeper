@@ -36,3 +36,14 @@ jobs:
         with:
           workspaces: src-tauri
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  # Approves minor/patch Dependabot PRs and arms auto-merge; the main ruleset requires test and windows.
+  dependabot_auto_merge:
+    needs: [test, windows]
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: yonatankarp/github-actions/.github/workflows/dependabot-auto-merge.yml@v2
+    secrets:
+      GITHUB_PAT: ${{ secrets.REVIEWER_GITHUB_TOKEN }}
