@@ -38,9 +38,14 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
   # Approves minor/patch Dependabot PRs and arms auto-merge; the main ruleset requires test and windows.
+  # Not for the sync server's crates or image: those checks don't gate it, and a merge publishes an image
+  # golem deploys, so they wait for a person (Dependabot's branch names carry the directory).
   dependabot_auto_merge:
     needs: [test, windows]
-    if: ${{ github.actor == 'dependabot[bot]' }}
+    if: >-
+      ${{ github.actor == 'dependabot[bot]'
+      && !startsWith(github.head_ref, 'dependabot/cargo/sync')
+      && !startsWith(github.head_ref, 'dependabot/docker/') }}
     permissions:
       contents: read
       pull-requests: write
