@@ -36,7 +36,8 @@ static BASE32: LazyLock<Encoding> = LazyLock::new(|| {
 pub enum Error {
     /// Not valid base32/base64 or the wrong length.
     Encoding,
-    /// Wrong key, tampered blob, or a blob that belongs to another file or room.
+    /// Wrong key, tampered blob, a blob that belongs to another file or room, or one whose path
+    /// isn't a safe relative path matching its id.
     Decrypt,
     /// The invite link isn't one Lorekeeper made; the text says what's wrong.
     Invite(&'static str),
@@ -155,7 +156,16 @@ pub fn seal(key: &[u8; SECRET_LEN], room: &str, id: &str, file: &FileContent) ->
     seal_with_nonce(key, &random(), &associated_data(room, id), &json)
 }
 
-/// Decrypts a blob made by [`seal`] for the same key, room and id.
+/// True for a relative `/`-separated path that stays inside the campaign folder: no empty, `.`
+/// or `..` components, no leading `/`, no `\`, NUL or drive prefix (`C:`).
+pub fn is_safe_path(path: &str) -> bool {
+    let drive = path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+    !drive && !path.contains(['\\', '\0']) && path.split('/').all(|c| !matches!(c, "" | "." | ".."))
+}
+
+/// Decrypts a blob made by [`seal`] for the same key, room and id. Anyone with the key (any party
+/// member) can seal, so the path inside is checked too: it must be safe ([`is_safe_path`]) and be
+/// the one `id` was derived from.
 pub fn open(key: &[u8; SECRET_LEN], room: &str, id: &str, blob: &[u8]) -> Result<FileContent, Error> {
     if blob.len() < NONCE_LEN + TAG_LEN {
         return Err(Error::Decrypt);
@@ -167,7 +177,11 @@ pub fn open(key: &[u8; SECRET_LEN], room: &str, id: &str, blob: &[u8]) -> Result
     let json = cipher
         .decrypt(&XNonce::from(nonce), Payload { msg: ct, aad: &aad })
         .map_err(|_| Error::Decrypt)?;
-    serde_json::from_slice(&json).map_err(|_| Error::Decrypt)
+    let file: FileContent = serde_json::from_slice(&json).map_err(|_| Error::Decrypt)?;
+    if !is_safe_path(&file.path) || file_id(key, &file.path) != id {
+        return Err(Error::Decrypt);
+    }
+    Ok(file)
 }
 
 /// An invite link: `<server>/join/<room>/<invite>#<key>`. The key stays in the fragment, which
@@ -486,7 +500,7 @@ mod tests {
 
     #[test]
     fn blob_round_trips_with_fresh_nonces() {
-        let (room, id) = (random_id(), random_id());
+        let (room, id) = (random_id(), file_id(&KEY, &file().path));
         let a = seal(&KEY, &room, &id, &file());
         let b = seal(&KEY, &room, &id, &file());
         assert_ne!(a, b);
@@ -494,7 +508,27 @@ mod tests {
         assert_eq!(open(&KEY, &room, &id, &a), Ok(file()));
         assert_eq!(open(&KEY, &room, &id, &decode_blob(&encode_blob(&b)).unwrap()), Ok(file()));
         let empty = FileContent { path: "a.md".into(), content: vec![], modified: 0 };
+        let id = file_id(&KEY, "a.md");
         assert_eq!(open(&KEY, &room, &id, &seal(&KEY, &room, &id, &empty)), Ok(empty));
+    }
+
+    #[test]
+    fn open_rejects_unsafe_or_mismatched_paths() {
+        // A party member holds the key, so they can seal any path; open() must not trust it.
+        let room = random_id();
+        for path in ["../x.md", "a/../../x.md", "/etc/passwd", "a//b.md", "./a.md", "a/.", "", "a\\..\\b.md", "C:x.md", "c:/x.md", "a\0.md"] {
+            assert!(!is_safe_path(path), "{path:?}");
+            let id = file_id(&KEY, path);
+            let f = FileContent { path: path.into(), content: vec![], modified: 0 };
+            assert_eq!(open(&KEY, &room, &id, &seal(&KEY, &room, &id, &f)), Err(Error::Decrypt), "{path:?}");
+        }
+        for path in ["a.md", "Sessions/Session 4/Sibling 5.md", ".obsidian/x", "a..b.md", "Session 1: Start.md"] {
+            assert!(is_safe_path(path), "{path:?}");
+        }
+        // A safe path under another file's id: the id must come from the path.
+        let other = file_id(&KEY, "b.md");
+        let f = FileContent { path: "a.md".into(), content: vec![], modified: 0 };
+        assert_eq!(open(&KEY, &room, &other, &seal(&KEY, &room, &other, &f)), Err(Error::Decrypt));
     }
 
     #[test]
