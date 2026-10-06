@@ -21,6 +21,19 @@ pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":fal
 
 - `.github/workflows/ci.yml` runs `pnpm test` on pushes to `main` and on pull requests.
 - `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release: universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
+- `.github/workflows/sync-server.yml` tests `sync-protocol/` and `sync-server/` when they change, and on `main` publishes the server image to `ghcr.io/yonatankarp/lorekeeper-sync`.
+
+## Sync server
+
+Shared campaigns sync through `sync-server/` (axum, SQLite), with `sync-protocol/` holding what the app and the server share. Both are standalone crates outside `pnpm test`; [SYNC.md](SYNC.md) is the design and the API.
+
+```bash
+cargo test --manifest-path sync-protocol/Cargo.toml
+cargo test --manifest-path sync-server/Cargo.toml
+LOREKEEPER_SYNC_DB=/tmp/sync.db LOREKEEPER_SYNC_TRUST_PROXY=none \
+  cargo run --manifest-path sync-server/Cargo.toml          # http://localhost:8080
+docker build -f sync-server/Dockerfile -t lorekeeper-sync .  # from the repository root
+```
 
 To release:
 

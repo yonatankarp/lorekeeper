@@ -1,0 +1,5 @@
+# The only image is sync-server/Dockerfile, built from the repository root.
+*
+!sync-protocol/
+!sync-server/
+**/target/
