@@ -31,6 +31,9 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Client messages per socket per minute; more closes the socket (1008). Writes have their own,
 /// lower, per-room limit.
 const MESSAGES_PER_MINUTE: u32 = 600;
+/// Live sockets per member (their devices), so one token can't take a room's or the server's
+/// whole share.
+const MEMBER_CONNECTIONS: usize = 8;
 
 /// Rooms' hubs, and the number of sockets in all of them (for the server-wide cap).
 #[derive(Default)]
@@ -111,7 +114,8 @@ impl Slot {
             presence: watch::Sender::new(Vec::new()),
             conns: HashMap::new(),
         });
-        if hub.conns.len() >= state.0.config.max_connections {
+        let mine = hub.conns.values().filter(|c| c.member_id == caller.member_id).count();
+        if hub.conns.len() >= state.0.config.max_connections || mine >= MEMBER_CONNECTIONS {
             return Err(full);
         }
         *total += 1;

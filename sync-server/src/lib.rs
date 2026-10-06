@@ -405,16 +405,18 @@ async fn create_room(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let cfg = &state.0.config;
-    let ip = client_ip(&state, &headers, peer);
-    if !allow(&state.0.creates, ip, cfg.rooms_per_hour, Duration::from_secs(3600)) {
-        return Err(ApiError::RATE_LIMITED);
-    }
-    // Digests, so the compare takes the same time whatever the given key's length.
+    // The key first, so only its holders count against (and can fill) the per-IP limit; at 32+
+    // characters it needs no rate limit against guessing. Digests, so the compare takes the same
+    // time whatever the given key's length.
     let given = headers.get(CREATE_KEY_HEADER).map(|v| Sha256::digest(v.as_bytes()));
     let wanted = cfg.create_key.as_ref().map(|k| Sha256::digest(k.as_bytes()));
     let ok = given.zip(wanted).is_some_and(|(g, w)| bool::from(g.as_slice().ct_eq(w.as_slice())));
     if !ok {
         return Err(ApiError(StatusCode::FORBIDDEN, "create_key_required"));
+    }
+    let ip = client_ip(&state, &headers, peer);
+    if !allow(&state.0.creates, ip, cfg.rooms_per_hour, Duration::from_secs(3600)) {
+        return Err(ApiError::RATE_LIMITED);
     }
     let (room, token, owner_id) = (random_id(), random_secret(), random_id());
     let (r, hash) = (room.clone(), token_hash(&token));

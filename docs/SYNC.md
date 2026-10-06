@@ -83,7 +83,7 @@ Plain HTTP covers room creation, invites and members, health, the join page and 
 
 | Method and path | Auth | Answer |
 |---|---|---|
-| `POST /v1/rooms` | creation key | `201 {"room","owner_token"}`. Needs the header `X-Lorekeeper-Create-Key: <key>` (the server's `LOREKEEPER_SYNC_CREATE_KEY`), else `403 {"error":"create_key_required"}` (the app then asks for it). Rate limited per client IP. |
+| `POST /v1/rooms` | creation key | `201 {"room","owner_token"}`. Needs the header `X-Lorekeeper-Create-Key: <key>` (the server's `LOREKEEPER_SYNC_CREATE_KEY`), else `403 {"error":"create_key_required"}` (the app then asks for it). Rate limited per client IP, counting only requests with the right key. |
 | `POST /v1/rooms/{room}/invites` | owner | `201 {"invite","expires"}`; `413 too_many_members` at 32 members plus pending invites. |
 | `GET /v1/rooms/{room}/invites` | owner | `200 [{"invite","expires"}]`, pending invites only. |
 | `DELETE /v1/rooms/{room}/invites/{invite}` | owner | `204`; `404 invite_not_found` when it isn't pending. |
@@ -100,7 +100,7 @@ Plain HTTP covers room creation, invites and members, health, the join page and 
 
 Configurable by environment; defaults: blob 30 MiB (the decoded `nonce || ciphertext`; in base64 on the wire about 40 MiB, so frames are allowed the blob limit in base64 plus 64 KiB), room total 1 GiB of blobs, 20,000 files per room (tombstones don't count, but a new file is refused once the room holds twice that many files and tombstones together), 60 writes per minute per room, 32 connections per room and 64 on the whole server, room creation 5 per hour per IP, invite redemption 20 per hour per IP, 32 members plus pending invites per room. A room over a lowered limit can still shrink. Over a limit: `413` or `429` with `{"error": "..."}` over HTTP (`too_many_connections` on the upgrade), or an `error` frame on the socket.
 
-Fixed, not configurable: 60 socket upgrades plus `GET /changes` per member per minute (each can read the whole room), 600 messages per socket per minute, 4 MiB of blobs per page of changes. Per-IP limits count an IPv6 client as its /64, and each limit tracks at most 10,000 clients at once (past that, new clients get `429` until a window ends). There is no per-IP connection cap: a socket needs a token, so the per-room and server-wide caps bound what one party can hold.
+Fixed, not configurable: 60 socket upgrades plus `GET /changes` per member per minute (each can read the whole room), 600 messages per socket per minute, 4 MiB of blobs per page of changes. Per-IP limits count an IPv6 client as its /64, and each limit tracks at most 10,000 clients at once (past that, new clients get `429` until a window ends). Each member (all their devices together) can hold at most 8 sockets. There is no per-IP connection cap: a socket needs a token, so the per-member, per-room and server-wide caps bound what one party can hold.
 
 **Memory:** a socket sending a page holds it about three times (the blobs, their base64, the JSON frame), and one receiving a `put` holds the frame about three times too. A page is at most 4 MiB of blobs unless a single blob is bigger, so the worst case is about 3 x the blob limit per busy socket: around 100 MB at the defaults, for example when one 30 MiB file fans out to every player at once. Size the container's memory for the largest files your party shares times the sockets that receive them at once, or lower `LOREKEEPER_SYNC_MAX_BLOB`.
 

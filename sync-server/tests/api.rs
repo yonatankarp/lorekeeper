@@ -519,6 +519,19 @@ async fn limits() {
 }
 
 #[tokio::test]
+async fn connections_are_capped_per_member() {
+    let s = start(open_config).await;
+    let (room, owner) = s.room().await;
+    let member = s.member(&room, &owner, "m").await;
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        held.push(s.ws(&room, &member).await);
+    }
+    assert_eq!(s.ws_status(&room, Some(&member)).await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(s.ws_status(&room, Some(&owner)).await, StatusCode::SWITCHING_PROTOCOLS, "others still get in");
+}
+
+#[tokio::test]
 async fn frames_over_the_size_limit_close_the_socket() {
     let s = start(|c| {
         open_config(c);
@@ -585,6 +598,18 @@ async fn room_creation_and_redeem_rate_limits_per_ip() {
     assert_eq!(redeem("203.0.113.9").await, StatusCode::TOO_MANY_REQUESTS);
 
     // Without a trusted proxy the header is ignored: everything comes from the peer address.
+    // A wrong key is refused before the limit, so keyless requests can't use up an owner's budget.
+    let keyed = start(|c| {
+        open_config(c);
+        c.rooms_per_hour = 1;
+    })
+    .await;
+    let keyed = &keyed;
+    let create = |key: &'static str| async move { keyed.http("POST", "/v1/rooms", None, &[("x-lorekeeper-create-key", key)], None).await.0 };
+    assert_eq!(create("wrong").await, StatusCode::FORBIDDEN);
+    assert_eq!(create(CREATE_KEY).await, StatusCode::CREATED);
+    assert_eq!(create(CREATE_KEY).await, StatusCode::TOO_MANY_REQUESTS);
+
     // That's the default.
     let direct = start(|c| {
         open_config(c);
