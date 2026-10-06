@@ -1,0 +1,25 @@
+[package]
+name = "sync-server"
+version = "0.1.0"
+edition = "2021"
+description = "Lorekeeper sync server (see docs/SYNC.md)"
+publish = false
+
+[[bin]]
+name = "lorekeeper-sync"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+subtle = "2.6.1"
+sync-protocol = { path = "../sync-protocol" }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+
+[dev-dependencies]
+futures-util = "0.3.34"
+http-body-util = "0.1.5"
+tokio-tungstenite = "0.29.0"
+tower = { version = "0.5.3", features = ["util"] }

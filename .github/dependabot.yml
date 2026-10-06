@@ -13,6 +13,23 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
+  # The sync server and its protocol crate (docs/SYNC.md); the app will share sync-protocol.
+  - package-ecosystem: cargo
+    directories: [/sync-protocol, /sync-server]
+    schedule:
+      interval: weekly
+    groups:
+      sync:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /sync-server
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
+
   # Build tools only; nothing from node_modules ships. After a marked or
   # @codemirror/* update, run `pnpm vendor` and commit src/vendor.
   - package-ecosystem: npm

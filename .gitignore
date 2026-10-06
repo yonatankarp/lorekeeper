@@ -23,3 +23,7 @@ site
 *.njsproj
 *.sln
 *.sw?
+
+# Sync server and protocol crates
+/sync-protocol/target/
+/sync-server/target/
