@@ -476,6 +476,12 @@ fn manifest_file(config_dir: &Path, p: Provider, campaign: &str) -> PathBuf {
     }
 }
 
+/// The id of a campaign's Google Drive folder, once `account` has backed it up.
+pub fn drive_folder_id(config_dir: &Path, account: &str, campaign: &str) -> Option<String> {
+    let m = load_manifest(&manifest_file(config_dir, Provider::Google, campaign));
+    m.folders.get("").filter(|id| m.account == account && !id.is_empty()).cloned()
+}
+
 fn load_manifest(file: &Path) -> Manifest {
     fs::read_to_string(file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
@@ -562,4 +568,23 @@ pub fn read(f: &Local) -> Result<(Vec<u8>, String), String> {
     let bytes = fs::read(&f.path).map_err(|e| format!("Couldn't read {}: {e}", f.rel))?;
     let hash = github::git_blob_sha(&bytes);
     Ok((bytes, hash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_folder_id_only_for_the_account_that_backed_up() {
+        let dir = std::env::temp_dir().join(format!("dnd-notes-cloud-drive-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(drive_folder_id(&dir, "a@x", "Side"), None, "no backup yet");
+        let m = Manifest { account: "a@x".into(), folders: [("".to_string(), "abc".to_string())].into(), ..Manifest::default() };
+        fs::write(manifest_file(&dir, Provider::Google, "Side"), serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(drive_folder_id(&dir, "a@x", "Side").as_deref(), Some("abc"));
+        assert_eq!(drive_folder_id(&dir, "b@x", "Side"), None, "another account");
+        assert_eq!(drive_folder_id(&dir, "a@x", ""), None, "another campaign");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

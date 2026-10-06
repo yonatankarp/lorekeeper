@@ -249,7 +249,7 @@ function renderBackup(status) {
   $("github-run-error").textContent = current.githubUser ? status.github.lastError : "";
   $("backup-now").disabled = $("gh-now").disabled = status.running;
   $("backup-now").disabled ||= !current.backupFolder;
-  $("folder-restore").disabled = !current.backupFolder;
+  $("folder-restore").disabled = $("folder-open").disabled = !current.backupFolder;
   $("gh-unavailable").hidden = status.githubAvailable;
   $("gh-sign-in").disabled = !status.githubAvailable;
   for (const p in CLOUDS) {
@@ -279,10 +279,16 @@ $("backup-off").addEventListener("click", () => save({ backupFolder: "" }));
 for (const id of ["backup-now", "gh-now"]) $(id).addEventListener("click", () => invoke("backup_now"));
 $("folder-restore").addEventListener("click", () => openRestore("folder", "your backup folder"));
 $("gh-restore").addEventListener("click", () => openRestore("github", "GitHub"));
-$("gh-repo").addEventListener("click", (e) => {
-  e.preventDefault();
-  invoke("open_url", { url: `https://github.com/${current.githubUser}/${places?.repo ?? current.githubRepo}` });
-});
+// The open campaign's backup: the folder in the file manager, the others in the browser.
+const openBackup = (source, error) => invoke("open_backup", { source }).catch((err) => { $(error).textContent = String(err); });
+$("folder-open").addEventListener("click", () => openBackup("folder", "folder-run-error"));
+for (const id of ["gh-open-repo", "gh-repo"]) {
+  $(id).addEventListener("click", (e) => {
+    e.preventDefault();
+    openBackup("github", "github-error");
+  });
+}
+
 
 $("gh-sign-in").addEventListener("click", async () => {
   const error = $("github-error"), attempt = ++signInAttempt;
@@ -347,6 +353,8 @@ for (const [p, c] of Object.entries(CLOUDS)) {
   cloudEl(p, "cloud-again").addEventListener("click", () => cloudSignIn(p));
   cloudEl(p, "cloud-now").addEventListener("click", () => invoke("backup_now"));
   cloudEl(p, "cloud-restore").addEventListener("click", () => openRestore(p, c.name));
+  cloudEl(p, "cloud-open").textContent = `Open in ${c.name}`;
+  cloudEl(p, "cloud-open").addEventListener("click", () => invoke("open_backup", { source: p }).catch((err) => { cloudEl(p, "cloud-error").textContent = String(err); }));
   cloudEl(p, "cloud-cancel").addEventListener("click", () => {
     cloudSigningIn = null; // set first, so the sign-in's "cancelled" error isn't shown
     invoke("cloud_sign_in_cancel");

@@ -481,6 +481,46 @@ pub fn campaign_places(app: AppHandle) -> Places {
     places(&settings(&app))
 }
 
+/// The web page with the open campaign's backup on GitHub, Dropbox or Google Drive. Drive is opened
+/// by folder id (`drive_id`, known after a backup); before that, a search for the folder's name.
+fn web_page(source: Source, s: &Settings, w: &Places, drive_id: Option<&str>) -> String {
+    let mut url;
+    match source {
+        Source::Folder => unreachable!("a backup folder is shown in the file manager, not the browser"),
+        Source::Github => return format!("https://github.com/{}/{}", s.github_user, w.repo),
+        Source::Dropbox => {
+            url = tauri::Url::parse("https://www.dropbox.com/home/Apps/Lorekeeper").unwrap();
+            url.path_segments_mut().unwrap().extend(w.dropbox.split('/').filter(|p| !p.is_empty()));
+        }
+        Source::Google => match drive_id {
+            Some(id) => return format!("https://drive.google.com/drive/folders/{id}"),
+            None => {
+                url = tauri::Url::parse("https://drive.google.com/drive/search").unwrap();
+                url.query_pairs_mut().append_pair("q", &w.drive);
+            }
+        },
+    }
+    url.into()
+}
+
+/// Shows the open campaign's backup: the folder in Finder (Explorer on Windows), the others in the browser.
+#[tauri::command]
+pub fn open_backup(app: AppHandle, source: Source) -> Result<(), String> {
+    let s = settings(&app);
+    let w = places(&s);
+    if source == Source::Folder {
+        // The campaign's own folder appears with its first backup; until then, the backup folder.
+        let dir = [&w.folder, &s.backup_folder].into_iter().find(|d| !d.is_empty() && Path::new(d).is_dir());
+        crate::open_external(dir.ok_or("The backup folder isn't there. If it's on a drive, connect it.")?);
+        return Ok(());
+    }
+    let campaign = backup::backup_name(&s, &s.vault_path);
+    let config = app.path().app_config_dir().ok();
+    let drive_id = config.and_then(|dir| cloud::drive_folder_id(&dir, &s.google_user, &campaign));
+    crate::open_external(web_page(source, &s, &w, drive_id.as_deref()));
+    Ok(())
+}
+
 /// A new folder to restore into, in `parent` ("" = next to the notes folder).
 #[tauri::command]
 pub fn restore_target(app: AppHandle, parent: String) -> String {
@@ -598,8 +638,17 @@ mod tests {
         assert_eq!((w.campaign.as_str(), w.others.clone()), ("Lore", vec!["Campaigns/Side".to_string()]));
         // Another campaign: only its own places.
         let w = places(&other);
-        assert_eq!((w.folder, w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups.join("Side")), "lorekeeper-notes-side", "Campaigns/Side", "Lorekeeper - Side"));
+        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups.join("Side")).as_str(), "lorekeeper-notes-side", "Campaigns/Side", "Lorekeeper - Side"));
         assert!(w.others.is_empty());
+
+        // Their pages on the web.
+        let signed_in = Settings { github_user: "vex".into(), ..main.clone() };
+        let page = |source, s: &Settings, id| web_page(source, s, &places(s), id);
+        assert_eq!(page(Source::Github, &signed_in, None), "https://github.com/vex/lorekeeper-notes");
+        assert_eq!(page(Source::Dropbox, &main, None), "https://www.dropbox.com/home/Apps/Lorekeeper");
+        assert_eq!(page(Source::Dropbox, &other, None), "https://www.dropbox.com/home/Apps/Lorekeeper/Campaigns/Side");
+        assert_eq!(page(Source::Google, &other, Some("abc123")), "https://drive.google.com/drive/folders/abc123");
+        assert_eq!(page(Source::Google, &other, None), "https://drive.google.com/drive/search?q=Lorekeeper+-+Side");
 
         for (s, note, other_note) in [(&main, "Vex.md", "Bob.md"), (&other, "Bob.md", "Vex.md")] {
             let w = places(s);

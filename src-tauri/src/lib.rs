@@ -1297,6 +1297,7 @@ pub fn run() {
             restore::restore_start,
             restore::restore_open,
             restore::campaign_places,
+            restore::open_backup,
             updater::check_for_updates
         ])
         .setup(|app| {
