@@ -193,3 +193,32 @@ input[role="switch"]:checked::before { transform: translateX(12px); background: 
 #restore-status { margin: 8px 0; overflow-wrap: anywhere; }
 #restore-status:empty { display: none; }
 #restore-error:not(:empty) { margin-bottom: 12px; overflow-wrap: anywhere; }
+/* Shared campaigns: the sync line under a campaign, the creation key field, and the players and join dialogs. */
+.campaign-sync { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.campaign-sync[hidden], .campaign-sync [hidden] { display: none; }
+.campaign-sync .sub { flex: 1 1 14em; margin: 0; }
+.campaign-key { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; }
+.campaign-key .hint, .campaign-sync .error { flex-basis: 100%; }
+#players-dialog, #join-dialog { width: min(500px, calc(100vw - 32px)); }
+#players-dialog h3 { margin: 16px 0 4px; font-size: 15px; }
+.players-make { justify-content: flex-start; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.players-make label { display: flex; margin: 0; font-weight: 400; }
+#invite-count { width: 4em; }
+dialog textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+  font: 13px ui-monospace, Menlo, Consolas, monospace;
+  resize: vertical;
+  overflow-wrap: anywhere;
+}
+#invite-links .dialog-actions { margin-top: 6px; }
+.sync-list { margin: 0; padding: 0; list-style: none; }
+.sync-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.sync-list li:last-child { border-bottom: 0; }
+#join-server, #players-status { margin: 0 0 8px; overflow-wrap: anywhere; }
+#join-warning:not(:empty) { margin: 0 0 8px; }

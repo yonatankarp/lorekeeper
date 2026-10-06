@@ -301,3 +301,17 @@ test("sync conflict copies are found by their names", () => {
     { path: "Sessions/Session 5 (1)", of: "Sessions/Session 5" },
   ]);
 });
+
+// The copies Lorekeeper's sync makes (conflict_name in sync.rs; its is_conflict_copy test uses the same names).
+test("Lorekeeper sync's conflict copies are flagged next to their original", () => {
+  const paths = [
+    "NPCs/Vex.md", "NPCs/Vex (conflict 2026-10-06 2015).md", "NPCs/Vex (conflict 2026-10-06 2015 2).md",
+    "Attachments/map.png", "Attachments/map (conflict 2026-10-06 2015).png", "Lore/Gone (conflict 2026-10-06 2015).md",
+  ];
+  assert.deepEqual(syncConflicts(paths), [
+    { path: "Attachments/map (conflict 2026-10-06 2015).png", of: "Attachments/map.png" },
+    { path: "Lore/Gone (conflict 2026-10-06 2015).md", of: "" },
+    { path: "NPCs/Vex (conflict 2026-10-06 2015 2).md", of: "NPCs/Vex.md" },
+    { path: "NPCs/Vex (conflict 2026-10-06 2015).md", of: "NPCs/Vex.md" },
+  ]);
+});

@@ -1,4 +1,5 @@
 import { applyTheme } from "./theme.js";
+import { onlineText, syncText } from "./sync-status.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen, emitTo } = window.__TAURI__.event;
@@ -205,7 +206,250 @@ function renderSharing(row, s, path) {
   const change = (next) => save({ sharing: { ...current.sharing, [path]: { ...(current.sharing?.[path] ?? { shared: false, me: "" }), ...next } } });
   shared.addEventListener("change", () => change({ shared: shared.checked }));
   select.addEventListener("change", () => change({ me: select.value }));
+  renderSync(row, s, path);
 }
+
+// ---------- shared campaigns: Share, Invite, Players, Join (shared.rs) ----------
+// Names and messages here can come from teammates or the server: they're only ever set as text.
+
+const snapshots = new Map(); // campaign folder -> { status, online, warning } from sync-status events
+const syncErrors = new Map(); // campaign folder -> the last Share error, kept across redraws
+let syncInfo = null, askKey = null, sharing = null;
+
+/** The sync line and buttons of a campaign row. */
+function renderSync(row, s, path) {
+  const sh = s.sharing?.[path] ?? {};
+  const box = row.querySelector(".campaign-sync");
+  box.hidden = !sh.shared && !sh.room && !sh.removed;
+  const owner = sh.role === "owner" && !!sh.room && sh.shared;
+  row.querySelector(".campaign-share").hidden = !sh.shared || !!sh.room;
+  row.querySelector(".campaign-invite").hidden = row.querySelector(".campaign-players").hidden = !owner;
+  row.querySelector(".campaign-key").hidden = askKey !== path;
+  if (sh.me && syncErrors.get(path)?.startsWith("Downloading")) syncErrors.delete(path);
+  row.querySelector(".campaign-sync-error").textContent = syncErrors.get(path) ?? "";
+  showSyncStatus(row, path);
+  row.querySelector(".campaign-share").addEventListener("click", () => share(path));
+  row.querySelector(".campaign-key-go").addEventListener("click", () => share(path, row.querySelector(".campaign-key-input").value));
+  row.querySelector(".campaign-key-input").addEventListener("keydown", (e) => { if (e.key === "Enter") share(path, e.target.value); });
+  row.querySelector(".campaign-invite").addEventListener("click", () => openPlayers(path, 1));
+  row.querySelector(".campaign-players").addEventListener("click", () => openPlayers(path, 0));
+}
+
+function showSyncStatus(row, path) {
+  const sh = current.sharing?.[path] ?? {};
+  const snap = snapshots.get(path);
+  let text = syncText(snap, sh, path === current.vaultPath);
+  if (sh.shared && !sh.room && !sh.removed) {
+    const server = syncInfo?.server?.Ok;
+    text = sharing === path ? "Sharing…" : `Not synced yet. Share uploads it, encrypted, to ${server ?? "the sync server"}.`;
+  }
+  const online = path === current.vaultPath && sh.room ? onlineText(snap) : "";
+  row.querySelector(".campaign-sync-status").textContent = [text, online].filter(Boolean).join(" · ");
+}
+
+const rowFor = (path) => [...document.querySelectorAll(".campaign")].find((r) => r.querySelector(".campaign-path").textContent === path);
+
+listen("sync-status", ({ payload }) => {
+  snapshots.set(payload.path, payload);
+  const row = rowFor(payload.path);
+  if (row && current) showSyncStatus(row, payload.path);
+});
+
+async function loadSyncInfo() {
+  syncInfo = await invoke("sync_info").catch(() => null);
+  if (!syncInfo) return;
+  for (const snap of syncInfo.statuses) snapshots.set(snap.path, snap);
+  const server = syncInfo.server;
+  $("sync-server-in-use").textContent = server.Ok ? `In use: ${server.Ok}` : server.Err;
+  $("syncServer").placeholder = syncInfo.defaultServer;
+  if (current) render(current);
+}
+
+/** Share: asks for the server's creation key when it wants one (the field stays open until it works). */
+async function share(path, createKey) {
+  if (sharing) return;
+  sharing = path;
+  syncErrors.delete(path);
+  render(current);
+  try {
+    await invoke("sync_share", { path, createKey: createKey ?? null });
+    if (askKey === path) askKey = null;
+  } catch (err) {
+    if (String(err) === "create_key_required") askKey = path;
+    else syncErrors.set(path, String(err));
+  }
+  sharing = null;
+  render(current);
+  const row = rowFor(path);
+  if (askKey === path) row?.querySelector(".campaign-key-input").focus();
+}
+
+// Players and invites: one dialog for the campaign it was opened for. Links hold the campaign's key, so they're made
+// only on a click, copied only on Copy, and cleared when the dialog closes (or after 10 minutes).
+let playersPath = null, linksTimer;
+
+async function openPlayers(path, make) {
+  playersPath = path;
+  $("players-title").textContent = `Players in ${campaignName(path)}`;
+  $("players-error").textContent = $("players-status").textContent = "";
+  clearLinks();
+  if (!$("players-dialog").open) $("players-dialog").showModal();
+  if (make) await makeInvites(make);
+  await loadPlayers();
+}
+
+function clearLinks() {
+  clearTimeout(linksTimer);
+  $("invite-text").value = "";
+  $("invite-links").hidden = true;
+}
+
+async function makeInvites(count) {
+  const path = playersPath;
+  $("players-error").textContent = "";
+  try {
+    const links = await invoke("sync_invite", { path, count });
+    if (playersPath !== path) return;
+    $("invite-text").value = links.join("\n");
+    $("invite-text").rows = Math.min(links.length, 6) + 1;
+    $("invite-links").hidden = false;
+    $("invite-copy").textContent = links.length > 1 ? "Copy all" : "Copy";
+    clearTimeout(linksTimer);
+    linksTimer = setTimeout(clearLinks, 10 * 60 * 1000);
+    $("invite-copy").focus();
+    await loadPlayers();
+  } catch (err) {
+    $("players-error").textContent = String(err);
+  }
+}
+
+const lastSeen = (ms) => (ms ? `last seen ${when(new Date(ms).toISOString())}` : "hasn't connected yet");
+
+async function loadPlayers() {
+  const path = playersPath;
+  const [invites, players] = await Promise.allSettled([invoke("sync_invites", { path }), invoke("sync_members", { path })]);
+  if (playersPath !== path) return;
+  const failed = [invites, players].find((r) => r.status === "rejected");
+  if (failed) $("players-error").textContent = String(failed.reason);
+  const item = (text, button, action) => {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.textContent = text;
+    li.append(span);
+    if (button) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ghost";
+      b.textContent = button;
+      b.addEventListener("click", () => action(b));
+      li.append(b);
+    }
+    return li;
+  };
+  const pending = invites.value ?? [];
+  $("invite-list").replaceChildren(...(pending.length ? pending.map((i) => item(`Invite, expires ${when(new Date(i.expires).toISOString())}`, "Cancel", async () => {
+    await invoke("sync_cancel_invite", { path, invite: i.invite }).catch((err) => { $("players-error").textContent = String(err); });
+    loadPlayers();
+  })) : [item("None")]));
+  const online = new Set(snapshots.get(path)?.online ?? []);
+  $("player-list").replaceChildren(...(players.value ?? []).map((p) => {
+    const name = p.name || "No character picked yet";
+    if (p.owner) return item(`${name} (you, the owner)`);
+    return item(`${name}, ${online.has(p.name) ? "online now" : lastSeen(p.lastSeen)}`, "Remove", async (b) => {
+      // Two clicks: the first asks.
+      if (b.dataset.sure !== "yes") {
+        b.dataset.sure = "yes";
+        b.textContent = `Remove ${name}?`;
+        return;
+      }
+      await invoke("sync_remove_member", { path, memberId: p.memberId }).catch((err) => { $("players-error").textContent = String(err); });
+      loadPlayers();
+    });
+  }));
+}
+
+$("invite-one").addEventListener("click", () => makeInvites(1));
+$("invite-many").addEventListener("click", () => makeInvites(Math.max(2, Math.min(10, Number($("invite-count").value) || 2))));
+$("invite-copy").addEventListener("click", () => navigator.clipboard.writeText($("invite-text").value)
+  .then(() => { $("players-status").textContent = "Copied. Send each player their own link."; },
+    (err) => { $("players-error").textContent = `Copy failed: ${err}`; }));
+$("players-close").addEventListener("click", () => $("players-dialog").close());
+$("players-dialog").addEventListener("close", () => {
+  clearLinks();
+  playersPath = null;
+});
+
+// Join: paste a link, see which server it's for, then join. The link holds the key: cleared when the dialog closes.
+let joinChecked = null, joining = false;
+
+function resetJoin() {
+  joinChecked = null;
+  $("join-confirm").hidden = true;
+  $("join-go").textContent = "Continue";
+  $("join-error").textContent = $("join-status").textContent = "";
+}
+
+$("join-open").addEventListener("click", () => {
+  $("join-link").value = "";
+  resetJoin();
+  $("join-dialog").showModal();
+  $("join-link").focus();
+});
+$("join-link").addEventListener("input", resetJoin);
+$("join-cancel").addEventListener("click", () => $("join-dialog").close());
+$("join-dialog").addEventListener("cancel", (e) => { if (joining) e.preventDefault(); });
+$("join-dialog").addEventListener("close", () => {
+  $("join-link").value = "";
+  resetJoin();
+});
+$("join-go").addEventListener("click", async () => {
+  const link = $("join-link").value.trim();
+  $("join-error").textContent = "";
+  if (!joinChecked) {
+    try {
+      const check = await invoke("sync_check_invite", { link });
+      joinChecked = link;
+      $("join-server").textContent = `This invite is for the sync server at ${check.server}.`;
+      $("join-warning").textContent = check.isDefault ? "" :
+        `That isn't Lorekeeper's usual server (${syncInfo?.defaultServer ?? "lorekeeper.yonatankarp.com"}). Join only if you know and trust whoever runs it.`;
+      $("join-confirm").hidden = false;
+      $("join-go").textContent = "Join";
+      $("join-go").focus();
+    } catch (err) {
+      $("join-error").textContent = String(err);
+    }
+    return;
+  }
+  joining = true;
+  $("join-go").disabled = $("join-cancel").disabled = true;
+  $("join-status").textContent = "Joining…";
+  try {
+    const path = await invoke("sync_join", { link: joinChecked });
+    $("join-dialog").close();
+    await addCampaign(path); // opens it: the download starts
+    syncErrors.set(path, "Downloading the campaign. Then pick the character you play under I play.");
+    render(current);
+    rowFor(path)?.querySelector(".campaign-me").focus();
+  } catch (err) {
+    $("join-status").textContent = "";
+    $("join-error").textContent = String(err);
+  }
+  joining = false;
+  $("join-go").disabled = $("join-cancel").disabled = false;
+});
+
+// PC pages arrive while a joined campaign downloads: refresh the I play lists.
+listen("vault-changed", () => {
+  for (const row of document.querySelectorAll(".campaign")) {
+    const path = row.querySelector(".campaign-path").textContent, select = row.querySelector(".campaign-me");
+    if (row.querySelector(".campaign-me-label").hidden || document.activeElement === select) continue;
+    invoke("campaign_pcs", { path }).then((list) => {
+      pcs.set(path, list);
+      if (select.isConnected) fillPcs(select, path, select.value);
+    }).catch(() => {});
+  }
+});
+loadSyncInfo();
 
 function renderCampaigns(s) {
   // Redrawn on every settings change: a name being typed keeps its text and focus, a switch or list just used its focus.
@@ -598,4 +842,4 @@ invoke("backup_status").then(renderBackup);
 const load = () => { saves = saves.then(() => invoke("get_settings").then(render)); };
 load();
 window.addEventListener("focus", load);
-listen("settings-changed", (e) => render(e.payload));
+listen("settings-changed", (e) => { render(e.payload); loadSyncInfo(); });

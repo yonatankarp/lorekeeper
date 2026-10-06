@@ -12,6 +12,7 @@ import { icon } from "./icons.js";
 import { GRAPH_KINDS, connections, neighbourhood } from "./graph.js";
 import { drawGraph, forgetPictures } from "./graph-view.js";
 import { ATTACHMENTS, freeName, imageLabel, isImage, imageTarget, pastedName, resolveImage, safeName } from "./images.js";
+import { onlineText, syncText } from "./sync-status.js";
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -325,7 +326,7 @@ function homeHtml(graph) {
     const name = (path) => (note(path) ? link(path) : escape(path));
     const items = vault.conflicts.map((c) => `<li>${name(c.path)}${c.of ? ` <span class="home-meta">copy of ${name(c.of)}</span>` : ""}</li>`);
     cards.push(card("conflicts", "Sync conflicts", "mystery", `
-      <p class="home-meta">Your sync app kept two versions of these, changed on two computers at once. Open both, keep what you want in the original, then delete the copy.</p>
+      <p class="home-meta">These were changed on two computers at once, so sync kept both versions. Open both, keep what you want in the original, then delete the copy.</p>
       <ul class="home-list">${items.join("")}</ul>`, true));
   }
   if (latest) {
@@ -1361,7 +1362,27 @@ function applySettings(next) {
   }
   else render();
   $("campaign").textContent = campaignName(settings.vaultPath);
+  showSync();
 }
+
+// ---------- a shared campaign's sync status and who's online (shared.rs), in the sidebar's footer ----------
+
+const syncSnapshots = new Map();
+/** Teammates' names come from the network: set as text only. */
+function showSync() {
+  const path = settings.vaultPath, snap = syncSnapshots.get(path);
+  const text = [syncText(snap, settings.sharing?.[path], true), onlineText(snap)].filter(Boolean).join(" · ");
+  $("sync-line").textContent = text;
+  $("sync-line").hidden = !text;
+}
+listen("sync-status", ({ payload }) => {
+  syncSnapshots.set(payload.path, payload);
+  if (payload.path === settings.vaultPath) showSync();
+});
+invoke("sync_info").then((info) => {
+  for (const snap of info.statuses) syncSnapshots.set(snap.path, snap);
+  showSync();
+}).catch(() => {});
 
 // ---------- campaigns: one notes folder each ----------
 

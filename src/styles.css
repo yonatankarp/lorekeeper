@@ -356,6 +356,9 @@ kbd {
 #results mark { background: var(--accent-soft); color: inherit; border-radius: 2px; }
 .side-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
 .side-foot button { flex: 1; min-width: max-content; }
+/* A shared campaign's sync status and who's online. */
+.sync-line { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.sync-line[hidden] { display: none; }
 
 /* ---------- main ---------- */
 main { display: flex; flex-direction: column; min-width: 0; height: 100vh; background: var(--surface-page); }
