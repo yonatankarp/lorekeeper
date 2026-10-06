@@ -222,7 +222,7 @@ function renderSync(row, s, path) {
   const box = row.querySelector(".campaign-sync");
   box.hidden = !sh.shared && !sh.room && !sh.removed;
   const owner = sh.role === "owner" && !!sh.room && sh.shared;
-  row.querySelector(".campaign-share").hidden = !sh.shared || !!sh.room;
+  row.querySelector(".campaign-share").hidden = !sh.shared || !!sh.room || !!sh.removed || askKey === path;
   row.querySelector(".campaign-invite").hidden = row.querySelector(".campaign-players").hidden = !owner;
   row.querySelector(".campaign-key").hidden = askKey !== path;
   if (sh.me && syncErrors.get(path)?.startsWith("Downloading")) syncErrors.delete(path);
