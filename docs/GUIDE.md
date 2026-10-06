@@ -96,24 +96,32 @@ Name a campaign next to it in **Settings > General**; the name shows in the side
 
 ## Playing with your party
 
-The whole party can keep one campaign together: everyone jots notes during the game, and every session shows all of them, each with who wrote it. It works through Google Drive for desktop (Dropbox works the same way); Lorekeeper itself never goes online for this.
+The whole party can keep one campaign together: everyone jots notes during the game, and every session shows all of them, each with who wrote it. Lorekeeper syncs a shared campaign between your computers through the Lorekeeper sync server at `lorekeeper.yonatankarp.com`, run by Lorekeeper's maintainer. There's nothing to install or sign up for. Notes are encrypted on your computer before they leave it, so the server stores only data it can't read.
 
-1. **One person shares the campaign folder.** Put it in Google Drive (say `My Drive/Lorekeeper/Scale & Frost`), then share that folder with the other players as **Editor**.
-2. **Everyone else adds it to their Drive:** in Google Drive on the web, open **Shared with me**, right-click the folder, **Organize > Add shortcut**, and put the shortcut in **My Drive**. Drive for desktop then shows it on your computer.
-3. **Everyone adds it in Lorekeeper:** **Settings > General > Add campaign…**, choosing that folder (inside the Google Drive folder on your computer).
-4. **Everyone turns on Shared with my party** next to the campaign and picks their character under **I play**. Characters are the pages in `PCs/`, so make or import them first (one person can import the whole party from D&D Beyond).
+**Sharing your campaign** (one person, say the DM):
+
+1. Open the campaign, then in **Settings > General** turn on **Shared with my party** next to it and pick your character under **I play** (characters are the pages in `PCs/`, so make or import them first; one person can import the whole party from D&D Beyond).
+2. Click **Share**. The sync server asks for its creation key the first time: ask the maintainer for it. Lorekeeper keeps it in your system's password storage and never asks again. Everything in the campaign then uploads.
+3. Click **Invite a player** and send the link to one player, privately (a message, not a public channel). Each link works once, for 7 days, and holds the campaign's key, so make one per player. **Players and invites…** makes several at once (**Copy all** copies them as a list), lists the pending invites so you can cancel one, and lists the players.
+
+**Joining** (everyone else): in **Settings > General**, click **Join a shared campaign…**, paste your link, check which server it's for, then **Join**. Lorekeeper makes the campaign's folder in your Lorekeeper folder (named after the campaign), opens it and downloads everything. Then pick your character under **I play**. Opening the link in a browser only shows a page that says to paste it into Lorekeeper.
 
 What changes in a shared campaign:
 
-- Your quick notes go to a file of your own: `Sessions/Session 4/Sibling 5.md` for Sibling 5. Two players never write the same file, so Drive never has to choose between them. Until you pick your character, the note box refuses to save and keeps your note.
+- Your quick notes go to a file of your own: `Sessions/Session 4/Sibling 5.md` for Sibling 5. Two players never write the same file, so taking notes together never conflicts. Until you pick your character, the note box refuses to save and keeps your note.
 - A session shows everyone's notes as one timeline, in time order, each with its author (and their portrait, if their PC page has one). The Journal shows them grouped, with authors too. You can delete your own notes from the Timeline; **Edit** opens your own file.
 - **New session** starts the next session for everyone. If someone already started one in the last 12 hours and you haven't written in it yet, New session joins that one instead, so a party pressing it together stays in one session. Simplest: let one person (the DM, say) start sessions, and everyone else just writes.
 - `↑` in the note box and the "start a new session?" offer only look at your own notes.
 - Sessions from before you turned sharing on stay as they were; the first note after it starts the next session.
-- Everything else (NPCs, places, quests, your PC page) is shared as it is: anyone can edit any page.
-- New notes from the others appear on their own within a few seconds of Drive syncing them.
+- Everything else (NPCs, places, quests, your PC page, images) is shared as it is: anyone can edit any page. Templates stay your own, and so do files Lorekeeper doesn't use (only pages and images sync, up to about 22 MB each).
+- The campaign that's open syncs continuously; another shared campaign catches up when you switch to it. The bottom of the sidebar and the campaign in Settings show the sync status (**Synced**, **Syncing 3…**, **Offline, will sync when the server is back**) and who else is online. Lorekeeper works offline as usual and catches up when the server answers again.
+- A page someone else deletes goes to the campaign's hidden `.trash` folder on your computer, so you can bring it back.
 
-It's not a live co-editor: two people editing the same page at the same time (say an NPC page) can end up with two versions. Drive then keeps both, naming one like `Mirela (1).md`, and Lorekeeper lists them under **Sync conflicts** on Home. Open both, keep what you want in the original, then delete the copy.
+It's not a live co-editor: two people changing the same page at the same time (say an NPC page) end up with two versions. Lorekeeper keeps yours and saves theirs next to it, named like `Mirela (conflict 2026-10-06 2015).md`, and lists it under **Sync conflicts** on Home. Open both, keep what you want in the original, then delete the copy. Your version is what the others get.
+
+**Removing a player:** the owner opens **Players and invites…** and clicks **Remove** (twice, to confirm). Their sync stops at once and Lorekeeper tells them they were removed; the notes already on their computer stay there. Removing a joined campaign from your own list (**Remove** next to it) stops its sync and deletes its token from your computer; the owner still sees you under Players until they remove you.
+
+Keep the campaign folder where it is: Lorekeeper syncs one folder per campaign, and a folder it can't find doesn't sync until it's back. You can still keep the folder in a cloud drive or open it in Obsidian.
 
 ## Backups
 

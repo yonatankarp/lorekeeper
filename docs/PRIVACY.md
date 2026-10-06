@@ -10,13 +10,13 @@ Lorekeeper is a free, open-source desktop app for keeping D&D session notes. It 
 
 ## The short version
 
-Lorekeeper has no servers, no accounts and no analytics. Your notes stay on your computer. If you turn on a backup, they go straight from your computer to your own Dropbox, Google Drive or GitHub account, and nowhere else. If you sign in to D&D Beyond, Lorekeeper only reads the characters you import from there; your notes are never sent to D&D Beyond.
+Lorekeeper has no accounts and no analytics. Your notes stay on your computer, unless you share a campaign with your party: then it syncs through a Lorekeeper sync server, end-to-end encrypted, so the server can't read it. If you turn on a backup, they go straight from your computer to your own Dropbox, Google Drive or GitHub account, and nowhere else. If you sign in to D&D Beyond, Lorekeeper only reads the characters you import from there; your notes are never sent to D&D Beyond.
 
 ## What Lorekeeper stores
 
 - **Your notes** are plain text files in the folder you choose on your computer (by default `Documents/Lorekeeper`).
 - **Settings** are stored in the app's configuration folder on your computer.
-- **Sign-in tokens** for the backups you turn on, and your D&D Beyond sign-in session if you sign in there, are stored in your system's password storage (macOS Keychain, Windows Credential Manager or the Secret Service on Linux). They are only ever sent to the service they belong to.
+- **Sign-in tokens** for the backups you turn on, your D&D Beyond sign-in session if you sign in there, and the keys and tokens of shared campaigns, are stored in your system's password storage (macOS Keychain, Windows Credential Manager or the Secret Service on Linux). They are only ever sent to the service they belong to.
 
 Nothing is sent to the developer. Lorekeeper does not collect usage data, crash reports or personal information.
 
@@ -36,10 +36,16 @@ Lorekeeper's use and transfer of information received from Google APIs adheres t
 
 Importing characters is optional. When you sign in to D&D Beyond in Settings, you sign in on D&D Beyond's own page, so your password goes to D&D Beyond and never to Lorekeeper. Lorekeeper keeps the sign-in session D&D Beyond gives it in your system's password storage, sends it only to D&D Beyond, and uses it only to read the characters (and campaign pages) you import or refresh. What it reads is written into your PC pages on your computer; nothing goes to anyone else.
 
-## Other network requests
+## Shared campaigns
 
-- **Updates:** Lorekeeper checks GitHub for new versions once a day. Like any web request, GitHub sees your IP address. You can turn this off in Settings.
-- **Links you click** open in your browser.
+Sharing a campaign with your party is optional. A shared campaign syncs through a Lorekeeper sync server: by default `lorekeeper.yonatankarp.com`, run by the developer, or another server an invite link points to (Lorekeeper shows which before you join).
+
+- **End-to-end encrypted:** notes, images, file names, the campaign's name and players' character names are encrypted on your computer with the campaign's key before they're sent. The key is made on the sharing player's computer and travels only inside invite links (in the part after `#`, which never reaches the server). The server stores and passes on encrypted data it can't read.
+- **What the server sees:** that a campaign exists, how many files it has and how big they are, when they change, and the IP addresses of the computers that connect. It keeps no logs of notes, keys, tokens or invites.
+- **Secrets:** the campaign's key, your sign-in token for it, and the server's creation key (if you share a campaign) are stored only in your system's password storage, never in settings or notes, and only ever sent to that server (the key never is).
+- When the campaign's owner removes you, or you remove a joined campaign from Lorekeeper, its token is deleted from your computer; your notes stay.
+
+## Other network requests
 
 ## Removing access and data
 

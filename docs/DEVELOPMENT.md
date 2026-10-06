@@ -30,10 +30,34 @@ Shared campaigns sync through `sync-server/` (axum, SQLite), with `sync-protocol
 ```bash
 cargo test --manifest-path sync-protocol/Cargo.toml
 cargo test --manifest-path sync-server/Cargo.toml
-LOREKEEPER_SYNC_DB=/tmp/sync.db LOREKEEPER_SYNC_TRUST_PROXY=none \
-  cargo run --manifest-path sync-server/Cargo.toml          # http://localhost:8080
 docker build -f sync-server/Dockerfile -t lorekeeper-sync .  # from the repository root
 ```
+
+The app's side is `src-tauri/src/sync.rs` (the engine, no Tauri in it) and `src-tauri/src/shared.rs` (keychain, settings, commands, the open campaign's engine). `sync_tests.rs` runs two engines against the real server in-process (`pnpm test` includes it).
+
+### Testing sync locally
+
+Never point a test at the real server or your own profile. Run a server on loopback:
+
+```bash
+LOREKEEPER_SYNC_DB=/tmp/lk-sync.db LOREKEEPER_SYNC_ADDR=127.0.0.1:18081 \
+  LOREKEEPER_SYNC_CREATE_KEY=local-test-create-key-0123456789abcdef \
+  LOREKEEPER_SYNC_PUBLIC_URL=http://127.0.0.1:18081 \
+  cargo run --manifest-path sync-server/Cargo.toml
+# or: docker run --rm -p 127.0.0.1:18081:8080 -e LOREKEEPER_SYNC_CREATE_KEY=... -e LOREKEEPER_SYNC_PUBLIC_URL=http://127.0.0.1:18081 lorekeeper-sync
+```
+
+Then start two copies of the app, each with its own test profile:
+
+```bash
+cargo build --manifest-path src-tauri/Cargo.toml
+LOREKEEPER_PROFILE=dm     LOREKEEPER_SYNC_SERVER=http://127.0.0.1:18081 src-tauri/target/debug/lorekeeper &
+LOREKEEPER_PROFILE=player LOREKEEPER_SYNC_SERVER=http://127.0.0.1:18081 src-tauri/target/debug/lorekeeper &
+```
+
+`LOREKEEPER_PROFILE=<name>` (letters, digits, `-`, `_`) gives a copy its own settings and sync state (`<config>/profiles/<name>`), keychain entries (service `com.yonatankarp.dndnotes.profile.<name>`) and default notes folder (`~/Documents/Lorekeeper (<name>)`). It leaves launch at login alone, skips the automatic update check, puts the profile in the window titles and tray tooltip, and a hotkey the other copy already holds is only a notification. There's no single-instance plugin, so two copies run side by side; run the binary directly (or `open -n` a built `.app`): macOS `open` brings back the copy that's running instead of starting another. `LOREKEEPER_SYNC_SERVER` replaces the default server (the Sync server setting replaces both). Share in one copy (creation key above), invite, and join in the other.
+
+Clean up afterwards: delete the profiles' notes folders, `<config>/profiles/`, and their keychain entries (`security delete-generic-password -s com.yonatankarp.dndnotes.profile.dm -a "sync-room <room>"` and so on, or Keychain Access).
 
 To release:
 
@@ -111,3 +135,4 @@ python3 -m http.server 8000 -d site        # then open http://localhost:8000
 - Dropbox and Google Drive backups: see "Cloud backup apps" above. Also Cancel during sign-in then Sign in again right away, and Dropbox with port 47219 taken.
 - Obsidian button: guide before the folder is a vault, opens the page after.
 - Settings: new hotkey works at once; a taken one is refused; theme applies to every window.
+- Shared campaign (two test profiles, see "Testing sync locally"): Share asks for the creation key once; Invite a player and Copy; Join shows the server and downloads into a new folder; I play; notes from each side appear on the other; the same page changed on both makes one conflict copy; quitting one copy and editing, then starting it again, catches up; Remove stops the player's sync and says so.
