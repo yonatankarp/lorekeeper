@@ -27,14 +27,15 @@ const MAX_CHARACTERS: usize = 30;
 
 // ---------- session in the OS credential store ----------
 
+/// Stored as bytes: Windows caps a password at 1280 UTF-16 characters but a secret at 2560 bytes.
 fn save_session(cookie: &str) -> Result<(), String> {
-    keychain("dndbeyond")?.set_password(cookie).map_err(|e| format!("Couldn't save the D&D Beyond sign-in: {e}"))
+    keychain("dndbeyond")?.set_secret(cookie.as_bytes()).map_err(|e| format!("Couldn't save the D&D Beyond sign-in: {e}"))
 }
 
 /// The stored session, or None when signed out.
 fn load_session() -> Result<Option<String>, String> {
-    match keychain("dndbeyond")?.get_password() {
-        Ok(cookie) => Ok(Some(cookie)),
+    match keychain("dndbeyond")?.get_secret() {
+        Ok(cookie) => Ok(Some(String::from_utf8_lossy(&cookie).into_owned())),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(format!("Couldn't read the D&D Beyond sign-in: {e}")),
     }
@@ -97,11 +98,8 @@ fn campaign_ids(id: u64, cookie: &str) -> Result<Vec<u64>, String> {
                 return if ids.is_empty() { Err("No characters found in that campaign. Paste a link to a character in it instead.".into()) } else { Ok(ids) };
             }
             300..=399 => {
-                let next = url.join(&location).map_err(|_| BAD_LINK.to_string())?;
-                if next.path().starts_with("/sign-in") || next.path().starts_with("/login") || next.host_str() != Some("www.dndbeyond.com") {
-                    return Err("D&D Beyond didn't show that campaign while signed in. Paste a link to a character in it instead: its party comes along.".into());
-                }
-                url = next;
+                url = next_hop(&url, &location)
+                    .ok_or("D&D Beyond didn't show that campaign while signed in. Paste a link to a character in it instead: its party comes along.")?;
             }
             401 | 403 => return Err(EXPIRED.into()),
             404 => return Err(format!("D&D Beyond has no campaign {id}, or you aren't in it.")),
@@ -112,6 +110,13 @@ fn campaign_ids(id: u64, cookie: &str) -> Result<Vec<u64>, String> {
 }
 
 // ---------- links and replies (pure) ----------
+
+/// Where a campaign page redirect may be followed with the cookie: https on www.dndbeyond.com, not the sign-in pages.
+fn next_hop(current: &Url, location: &str) -> Option<Url> {
+    let next = current.join(location).ok()?;
+    let ok = next.scheme() == "https" && next.host_str() == Some("www.dndbeyond.com") && !next.path().starts_with("/sign-in") && !next.path().starts_with("/login");
+    ok.then_some(next)
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Link {
@@ -298,9 +303,9 @@ fn wait_sign_in(app: &AppHandle) -> Result<(), String> {
             next_try = Instant::now() + Duration::from_secs(5); // not a signed-in session (yet)
             continue;
         }
-        save_session(&cookie)?;
+        let saved = save_session(&cookie);
         let _ = w.destroy();
-        return Ok(());
+        return saved;
     }
 }
 
@@ -367,6 +372,15 @@ mod tests {
         ] {
             assert_eq!(parse_link(bad), Err(BAD_LINK.into()), "{bad}");
         }
+    }
+
+    #[test]
+    fn campaign_redirects_keep_the_cookie_on_dndbeyond_https() {
+        let here: Url = "https://www.dndbeyond.com/campaigns/1".parse().unwrap();
+        assert_eq!(next_hop(&here, "/campaigns/1/overview").map(|u| u.to_string()), Some("https://www.dndbeyond.com/campaigns/1/overview".into()));
+        assert_eq!(next_hop(&here, "/sign-in?returnUrl=%2Fcampaigns%2F1"), None);
+        assert_eq!(next_hop(&here, "https://evil.com/campaigns/1"), None);
+        assert_eq!(next_hop(&here, "http://www.dndbeyond.com/campaigns/1"), None);
     }
 
     #[test]

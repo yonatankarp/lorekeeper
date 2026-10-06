@@ -571,9 +571,13 @@ $("new-form").addEventListener("submit", async (e) => {
 // ---------- D&D Beyond: PC pages from characters (dndbeyond.rs fetches them) ----------
 
 let found = []; // the characters the last lookup returned
+let lookups = 0; // a lookup answering after the dialog was reopened or another started is dropped
 
 function openDdbDialog() {
   found = [];
+  lookups++;
+  $("ddb-find").disabled = false;
+  $("ddb-find").textContent = "Look up";
   $("ddb-link").value = "";
   $("ddb-error").textContent = "";
   renderFound();
@@ -606,12 +610,15 @@ async function lookUp() {
   }
   $("ddb-find").disabled = true;
   $("ddb-find").textContent = "Looking up…";
+  const attempt = ++lookups;
+  let result = [];
   try {
-    found = await invoke("dndbeyond_lookup", { link });
+    result = await invoke("dndbeyond_lookup", { link });
   } catch (err) {
-    found = [];
-    $("ddb-error").textContent = String(err);
+    if (attempt === lookups) $("ddb-error").textContent = String(err);
   }
+  if (attempt !== lookups) return;
+  found = result;
   $("ddb-find").disabled = false;
   $("ddb-find").textContent = "Look up";
   renderFound();
