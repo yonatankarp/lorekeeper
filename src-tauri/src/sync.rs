@@ -122,9 +122,17 @@ pub(crate) struct State {
 pub(crate) struct Entry {
     pub id: String,
     pub seq: u64,
+    /// What this computer last synced, or [`UNSYNCED`] when the server's version isn't the party's (garbage or a
+    /// delete without the key): yours then goes up over it.
     pub hash: String,
     pub len: u64,
+    /// The file was deleted: its encrypted tombstone is the version at `seq`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gone: bool,
 }
+
+/// A hash no content has: see Entry::hash.
+const UNSYNCED: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Reads the state file; one that's missing, damaged or doesn't fit the key means a fresh catch-up (local files are
 /// compared by hash, never deleted).
@@ -270,6 +278,8 @@ struct Core {
     state: State,
     dirty: bool,
     touched: bool,
+    /// A version from outside the party was ignored: look again, so ours goes back up over it.
+    repair: bool,
     /// File id -> the highest seq applied, so a version that arrives twice (a live change and a conflict reply)
     /// is applied once.
     seen: HashMap<String, u64>,
@@ -301,6 +311,7 @@ async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<C
         state,
         dirty: false,
         touched: false,
+        repair: false,
         seen: HashMap::new(),
         cache: HashMap::new(),
         skipped: HashSet::new(),
@@ -312,8 +323,9 @@ async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<C
     core.report(&Status::Connecting);
     let mut backoff = Duration::from_secs(1);
     loop {
+        let began = Instant::now();
         let end = match connect(&core.cfg).await {
-            Ok(ws) => core.session(ws, &mut rx, &mut backoff).await,
+            Ok(ws) => core.session(ws, &mut rx).await,
             Err(Some(401)) => End::Removed,
             Err(_) => End::Dropped,
         };
@@ -323,6 +335,11 @@ async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<C
             End::Removed => return core.report(&Status::Removed),
             End::Fatal(reason) => return core.report(&Status::Stopped { reason }),
             End::Dropped => core.report(&Status::Offline),
+        }
+        // Only a connection that lasted starts the waits over, so a server that keeps closing (or refusing: the
+        // server allows 60 connections per player a minute) is never hammered.
+        if began.elapsed() > Duration::from_secs(60) {
+            backoff = Duration::from_secs(1);
         }
         // ponytail: plain doubling up to a minute, no jitter; a party's handful of clients won't stampede.
         let wake = tokio::time::sleep(backoff);
@@ -368,7 +385,7 @@ impl Core {
         }
     }
 
-    async fn session(&mut self, mut ws: Ws, rx: &mut mpsc::UnboundedReceiver<Cmd>, backoff: &mut Duration) -> End {
+    async fn session(&mut self, mut ws: Ws, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> End {
         // Each connection starts from the state on disk; anything applied twice is caught by the hashes.
         self.seen = self.state.files.values().map(|e| (e.id.clone(), e.seq)).collect();
         let hello = ClientMessage::Hello { since: self.state.seq, member: self.member.clone() };
@@ -398,9 +415,7 @@ impl Core {
                                 if let Err(end) = self.handle(m, &mut s) {
                                     return end;
                                 }
-                                if s.replay_done {
-                                    *backoff = Duration::from_secs(1);
-                                }
+                                s.rescan |= std::mem::take(&mut self.repair);
                             }
                         }
                         Message::Close(frame) => {
@@ -480,13 +495,15 @@ impl Core {
                     let id = file_id(&self.cfg.key, &path);
                     if self.seen.get(&id).is_none_or(|&s| s < seq) {
                         self.seen.insert(id.clone(), seq);
-                        self.state.files.insert(path, Entry { id, seq, hash, len });
+                        self.state.files.insert(path, Entry { id, seq, hash, len, gone: false });
                         self.dirty = true;
                     }
                 }
                 Some(Flight::Delete { path }) => {
-                    if let Some(e) = self.state.files.remove(&path) {
-                        self.seen.insert(e.id, seq);
+                    let id = file_id(&self.cfg.key, &path);
+                    if self.seen.get(&id).is_none_or(|&s| s < seq) {
+                        self.seen.insert(id.clone(), seq);
+                        self.state.files.insert(path, Entry { id, seq, hash: UNSYNCED.into(), len: 0, gone: true });
                         self.dirty = true;
                     }
                 }
@@ -578,7 +595,7 @@ impl Core {
                     _ => continue,
                 },
             };
-            let synced = self.state.files.get(rel).is_some_and(|e| e.hash == hash);
+            let synced = self.state.files.get(rel).is_some_and(|e| !e.gone && e.hash == hash);
             if !synced && !self.skipped.contains(&(rel.clone(), hash)) {
                 out.push(rel.clone());
             }
@@ -590,7 +607,7 @@ impl Core {
         if lost_metadata {
             self.warn("The campaign folder looks incomplete, so deletions aren't synced.");
         } else {
-            out.extend(self.state.files.keys().filter(|p| !disk.contains_key(*p)).cloned());
+            out.extend(self.state.files.iter().filter(|(p, e)| !e.gone && !disk.contains_key(*p)).map(|(p, _)| p.clone()));
         }
         Ok(out)
     }
@@ -602,12 +619,12 @@ impl Core {
         match self.read_local(path) {
             Ok(Local::File(content, modified)) => {
                 let hash = content_hash(&content);
-                if entry.is_some_and(|e| e.hash == hash) || self.skipped.contains(&(path.to_string(), hash.clone())) {
+                if entry.is_some_and(|e| !e.gone && e.hash == hash) || self.skipped.contains(&(path.to_string(), hash.clone())) {
                     return None;
                 }
                 let len = content.len() as u64;
                 let modified = modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-                let file = FileContent { path: path.to_string(), content, modified };
+                let file = FileContent { path: path.to_string(), content, modified, deleted: false };
                 let sealed = seal(&self.cfg.key, &self.cfg.room, &id, &file);
                 if sealed.len() > MAX_BLOB {
                     self.skipped.insert((path.to_string(), hash));
@@ -617,8 +634,12 @@ impl Core {
                 let msg = ClientMessage::Put { req, id, base, blob: encode_blob(&sealed) };
                 Some((msg, Flight::Put { path: path.to_string(), hash, len }))
             }
-            Ok(Local::Missing) if entry.is_some() && self.root.is_dir() => {
-                Some((ClientMessage::Delete { req, id, base }, Flight::Delete { path: path.to_string() }))
+            // Deleted here: an encrypted tombstone, never the server's own delete (which anyone with a token
+            // could send, so other players ignore it).
+            Ok(Local::Missing) if entry.is_some_and(|e| !e.gone) && self.root.is_dir() => {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+                let blob = encode_blob(&seal(&self.cfg.key, &self.cfg.room, &id, &FileContent::tombstone(path, now)));
+                Some((ClientMessage::Put { req, id, base, blob }, Flight::Delete { path: path.to_string() }))
             }
             _ => None,
         }
@@ -628,15 +649,21 @@ impl Core {
     /// reply. Err(Dropped) on a disk error, so the change comes again after a reconnect.
     fn apply(&mut self, c: Change, advance: bool) -> Result<(), End> {
         if self.seen.get(&c.id).is_none_or(|&seen| seen < c.seq) {
-            let result = match &c.blob {
-                None => match self.state.files.iter().find(|(_, e)| e.id == c.id).map(|(p, _)| p.clone()) {
-                    Some(path) => self.remote_delete(&path),
-                    None => Ok(()),
-                },
-                Some(blob) => match self.open_blob(&c.id, blob) {
-                    Some(file) => self.remote_put(file, &c.id, c.seq),
-                    None => Ok(()),
-                },
+            let result = match c.blob.as_deref().map(|blob| self.open_blob(&c.id, blob)) {
+                Some(Some(file)) if file.deleted => self.remote_delete(&file.path, &c.id, c.seq),
+                Some(Some(file)) => self.remote_put(file, &c.id, c.seq),
+                // Not sealed by the party: a server-side delete (anyone with a token can send one) or a blob that
+                // doesn't open. Local files stay as they are, and yours goes back up over it.
+                untrusted => {
+                    if untrusted.is_none() {
+                        self.warn("Ignored a deletion that didn't come from anyone in the party.");
+                    }
+                    if let Some(e) = self.state.files.values_mut().find(|e| e.id == c.id && !e.gone) {
+                        (e.seq, e.hash) = (c.seq, UNSYNCED.into());
+                        self.repair = true;
+                    }
+                    Ok(())
+                }
             };
             match result {
                 Ok(()) => {}
@@ -662,14 +689,11 @@ impl Core {
             self.warn("Skipped a change that couldn't be read.");
             return None;
         };
+        // open() also checks that the path inside is safe and is the one the id was made from.
         let Ok(file) = open(&self.cfg.key, &self.cfg.room, id, &bytes) else {
-            self.warn("Skipped a change that couldn't be decrypted.");
+            self.warn("Skipped a change that couldn't be decrypted; it didn't come from anyone in the party.");
             return None;
         };
-        if file_id(&self.cfg.key, &file.path) != id {
-            self.warn("Skipped a change whose name didn't match.");
-            return None;
-        }
         if !syncs(&file.path) {
             self.warn("Skipped a file of a kind Lorekeeper doesn't sync.");
             return None;
@@ -681,8 +705,8 @@ impl Core {
         let _guard = crate::WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let hash = content_hash(&file.content);
         let len = file.content.len() as u64;
-        let entry = Entry { id: id.to_string(), seq, hash: hash.clone(), len };
-        let synced_hash = self.state.files.get(&file.path).map(|e| e.hash.clone());
+        let entry = Entry { id: id.to_string(), seq, hash: hash.clone(), len, gone: false };
+        let synced_hash = self.state.files.get(&file.path).filter(|e| !e.gone).map(|e| e.hash.clone());
         let local_unchanged = match self.read_local(&file.path).map_err(|_| Fail::Io)? {
             Local::NotRegular => {
                 self.warn("Skipped a change to something that isn't a plain file here.");
@@ -696,7 +720,7 @@ impl Core {
             Local::File(bytes, _) => synced_hash.as_deref() == Some(content_hash(&bytes).as_str()),
             Local::TooBig => false,
         };
-        let new_file = synced_hash.is_none();
+        let new_file = !self.state.files.contains_key(&file.path);
         if new_file && self.state.files.len() >= MAX_FILES {
             return Err(Fail::Fatal("The campaign has more files than sync handles (20,000).".into()));
         }
@@ -722,15 +746,17 @@ impl Core {
         Ok(())
     }
 
-    fn remote_delete(&mut self, path: &str) -> Result<(), Fail> {
+    /// Another player deleted a file (an encrypted tombstone).
+    fn remote_delete(&mut self, path: &str, id: &str, seq: u64) -> Result<(), Fail> {
         let _guard = crate::WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let synced_hash = self.state.files.remove(path).map(|e| e.hash);
-        // Only an unchanged plain file goes; one changed here stays and goes up again as new.
+        let synced_hash = self.state.files.get(path).filter(|e| !e.gone).map(|e| e.hash.clone());
+        // Only an unchanged plain file goes; one changed here stays (a conflict) and goes up again over the tombstone.
         if let Local::File(bytes, _) = self.read_local(path).map_err(|_| Fail::Io)? {
             if synced_hash.as_deref() == Some(content_hash(&bytes).as_str()) {
                 self.trash(path)?;
             }
         }
+        self.state.files.insert(path.to_string(), Entry { id: id.into(), seq, hash: UNSYNCED.into(), len: 0, gone: true });
         Ok(())
     }
 

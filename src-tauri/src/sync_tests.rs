@@ -75,7 +75,7 @@ fn a_damaged_or_foreign_state_file_means_a_fresh_catch_up() {
     let dir = temp("state");
     let file = dir.join("room.json");
     let key = [3u8; 32];
-    let entry = |path: &str| Entry { id: file_id(&key, path), seq: 4, hash: content_hash(b"x"), len: 1 };
+    let entry = |path: &str| Entry { id: file_id(&key, path), seq: 4, hash: content_hash(b"x"), len: 1, gone: false };
     let good = State { seq: 9, files: [("NPCs/Vex.md".to_string(), entry("NPCs/Vex.md"))].into() };
     save_state(&file, &good).unwrap();
     assert_eq!(load_state(&file, &key), good);
@@ -217,7 +217,7 @@ impl Peer {
     }
 
     fn synced_hash(&self, key: &[u8; 32], rel: &str) -> Option<String> {
-        load_state(&self.state_file, key).files.get(rel).map(|e| e.hash.clone())
+        load_state(&self.state_file, key).files.get(rel).filter(|e| !e.gone).map(|e| e.hash.clone())
     }
 }
 
@@ -363,8 +363,22 @@ async fn two_players_sync_through_the_server() {
             assert!(!root.join(bad).exists(), "{bad}");
         }
     }
+    // The server's own delete and a garbage overwrite (anyone with a token can send them, key or not) change
+    // nothing here, and the party's version goes back up over them.
+    for (who, peer) in [("owner", &owner), ("member", &member)] {
+        assert_eq!(peer.read("NPCs/Vex.md").as_deref(), Some("# Vex\nmember version\n"), "{who}");
+        assert_eq!(peer.read("PCs/Lorelei.md").as_deref(), Some("# Lorelei"), "{who}");
+    }
+    until("the party's versions are back on the server", || {
+        let (vex, lorelei) = (content_hash(b"# Vex\nmember version\n"), content_hash(b"# Lorelei"));
+        [&owner, &member].iter().all(|p| {
+            p.synced_hash(&room.key, "NPCs/Vex.md") == Some(vex.clone()) && p.synced_hash(&room.key, "PCs/Lorelei.md") == Some(lorelei.clone())
+        })
+    })
+    .await;
     let warnings = member.rec.warnings.lock().unwrap().clone();
-    assert!(warnings.iter().any(|w| w.contains("decrypted")) && warnings.iter().any(|w| w.contains("name didn't match")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("decrypted")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("Ignored a deletion")), "{warnings:?}");
     assert!(warnings.iter().any(|w| w.contains("kind Lorekeeper doesn't sync")), "{warnings:?}");
     assert!(warnings.iter().all(|w| !w.contains("NPCs") && !w.contains(".sh")), "warnings name no files: {warnings:?}");
 
@@ -411,10 +425,21 @@ async fn rogue_puts(room: &Room, token: &str) {
     req.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
     let send = |msg: ClientMessage| Message::Text(serde_json::to_string(&msg).unwrap().into());
-    ws.send(send(ClientMessage::Hello { since: u64::MAX, member: String::new() })).await.unwrap();
+    ws.send(send(ClientMessage::Hello { since: 0, member: String::new() })).await.unwrap();
+    // The current version of every file, to aim the server-side delete and the garbage overwrite.
+    let mut seqs = HashMap::new();
+    while let Some(Ok(msg)) = ws.next().await {
+        let Message::Text(t) = msg else { continue };
+        if let Ok(ServerMessage::Changes { changes, more, .. }) = serde_json::from_str(t.as_str()) {
+            seqs.extend(changes.into_iter().map(|c| (c.id, c.seq)));
+            if !more {
+                break;
+            }
+        }
+    }
     let key = room.key;
     let sealed = |id: &str, path: &str, text: &str| {
-        encode_blob(&seal(&key, &room.room, id, &FileContent { path: path.into(), content: text.as_bytes().to_vec(), modified: 0 }))
+        encode_blob(&seal(&key, &room.room, id, &FileContent { path: path.into(), content: text.as_bytes().to_vec(), ..Default::default() }))
     };
     let mut puts = Vec::new();
     for path in ["../escape.md", "NPCs/evil.sh", ".obsidian/plugins/x.md", "CON.md"] {
@@ -426,16 +451,25 @@ async fn rogue_puts(room: &Room, token: &str) {
     puts.push((other.clone(), sealed(&other, "NPCs/Real.md", "pwned")));
     // Garbage that isn't a blob for this room at all.
     puts.push((file_id(&key, "NPCs/garbage.md"), encode_blob(&[7u8; 200])));
+    // Garbage over a file everyone has, and the server's own delete of another.
+    let lorelei = file_id(&key, "PCs/Lorelei.md");
+    puts.push((lorelei.clone(), encode_blob(&[9u8; 200])));
     let good = file_id(&key, "NPCs/Good.md");
     puts.push((good.clone(), sealed(&good, "NPCs/Good.md", "fine")));
+    let vex = file_id(&key, "NPCs/Vex.md");
+    ws.send(send(ClientMessage::Delete { req: 99, base: seqs[&vex], id: vex })).await.unwrap();
+    let last = puts.len() as u64 - 1;
     for (req, (id, blob)) in puts.into_iter().enumerate() {
-        ws.send(send(ClientMessage::Put { req: req as u64, id, base: 0, blob })).await.unwrap();
+        let base = seqs.get(&id).copied().unwrap_or(0);
+        ws.send(send(ClientMessage::Put { req: req as u64, id, base, blob })).await.unwrap();
     }
     // Wait for the last ack so the writes are stored before the socket goes.
     while let Some(Ok(msg)) = ws.next().await {
         if let Message::Text(t) = msg {
-            if let Ok(ServerMessage::Ack { req: 6, .. }) = serde_json::from_str(t.as_str()) {
-                break;
+            match serde_json::from_str(t.as_str()) {
+                Ok(ServerMessage::Ack { req, .. }) if req == last => break,
+                Ok(ServerMessage::Conflict { .. } | ServerMessage::Error { .. }) => panic!("the rogue's write was refused: {t}"),
+                _ => {}
             }
         }
     }

@@ -118,13 +118,29 @@ pub fn decode_blob(s: &str) -> Result<Vec<u8>, Error> {
 }
 
 /// The plaintext inside a blob.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FileContent {
     pub path: String,
     #[serde(with = "base64_bytes")]
     pub content: Vec<u8>,
     /// Unix milliseconds.
     pub modified: i64,
+    /// An encrypted tombstone: the file was deleted (`content` is empty). Clients delete this way, with a normal
+    /// `put`, because the server's own delete (a null blob) carries nothing sealed with the key, so anyone holding a
+    /// token could send one. Left out of the JSON when false, so ordinary blobs keep their layout.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
+impl FileContent {
+    /// A tombstone for `path`.
+    pub fn tombstone(path: &str, modified: i64) -> FileContent {
+        FileContent { path: path.into(), content: Vec::new(), modified, deleted: true }
+    }
 }
 
 mod base64_bytes {
@@ -466,7 +482,7 @@ mod tests {
     }
 
     fn file() -> FileContent {
-        FileContent { path: "Sessions/Session 4/Sibling 5.md".into(), content: b"# Notes\n".to_vec(), modified: 1_700_000_000_000 }
+        FileContent { path: "Sessions/Session 4/Sibling 5.md".into(), content: b"# Notes\n".to_vec(), modified: 1_700_000_000_000, ..Default::default() }
     }
 
     #[test]
@@ -566,7 +582,7 @@ mod tests {
         assert_eq!(a.len(), NONCE_LEN + serde_json::to_vec(&file()).unwrap().len() + TAG_LEN);
         assert_eq!(open(&KEY, &room, &id, &a), Ok(file()));
         assert_eq!(open(&KEY, &room, &id, &decode_blob(&encode_blob(&b)).unwrap()), Ok(file()));
-        let empty = FileContent { path: "a.md".into(), content: vec![], modified: 0 };
+        let empty = FileContent { path: "a.md".into(), ..Default::default() };
         let id = file_id(&KEY, "a.md");
         assert_eq!(open(&KEY, &room, &id, &seal(&KEY, &room, &id, &empty)), Ok(empty));
     }
@@ -578,7 +594,7 @@ mod tests {
         for path in ["../x.md", "a/../../x.md", "/etc/passwd", "a//b.md", "./a.md", "a/.", "", "a\\..\\b.md", "C:x.md", "c:/x.md", "a\0.md"] {
             assert!(!is_safe_path(path), "{path:?}");
             let id = file_id(&KEY, path);
-            let f = FileContent { path: path.into(), content: vec![], modified: 0 };
+            let f = FileContent { path: path.into(), ..Default::default() };
             assert_eq!(open(&KEY, &room, &id, &seal(&KEY, &room, &id, &f)), Err(Error::Decrypt), "{path:?}");
         }
         for path in ["a.md", "Sessions/Session 4/Sibling 5.md", ".obsidian/x", "a..b.md", "Session 1: Start.md"] {
@@ -586,7 +602,7 @@ mod tests {
         }
         // A safe path under another file's id: the id must come from the path.
         let other = file_id(&KEY, "b.md");
-        let f = FileContent { path: "a.md".into(), content: vec![], modified: 0 };
+        let f = FileContent { path: "a.md".into(), ..Default::default() };
         assert_eq!(open(&KEY, &room, &other, &seal(&KEY, &room, &other, &f)), Err(Error::Decrypt));
     }
 
@@ -684,6 +700,21 @@ mod tests {
         for link in bad {
             assert!(matches!(Invite::parse(&link), Err(Error::Invite(_))), "accepted {link:?}");
         }
+    }
+
+    #[test]
+    fn tombstones_are_sealed_like_files() {
+        let room = random_id();
+        let id = file_id(&KEY, "NPCs/Vex.md");
+        let tomb = FileContent::tombstone("NPCs/Vex.md", 5);
+        assert_eq!(serde_json::to_string(&tomb).unwrap(), r#"{"path":"NPCs/Vex.md","content":"","modified":5,"deleted":true}"#);
+        assert_eq!(open(&KEY, &room, &id, &seal(&KEY, &room, &id, &tomb)), Ok(tomb.clone()));
+        // An ordinary file has no "deleted" field, and older blobs without one open as files.
+        assert!(!serde_json::to_string(&file()).unwrap().contains("deleted"));
+        let old: FileContent = serde_json::from_str(r#"{"path":"a.md","content":"","modified":0}"#).unwrap();
+        assert!(!old.deleted);
+        // Only someone with the key can make one: a tombstone sealed with another key doesn't open.
+        assert_eq!(open(&KEY, &room, &id, &seal(&[8u8; 32], &room, &id, &tomb)), Err(Error::Decrypt));
     }
 
     #[test]

@@ -117,7 +117,7 @@ struct Ws {
 
 fn blob(room: &str, path: &str, text: &str) -> (String, String) {
     let id = file_id(&KEY, path);
-    let file = FileContent { path: path.into(), content: text.as_bytes().to_vec(), modified: 1 };
+    let file = FileContent { path: path.into(), content: text.as_bytes().to_vec(), modified: 1, ..Default::default() };
     let b = encode_blob(&seal(&KEY, room, &id, &file));
     (id, b)
 }
