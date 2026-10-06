@@ -199,7 +199,8 @@ fn start_file(dir: &Path, n: u32, me: Option<&str>) -> io::Result<PathBuf> {
 
 /// Whether anyone wrote in session folder `dir` in the last 12 hours: a session that's still going.
 fn going(dir: &Path, now: std::time::SystemTime) -> bool {
-    let mut times = fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()?.modified().ok());
+    let files = fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')); // not .DS_Store
+    let mut times = files.filter_map(|e| e.metadata().ok()?.modified().ok());
     times.any(|t| stale_hours(t, now).is_none())
 }
 
@@ -711,14 +712,23 @@ fn open_external(target: impl AsRef<std::ffi::OsStr>) {
     let _ = std::process::Command::new(cmd).arg(target).spawn();
 }
 
+/// A file of the newest session to open, without making one (in a shared campaign that would start a session for
+/// everyone): your own, else its Session N.md, else a teammate's.
+fn latest_file(dir: &Path, me: Option<&str>) -> Option<PathBuf> {
+    let n = latest_session(dir).ok().filter(|&n| n > 0)?;
+    let first = || fs::read_dir(session_folder(dir, n)).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "md"));
+    [notes_file(dir, n, me), session_path(dir, n)].into_iter().find(|p| p.is_file()).or_else(first)
+}
+
 /// Opens the current session in Obsidian once the notes folder is in a vault. Otherwise starts Obsidian
 /// with the folder's path on the clipboard, ready for "Open folder as vault", or shows the folder.
 fn open_notes(app: &AppHandle) {
     let dir = notes_dir(app);
     if obsidian::vault_root(&dir).is_some() {
-        match note_target(app).and_then(|(dir, me)| current_session(&dir, me.as_deref()).map_err(|e| e.to_string())) {
-            Ok(session) => obsidian::open(&session),
-            Err(_) => open_external(&dir),
+        let me = author(&app.state::<Mutex<Settings>>().lock().unwrap()).ok().flatten();
+        match latest_file(&dir, me.as_deref()) {
+            Some(session) => obsidian::open(&session),
+            None => open_external(&dir),
         }
     } else if obsidian::installed() {
         obsidian::launch();
@@ -1745,6 +1755,10 @@ mod tests {
         fs::File::options().write(true).open(session_folder(&dir, 5).join("Mirela.md")).unwrap().set_modified(old).unwrap();
         assert_eq!(new_session(&dir, Some("Vex")).unwrap(), session_folder(&dir, 6).join("Vex.md"));
         assert!(fs::read_to_string(session_folder(&dir, 6).join("Vex.md")).unwrap().contains("session: 6\n"));
+        // Open in Obsidian never makes a file: yours, else a teammate's.
+        assert_eq!(latest_file(&dir, Some("Vex")), Some(session_folder(&dir, 6).join("Vex.md")));
+        assert_eq!(latest_file(&dir, me), Some(session_folder(&dir, 6).join("Vex.md")));
+        assert!(!session_folder(&dir, 6).join("Sibling 5.md").exists());
 
         // Shared never appends to a Session N.md from before sharing: the next session starts as a folder.
         let solo = temp_dir("shared-from-solo");
