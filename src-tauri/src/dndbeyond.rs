@@ -285,7 +285,6 @@ fn open_window(app: &AppHandle) -> Result<(), String> {
 /// Waits, while the window is open, for the signed-in session cookie: once the window has left the sign-in
 /// pages and the cookie gets a token, it is stored and the window closed. Closing the window cancels.
 fn wait_sign_in(app: &AppHandle) -> Result<(), String> {
-    let site: Url = SITE.parse().expect("valid URL");
     let mut next_try = Instant::now();
     loop {
         thread::sleep(Duration::from_secs(1));
@@ -294,19 +293,27 @@ fn wait_sign_in(app: &AppHandle) -> Result<(), String> {
         if !signed_in_page || Instant::now() < next_try {
             continue;
         }
-        let Ok(cookies) = w.cookies_for_url(site.clone()) else { continue };
-        let Some(cookie) = cookies.iter().find(|c| c.name() == COOKIE).map(|c| c.value().to_string()) else { continue };
+        // All cookies, not cookies_for_url: that matches the host exactly, and the session is set for
+        // dndbeyond.com (every subdomain), not www.dndbeyond.com.
+        let Ok(cookies) = w.cookies() else { continue };
+        let Some(cookie) = cookies.iter().find(|c| c.name() == COOKIE && on_dndbeyond(c.domain())).map(|c| c.value().to_string()) else { continue };
         if cookie.is_empty() || cookie.contains(['\r', '\n', ';']) {
             continue;
         }
-        if cobalt_token(&cookie).is_err() {
+        if let Err(e) = cobalt_token(&cookie) {
             next_try = Instant::now() + Duration::from_secs(5); // not a signed-in session (yet)
+            let _ = app.emit("dndbeyond-waiting", e); // shown in Settings, so a refusal isn't silent
             continue;
         }
         let saved = save_session(&cookie);
         let _ = w.destroy();
         return saved;
     }
+}
+
+/// A cookie set for D&D Beyond: dndbeyond.com or one of its subdomains (a leading dot is allowed).
+fn on_dndbeyond(domain: Option<&str>) -> bool {
+    domain.map(|d| d.trim_start_matches('.')).is_some_and(|d| d == "dndbeyond.com" || d.ends_with(".dndbeyond.com"))
 }
 
 // ---------- commands ----------
@@ -349,6 +356,17 @@ pub async fn dndbeyond_character(id: u64) -> Result<Character, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_cookie_domains() {
+        for ok in ["dndbeyond.com", ".dndbeyond.com", "www.dndbeyond.com", "auth-service.dndbeyond.com"] {
+            assert!(on_dndbeyond(Some(ok)), "{ok}");
+        }
+        for bad in ["evildndbeyond.com", "dndbeyond.com.evil.net", ""] {
+            assert!(!on_dndbeyond(Some(bad)), "{bad}");
+        }
+        assert!(!on_dndbeyond(None));
+    }
+
     use super::*;
     use serde_json::json;
 

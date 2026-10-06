@@ -439,6 +439,8 @@ async function showDdb() {
   $("ddb-sign-in").hidden = on;
   $("ddb-sign-out").hidden = !on;
 }
+// Signed in but D&D Beyond refused the session: say why instead of waiting silently.
+listen("dndbeyond-waiting", (e) => { if (ddbSigningIn) $("ddb-status").textContent = `Still waiting: ${e.payload}`; });
 $("ddb-sign-in").addEventListener("click", async () => {
   ddbSigningIn = true;
   $("ddb-error").textContent = "";
