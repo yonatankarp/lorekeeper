@@ -81,7 +81,8 @@ h2 { margin: 18px 0 6px 8px; color: var(--accent-text); font: 19px/1.25 var(--fo
 /* A row: label left, control right; errors, status and help span the full width below. */
 .row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /* Buttons take at most 60% and wrap, so a row with many keeps room for its label. */
+  grid-template-columns: minmax(0, 1fr) fit-content(60%);
   align-items: center;
   column-gap: 16px;
   min-height: 40px;
@@ -89,7 +90,7 @@ h2 { margin: 18px 0 6px 8px; color: var(--accent-text); font: 19px/1.25 var(--fo
 }
 .row + .row { border-top: 1px solid var(--line); }
 .row > p:not(.backup-status), .row > p.backup-status:not(:first-child) { grid-column: 1 / -1; }
-.row-label { min-width: 0; }
+.row-label { min-width: 0; overflow-wrap: anywhere; }
 .row-label > span { display: block; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .card button { padding: 3px 12px; font-size: 16px; }
