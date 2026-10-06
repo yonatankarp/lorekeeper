@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  sync-server-test:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -39,7 +39,7 @@ jobs:
       - run: cargo clippy --locked --manifest-path sync-server/Cargo.toml --all-targets -- -D warnings
 
   image:
-    needs: test
+    needs: sync-server-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
