@@ -385,7 +385,7 @@ main { display: flex; flex-direction: column; min-width: 0; height: 100vh; backg
   border-bottom: 1px solid var(--line);
 }
 #scroll { flex: 1; overflow: auto; display: flex; flex-direction: column; }
-#view, #backlinks { width: 100%; max-width: 780px; margin: 0 auto; padding: 8px 32px; }
+#view, #connections, #backlinks { width: 100%; max-width: 780px; margin: 0 auto; padding: 8px 32px; }
 #view { padding-top: 20px; overflow-wrap: break-word; font: 16px/1.6 var(--font-body); }
 /* Headings: Mr Eaves small capitals in the rubric ink, as in the 5e books. */
 #view :is(h1, h2, h3) { color: var(--accent-text); font-family: var(--font-display); font-weight: 400; letter-spacing: 0.02em; }
@@ -414,7 +414,7 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
   font: 1.55em/1 var(--font-initial);
 }
 /* Ornamental divider: a centred fleuron between two rules. */
-#view hr, #backlinks h2::before, #view .session-title::after, #view .home-title::after {
+#view hr, #connections h2::before, #backlinks h2::before, #view .session-title::after, #view .home-title::after {
   content: "";
   display: block;
   height: 14px;
@@ -582,8 +582,14 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 .editor-hint { width: calc(100% - 32px); max-width: 780px; margin: 0 auto 8px; padding: 0 4px; color: var(--muted); font-size: 14px; }
 .editor-hint > span { margin: 0 0.2em; white-space: nowrap; }
 #backlinks { padding-bottom: 40px; font-family: var(--font-body); }
+/* The connections map (graph-view.js): on Home, and under a person, place or faction for the pages one link away. */
+canvas.graph { display: block; width: 100%; height: 420px; contain: size; touch-action: none; } /* contain: its pixel size never widens the page */
+#connections { padding-bottom: 0; }
+#connections canvas.graph { height: 300px; }
+.graph-box { position: relative; }
+.graph-fit { position: absolute; top: 6px; right: 6px; padding: 2px 10px; font-size: 14px; }
 /* Rubrics: the journal's groups and "Linked from", in the heading face and the accent ink. */
-#view .journal h3, #backlinks h2 {
+#view .journal h3, #connections h2, #backlinks h2 {
   margin: 20px 0 6px;
   padding: 0;
   border: 0;
@@ -591,8 +597,8 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
   font: 21px/1.25 var(--font-display);
   letter-spacing: 0.04em;
 }
-#backlinks h2 { margin-top: 28px; }
-#backlinks h2::before { margin-bottom: 10px; }
+#connections h2, #backlinks h2 { margin-top: 28px; }
+#connections h2::before, #backlinks h2::before { margin-bottom: 10px; }
 #backlinks ul { list-style: none; margin: 0; padding: 0; }
 #backlinks li { margin-bottom: 10px; }
 #backlinks :is(.snip, .none) { color: var(--muted); font-size: 14.5px; overflow-wrap: anywhere; }
@@ -719,7 +725,7 @@ input, select, textarea { -webkit-user-select: text; user-select: text; } /* Web
   #bar { flex-wrap: wrap; padding: 8px 12px; }
   #crumbs { flex-basis: 100%; order: -1; } /* its own top row; the buttons share the next */
   #conflict { flex-wrap: wrap; padding: 8px 12px; }
-  #view, #backlinks { padding-left: 14px; padding-right: 14px; }
+  #view, #connections, #backlinks { padding-left: 14px; padding-right: 14px; }
   #view { padding-top: 12px; }
   #editor { margin-top: 12px; padding: 12px; }
   .prefix-legend { grid-template-columns: max-content max-content; }

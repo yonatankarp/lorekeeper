@@ -42,6 +42,13 @@
         <article id="view"></article>
         <div id="editor" hidden></div>
         <p id="editor-hint" class="editor-hint" hidden>@ NPC · # Loot · ! Quest · ? Mystery · " Quote</p>
+        <section id="connections" aria-labelledby="connections-title" hidden>
+          <h2 id="connections-title">Connections</h2>
+          <div class="graph-box">
+            <canvas class="graph" role="img"></canvas>
+            <button type="button" class="ghost graph-fit" title="Fit the whole map (or double-click it)" disabled>Fit</button>
+          </div>
+        </section>
         <section id="backlinks" aria-label="Linked from"></section>
       </div>
       <div id="toast" role="status" hidden><span id="toast-text"></span> <button id="toast-undo" class="ghost">Undo</button></div>

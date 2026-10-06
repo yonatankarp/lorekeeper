@@ -75,6 +75,8 @@ Documents/Lorekeeper/
 
 `Templates/` holds the starting text for new pages (Obsidian's `{{title}}` and `{{date}}` work), shared by every campaign in `Documents/Lorekeeper` and backed up as its own `Templates` folder. Edit them in Obsidian or any editor. A campaign kept somewhere else uses its own `Templates/` if it has one. A template of your own, say `Templates/Monster.md`, adds **Monster** to **+ New page**; its pages go into a `Monsters` or `Monster` folder if you make one.
 
+**Connections:** Home maps your NPCs, PCs, places and factions and the `[[links]]` between them; each of those pages shows the ones a link away. A page shows its `portrait`, else the first picture in it, else its kind's icon. Click a page to open it; pinch (Windows and Linux: Ctrl+scroll) to zoom, drag to move, **Fit** (or double-click) to see it all again. Sessions are left out, since they link to everyone.
+
 **Obsidian:** open the notes folder as a vault (or put it inside an existing vault) and the **Obsidian** button opens pages there. Until then the button shows how.
 
 ## Campaigns

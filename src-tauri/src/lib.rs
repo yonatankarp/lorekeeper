@@ -1163,6 +1163,57 @@ fn save_image(app: AppHandle, path: String, data: String) -> Result<(), String> 
     Ok(())
 }
 
+/// An image's bytes, for making its thumbnail: images from the asset protocol can't be read back out of a canvas.
+#[tauri::command]
+async fn read_image(app: AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
+    let file = vault_image(&notes_dir(&app), &path)?;
+    off_main(move || {
+        if fs::metadata(&file).map_err(|e| e.to_string())?.len() > MAX_IMAGE_BYTES as u64 {
+            return Err("Images can be at most 20 MB.".into());
+        }
+        fs::read(&file).map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// The name of an image's thumbnail for the connections map: its vault, path, size and modified time, so a
+/// replaced image gets a new one.
+fn thumbnail_name(root: &Path, rel: &str, len: u64, modified: Option<std::time::SystemTime>) -> String {
+    let nanos = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    let key = format!("{}\n{rel}\n{len}\n{nanos}", root.display());
+    format!("{}.png", sha1_smol::Sha1::from(key).digest())
+}
+
+/// Where an image's thumbnail is kept: the app's cache folder, never the vault, so backups and Obsidian don't see it.
+/// ponytail: thumbnails of deleted or replaced images stay behind; prune the folder if it ever grows big.
+fn thumbnail_file(app: &AppHandle, rel: &str) -> Result<PathBuf, String> {
+    let root = notes_dir(app);
+    let meta = fs::metadata(vault_image(&root, rel)?).map_err(|e| e.to_string())?;
+    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("thumbnails");
+    Ok(dir.join(thumbnail_name(&root, rel, meta.len(), meta.modified().ok())))
+}
+
+/// An image's cached thumbnail; empty when there's none yet.
+#[tauri::command]
+async fn thumbnail(app: AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
+    off_main(move || Ok(tauri::ipc::Response::new(fs::read(thumbnail_file(&app, &path)?).unwrap_or_default()))).await
+}
+
+/// Keeps a thumbnail (base64 PNG) the window made of an image; see thumbnail_file.
+#[tauri::command]
+fn save_thumbnail(app: AppHandle, path: String, data: String) -> Result<(), String> {
+    use base64::Engine as _;
+    if data.len() > 1024 * 1024 {
+        return Err("Thumbnails are small; this isn't one.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string())?;
+    let file = thumbnail_file(&app, &path)?;
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(&file, bytes).map_err(|e| e.to_string())
+}
+
 /// Starts the next session (see new_session) and returns your notes file in it.
 #[tauri::command]
 fn start_session(app: AppHandle) -> Result<String, String> {
@@ -1497,6 +1548,9 @@ pub fn run() {
             save_file,
             create_file,
             save_image,
+            read_image,
+            thumbnail,
+            save_thumbnail,
             delete_file,
             rename_file,
             start_session,
@@ -2083,6 +2137,22 @@ mod tests {
         rename_note(&dir, "NPCs/Mirela.md", "NPCs/Mira.md").unwrap();
         assert_eq!(fs::read_to_string(dir.join("NPCs/Mira.md")).unwrap(), "m");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_changed_image_gets_a_new_thumbnail() {
+        let (root, at) = (Path::new("/vault"), Some(std::time::UNIX_EPOCH + Duration::from_secs(1_760_000_000)));
+        let name = thumbnail_name(root, "Attachments/Mirela.jpg", 100, at);
+        assert_eq!(name, thumbnail_name(root, "Attachments/Mirela.jpg", 100, at));
+        assert!(name.ends_with(".png"));
+        for other in [
+            thumbnail_name(root, "Attachments/Mirela.jpg", 101, at),
+            thumbnail_name(root, "Attachments/Mirela.jpg", 100, at.map(|t| t + Duration::from_nanos(1))),
+            thumbnail_name(root, "Attachments/Demus.jpg", 100, at),
+            thumbnail_name(Path::new("/other"), "Attachments/Mirela.jpg", 100, at),
+        ] {
+            assert_ne!(name, other);
+        }
     }
 
     #[test]
