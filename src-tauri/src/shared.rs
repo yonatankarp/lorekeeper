@@ -59,7 +59,8 @@ fn load_room(room: &str) -> Result<Secrets, String> {
         e => format!("Couldn't read the campaign's key: {e}"),
     })?);
     let secret: RoomSecret = serde_json::from_slice(&bytes).map_err(|_| "The campaign's saved key is damaged.".to_string())?;
-    let key = Zeroizing::new(decode_secret(&secret.key).map_err(|_| "The campaign's saved key is damaged.".to_string())?);
+    let encoded = Zeroizing::new(secret.key);
+    let key = Zeroizing::new(decode_secret(&encoded).map_err(|_| "The campaign's saved key is damaged.".to_string())?);
     Ok((key, Zeroizing::new(secret.token)))
 }
 
@@ -189,6 +190,16 @@ struct AppSink {
 
 impl sync::Sink for AppSink {
     fn status(&self, status: &Status) {
+        let mut status = status.clone();
+        let mut left = None;
+        if status == Status::Removed {
+            let mut s = current_settings(&self.app);
+            match leave(&mut s, &self.path) {
+                Some(room) => left = Some((s, room)),
+                None => status = Status::Stopped { reason: OWNER_REFUSED.into() },
+            }
+        }
+        let status = &status;
         update(&self.app, &self.path, |s| {
             s.status = Some(status.clone());
             if matches!(status, Status::Offline | Status::Removed | Status::Stopped { .. }) {
@@ -198,8 +209,10 @@ impl sync::Sink for AppSink {
                 s.warning.clear();
             }
         });
-        if *status == Status::Removed {
-            removed(&self.app, &self.path);
+        if let Some((s, room)) = left {
+            let _ = store_settings(&self.app, &s);
+            let app = self.app.clone();
+            std::thread::spawn(move || forget_room(&app, &room));
         }
     }
 
@@ -220,15 +233,17 @@ impl sync::Sink for AppSink {
     }
 }
 
-/// The owner removed you: the campaign stops syncing for good (its files stay), and its token is deleted.
-fn removed(app: &AppHandle, path: &str) {
-    let mut s = current_settings(app);
-    let Some(sh) = s.sharing.get_mut(path) else { return };
-    let room = std::mem::take(&mut sh.room);
+const OWNER_REFUSED: &str =
+    "The sync server doesn't accept this campaign's owner sign-in anymore. The campaign's key stays on this computer.";
+
+/// The server refused the campaign's token (or closed with "removed"). A member was removed by the owner: the
+/// campaign stops syncing for good (its files stay) and Some(room) is to be forgotten. An owner can't be removed, so
+/// for them it's a server problem (or a hostile one): None, and their secrets stay, the only way to invite or remove
+/// players.
+fn leave(s: &mut Settings, path: &str) -> Option<String> {
+    let sh = s.sharing.get_mut(path).filter(|sh| sh.role != "owner")?;
     sh.removed = true;
-    let _ = store_settings(app, &s);
-    let app = app.clone();
-    std::thread::spawn(move || forget_room(&app, &room));
+    Some(std::mem::take(&mut sh.room))
 }
 
 /// Keeps the webview from changing a campaign's room (only Share and Join set it), and leaves the room of a joined
@@ -472,9 +487,11 @@ pub(crate) async fn sync_join(app: AppHandle, link: String) -> Result<String, St
         s.sharing.insert(path, Sharing { shared: true, server: server.clone(), room: room.clone(), role: "member".into(), ..Sharing::default() });
         s
     };
+    // Never a folder the Lorekeeper folder uses itself (its Templates/ is every campaign's), in any case.
+    let taken = |p: &Path| p.exists() || crate::VAULT_FOLDERS.iter().any(|f| p.file_name().is_some_and(|n| sync::folded(&n.to_string_lossy()) == sync::folded(f)));
     let s = (1..=100)
         .map(|n| library.join(if n == 1 { name.clone() } else { format!("{name} {n}") }))
-        .filter(|p| !p.exists())
+        .filter(|p| !taken(p))
         .map(|p| with(&p))
         .find(|s| crate::backup::check_campaigns(s).is_ok())
         .ok_or("Couldn't find a free folder name for the campaign.")?;
@@ -519,6 +536,19 @@ mod tests {
         assert!(guard(&old, &mut stale).is_empty());
         assert!(stale.campaigns.contains(&"/c".to_string()));
         assert_eq!(stale.sharing["/c"], synced("member", "roomc"));
+    }
+
+    #[test]
+    fn a_refused_token_leaves_a_joined_campaign_but_keeps_the_owners_secrets() {
+        let mut s = Settings {
+            sharing: [("/a".into(), synced("owner", "rooma")), ("/b".into(), synced("member", "roomb"))].into(),
+            ..Settings::default()
+        };
+        assert_eq!(leave(&mut s, "/a"), None, "a server can't remove the owner: nothing is forgotten");
+        assert_eq!(s.sharing["/a"], synced("owner", "rooma"));
+        assert_eq!(leave(&mut s, "/b").as_deref(), Some("roomb"));
+        assert_eq!(s.sharing["/b"], Sharing { removed: true, ..synced("member", "") });
+        assert_eq!(leave(&mut s, "/missing"), None);
     }
 
     #[test]

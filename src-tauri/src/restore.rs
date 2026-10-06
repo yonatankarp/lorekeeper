@@ -109,9 +109,11 @@ pub fn safe_rel(name: &str) -> Option<PathBuf> {
 /// every system, so a name one player's computer can't hold never reaches anyone.
 pub fn safe_part(p: &str, windows: bool) -> bool {
     let windows_ok = || {
-        let stem = p.split('.').next().unwrap_or("").to_ascii_uppercase();
-        let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
-            || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+        // Windows ignores spaces before the extension ("CON .md" is CON) and counts COM¹ to COM³ as ports too.
+        let stem = p.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+        let port = |n: &str| n.chars().count() == 1 && n.chars().all(|c| c.is_ascii_digit() || "¹²³".contains(c));
+        let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
+            || ((stem.starts_with("COM") || stem.starts_with("LPT")) && port(&stem[3..]));
         !reserved && !p.ends_with(['.', ' ']) && !p.chars().any(|c| c.is_control() || "\\:*?\"<>|/".contains(c))
     };
     !p.is_empty() && p != "." && p != ".." && !p.contains('\0') && (!windows || windows_ok())

@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sync_protocol::{
-    content_hash, decode_blob, encode_blob, file_id, open, open_member, random_id, seal, seal_member, Change,
+    content_hash, decode_blob, decode_secret, encode_blob, file_id, open, open_member, random_id, seal, seal_member, Change,
     ClientMessage, CreateRoomResponse, FileContent, InviteInfo, MemberInfo, RedeemResponse, Role, ServerMessage,
     CREATE_KEY_HEADER, SECRET_LEN,
 };
@@ -52,6 +52,9 @@ const RATE_PAUSE: Duration = Duration::from_secs(20);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Paths longer than this aren't synced (each name is at most 255 bytes).
 const MAX_PATH: usize = 1024;
+const SAVE_EVERY: Duration = Duration::from_secs(1);
+/// More than the server's 32 members: the rest of a longer presence list is dropped.
+const MAX_PRESENCE: usize = 64;
 
 // ---------- what syncs ----------
 
@@ -63,13 +66,26 @@ pub(crate) fn syncs(rel: &str) -> bool {
         return true;
     }
     let parts: Vec<&str> = rel.split('/').collect();
-    let names_ok = parts.iter().all(|p| p.len() <= 255 && !p.starts_with('.') && crate::restore::safe_part(p, true));
-    if rel.len() > MAX_PATH || !names_ok || parts[0] == "Templates" {
+    let names_ok = parts.iter().all(|p| p.len() <= 255 && !p.starts_with('.') && crate::restore::safe_part(p, true) && !deceptive(p));
+    // Templates/ in any case: macOS and Windows would find the real one under "templates/" (APFS even "Templateſ/").
+    if rel.len() > MAX_PATH || !names_ok || folded(parts[0]) == "templates" {
         return false;
     }
     let name = parts[parts.len() - 1];
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     (ext == "md" || crate::IMAGE_EXTS.contains(&ext.as_str())) && !is_conflict_copy(name)
+}
+
+/// A name as case-insensitive file systems compare it, near enough: `TEMPLATES`, `templates` and `Templateſ` agree.
+pub(crate) fn folded(name: &str) -> String {
+    name.to_uppercase().to_lowercase()
+}
+
+/// A name that shows as something else (bidi controls reorder it) or that Windows may read as another file's short
+/// 8.3 name (`TEMPLA~1` is `Templates`).
+fn deceptive(name: &str) -> bool {
+    name.chars().any(|c| matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        || name.as_bytes().windows(2).any(|w| w[0] == b'~' && w[1].is_ascii_digit())
 }
 
 /// A sync app's conflict copy, by its name: the named patterns of syncConflicts in vault.js ("conflicted copy",
@@ -92,7 +108,13 @@ fn conflict_name(rel: &str, when: &str, n: u32) -> String {
     let (dir, name) = rel.rsplit_once('/').map_or(("", rel), |(d, n)| (d, n));
     let (stem, ext) = name.rsplit_once('.').map_or((name, String::new()), |(s, e)| (s, format!(".{e}")));
     let counter = if n > 1 { format!(" {n}") } else { String::new() };
-    let file = format!("{stem} (conflict {when}{counter}){ext}");
+    let tail = format!(" (conflict {when}{counter}){ext}");
+    // A name stays within 255 bytes: a long one loses the end of its stem, never the part that marks it a copy.
+    let mut end = stem.len().min(255usize.saturating_sub(tail.len()));
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    let file = format!("{}{tail}", &stem[..end]);
     if dir.is_empty() { file } else { format!("{dir}/{file}") }
 }
 
@@ -106,7 +128,7 @@ fn metadata_name(bytes: &[u8]) -> Option<String> {
 pub(crate) fn folder_name(name: &str) -> Option<String> {
     let name: String = name.trim().chars().take(80).collect();
     let name = name.trim_end_matches(['.', ' ']).to_string();
-    (!name.starts_with('.') && crate::restore::safe_part(&name, true)).then_some(name)
+    (!name.starts_with('.') && crate::restore::safe_part(&name, true) && !deceptive(&name)).then_some(name)
 }
 
 // ---------- state: path -> {id, seq, hash}, plus the room's last seq ----------
@@ -296,6 +318,7 @@ struct Core {
     written: u64,
     conflicts: usize,
     last_status: Option<Status>,
+    saved: Instant,
 }
 
 async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<Cmd>) {
@@ -306,25 +329,7 @@ async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<C
             return;
         }
     };
-    let state = load_state(&cfg.state_file, &cfg.key);
-    let member = seal_member(&cfg.key, &cfg.room, &cfg.name);
-    let mut core = Core {
-        cfg,
-        sink,
-        root,
-        member,
-        state,
-        dirty: false,
-        touched: false,
-        repair: false,
-        seen: HashMap::new(),
-        cache: HashMap::new(),
-        skipped: HashSet::new(),
-        warned: HashSet::new(),
-        written: 0,
-        conflicts: 0,
-        last_status: None,
-    };
+    let mut core = Core::new(cfg, sink, root);
     core.report(&Status::Connecting);
     let mut backoff = Duration::from_secs(1);
     loop {
@@ -371,6 +376,30 @@ static TLS: LazyLock<Arc<rustls::ClientConfig>> = LazyLock::new(|| {
 });
 
 impl Core {
+    /// `root` is the campaign folder, canonical.
+    fn new(cfg: Config, sink: Arc<dyn Sink>, root: PathBuf) -> Core {
+        let state = load_state(&cfg.state_file, &cfg.key);
+        let member = seal_member(&cfg.key, &cfg.room, &cfg.name);
+        Core {
+            cfg,
+            sink,
+            root,
+            member,
+            state,
+            dirty: false,
+            touched: false,
+            repair: false,
+            seen: HashMap::new(),
+            cache: HashMap::new(),
+            skipped: HashSet::new(),
+            warned: HashSet::new(),
+            written: 0,
+            conflicts: 0,
+            last_status: None,
+            saved: Instant::now(),
+        }
+    }
+
     fn report(&mut self, status: &Status) {
         if self.last_status.as_ref() != Some(status) {
             self.sink.status(status);
@@ -387,6 +416,7 @@ impl Core {
     fn save(&mut self) {
         if self.dirty && save_state(&self.cfg.state_file, &self.state).is_ok() {
             self.dirty = false;
+            self.saved = Instant::now();
         }
     }
 
@@ -405,6 +435,14 @@ impl Core {
             let paused = s.paused_until;
             let pause = async move {
                 match paused {
+                    Some(t) => tokio::time::sleep_until(t).await,
+                    None => std::future::pending().await,
+                }
+            };
+            // Unsaved state waits at most SAVE_EVERY, even when nothing else happens.
+            let flush_at = self.dirty.then(|| tokio::time::Instant::from_std(self.saved + SAVE_EVERY));
+            let flush = async move {
+                match flush_at {
                     Some(t) => tokio::time::sleep_until(t).await,
                     None => std::future::pending().await,
                 }
@@ -442,6 +480,7 @@ impl Core {
                     }
                 }
                 _ = pause => s.paused_until = None,
+                _ = flush => {}
             }
             if let Err(end) = self.pump(&mut ws, &mut s).await {
                 return end;
@@ -450,7 +489,11 @@ impl Core {
                 self.touched = false;
                 self.sink.changed();
             }
-            self.save();
+            // At most once a second while connected (and at the end of each connection): a server sending tiny
+            // frames can't make every one of them rewrite the whole state file.
+            if self.saved.elapsed() >= SAVE_EVERY {
+                self.save();
+            }
             let count = s.queue.len() + s.inflight.len();
             let status = if !s.replay_done {
                 Status::Syncing { count: 0 }
@@ -479,7 +522,8 @@ impl Core {
             ServerMessage::Presence { members } => {
                 let mut names: Vec<String> = members
                     .iter()
-                    .filter(|m| m.member != self.member)
+                    .filter(|m| m.member != self.member && m.member.len() <= 512)
+                    .take(MAX_PRESENCE)
                     .map(|m| {
                         let name = open_member(&self.cfg.key, &self.cfg.room, &m.member).unwrap_or_default();
                         let name: String = name.chars().filter(|c| !c.is_control()).take(60).collect();
@@ -680,9 +724,13 @@ impl Core {
     }
 
     /// A remote version of a file: from the replay or live (`advance`: it moves the room's seq), or a conflict
-    /// reply. Err(Dropped) on a disk error, so the change comes again after a reconnect.
+    /// reply. Err(Dropped) on a disk error, so the change comes again after a reconnect; a name this computer can't
+    /// hold (too long for its file system) is skipped instead, or that one change would stop sync for good.
     fn apply(&mut self, c: Change, advance: bool) -> Result<(), End> {
         if self.seen.get(&c.id).is_none_or(|&seen| seen < c.seq) {
+            // An id the state doesn't know needs nothing when its version isn't the party's, and isn't remembered,
+            // so a server can't grow memory with made-up ids.
+            let mut remember = true;
             let result = match c.blob.as_deref().map(|blob| self.open_blob(&c.id, blob)) {
                 Some(Some(file)) if !file.deleted => self.remote_put(file, &c.id, c.seq),
                 // The metadata file is never deleted: joiners need it, and its absence pauses deletions.
@@ -693,7 +741,11 @@ impl Core {
                     if untrusted.is_none() {
                         self.warn("Ignored a deletion that didn't come from anyone in the party.");
                     }
-                    if let Some(e) = self.state.files.values_mut().find(|e| e.id == c.id) {
+                    // A conflict reply is always about one of ours.
+                    remember = self.seen.contains_key(&c.id) || !advance;
+                    // ponytail: a linear search per untrusted change of a known file; an id index if rooms grow.
+                    let known = if remember { self.state.files.values_mut().find(|e| e.id == c.id) } else { None };
+                    if let Some(e) = known {
                         e.seq = c.seq;
                         if !e.gone {
                             e.hash = UNSYNCED.into();
@@ -705,13 +757,18 @@ impl Core {
             };
             match result {
                 Ok(()) => {}
-                Err(Fail::Io) => {
+                Err(Fail::Io(e)) if e.kind() == io::ErrorKind::InvalidFilename => {
+                    self.warn("Skipped a change whose name is too long for this computer.");
+                }
+                Err(Fail::Io(_)) => {
                     self.warn("Couldn't write a change to the campaign folder; trying again shortly.");
                     return Err(End::Dropped);
                 }
                 Err(Fail::Fatal(reason)) => return Err(End::Fatal(reason)),
             }
-            self.seen.insert(c.id, c.seq);
+            if remember {
+                self.seen.insert(c.id, c.seq);
+            }
         }
         if advance && c.seq > self.state.seq {
             self.state.seq = c.seq;
@@ -745,7 +802,7 @@ impl Core {
         let len = file.content.len() as u64;
         let entry = Entry { id: id.to_string(), seq, hash: hash.clone(), len, gone: false };
         let synced_hash = self.state.files.get(&file.path).filter(|e| !e.gone).map(|e| e.hash.clone());
-        let local_unchanged = match self.read_local(&file.path).map_err(|_| Fail::Io)? {
+        let local_unchanged = match self.read_local(&file.path)? {
             Local::NotRegular => {
                 self.warn("Skipped a change to something that isn't a plain file here.");
                 return Ok(());
@@ -789,7 +846,7 @@ impl Core {
         let _guard = crate::WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let synced_hash = self.state.files.get(path).filter(|e| !e.gone).map(|e| e.hash.clone());
         // Only an unchanged plain file goes; one changed here stays (a conflict) and goes up again over the tombstone.
-        if let Local::File(bytes, _) = self.read_local(path).map_err(|_| Fail::Io)? {
+        if let Local::File(bytes, _) = self.read_local(path)? {
             if synced_hash.as_deref() == Some(content_hash(&bytes).as_str()) {
                 self.trash(path)?;
             }
@@ -860,14 +917,14 @@ impl Core {
 
     /// Writes a remote file through a temporary file and a rename in its folder. False when refused (see target).
     fn write_file(&mut self, rel: &str, content: &[u8]) -> Result<bool, Fail> {
-        let Some(target) = self.target(rel).map_err(|_| Fail::Io)? else { return Ok(false) };
-        let name = target.file_name().unwrap_or_default().to_string_lossy();
-        let tmp = target.with_file_name(format!(".{name}.lorekeeper-{}", &random_id()[..8]));
+        let Some(target) = self.target(rel)? else { return Ok(false) };
+        // A short name of its own: one built from the target's could pass the 255-byte limit the target is within.
+        let tmp = target.with_file_name(format!(".lorekeeper-{}.tmp", &random_id()[..8]));
         let written = fs::OpenOptions::new().write(true).create_new(true).open(&tmp).and_then(|mut f| f.write_all(content));
         self.sink.wrote(&target);
-        if written.and_then(|_| fs::rename(&tmp, &target)).is_err() {
+        if let Err(e) = written.and_then(|_| fs::rename(&tmp, &target)) {
             let _ = fs::remove_file(&tmp);
-            return Err(Fail::Io);
+            return Err(Fail::Io(e));
         }
         self.touched = true;
         Ok(true)
@@ -878,36 +935,41 @@ impl Core {
         let when = chrono::Local::now().format("%Y-%m-%d %H%M").to_string();
         for n in 1..=100 {
             let name = conflict_name(rel, &when, n);
-            let Some(target) = self.target(&name).map_err(|_| Fail::Io)? else { return Ok(()) };
+            let Some(target) = self.target(&name)? else { return Ok(()) };
             match fs::OpenOptions::new().write(true).create_new(true).open(&target) {
                 Ok(mut f) => {
                     self.sink.wrote(&target);
-                    f.write_all(content).map_err(|_| Fail::Io)?;
+                    f.write_all(content)?;
                     self.touched = true;
                     return Ok(());
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(_) => return Err(Fail::Io),
+                Err(e) => return Err(Fail::Io(e)),
             }
         }
-        Err(Fail::Io)
+        Err(Fail::Io(io::ErrorKind::AlreadyExists.into())) // a minute later the names are free again
     }
 
     /// Moves a file another player deleted into the campaign's hidden .trash folder (Obsidian's), so it can be
     /// brought back; empty folders it leaves behind go, but never the campaign's top-level folders.
     fn trash(&mut self, rel: &str) -> Result<(), Fail> {
-        let Some(from) = self.target(rel).map_err(|_| Fail::Io)? else { return Ok(()) };
-        let mut to = self.root.join(".trash").join(rel);
-        for n in 2.. {
+        let Some(from) = self.target(rel)? else { return Ok(()) };
+        let (stem, ext) = rel.rsplit_once('.').unwrap_or((rel, ""));
+        let mut n = 1;
+        let to = loop {
+            let name = if n == 1 { format!(".trash/{rel}") } else { format!(".trash/{stem} {n}.{ext}") };
+            // Through target() too: a .trash that's a symlink (or has one on the way) is never followed.
+            let Some(to) = self.target(&name)? else {
+                self.warn("Skipped a change to something that isn't a plain file here.");
+                return Ok(());
+            };
             if fs::symlink_metadata(&to).is_err() {
-                break;
+                break to;
             }
-            let (stem, ext) = rel.rsplit_once('.').unwrap_or((rel, ""));
-            to = self.root.join(".trash").join(format!("{stem} {n}.{ext}"));
-        }
-        fs::create_dir_all(to.parent().unwrap_or(&self.root)).map_err(|_| Fail::Io)?;
+            n += 1;
+        };
         self.sink.wrote(&from);
-        fs::rename(&from, &to).map_err(|_| Fail::Io)?;
+        fs::rename(&from, &to)?;
         self.touched = true;
         let mut dir = from.parent();
         while let Some(d) = dir.filter(|d| d.parent().is_some_and(|p| p != self.root) && d.starts_with(&self.root)) {
@@ -942,12 +1004,24 @@ async fn connect(cfg: &Config) -> Result<Ws, Option<u16>> {
 
 
 enum Fail {
-    Io,
+    Io(io::Error),
     Fatal(String),
 }
 
+impl From<io::Error> for Fail {
+    fn from(e: io::Error) -> Self {
+        Fail::Io(e)
+    }
+}
+
+/// Sends one message. A server that stops reading can't hold the engine (and its Stop) forever: past 30 seconds
+/// plus 64 KiB a second for the message's size, the connection counts as dropped.
 async fn send(ws: &mut Ws, msg: &ClientMessage) -> Result<(), tungstenite::Error> {
-    ws.send(Message::Text(serde_json::to_string(msg).expect("ClientMessage serializes").into())).await
+    let text = serde_json::to_string(msg).expect("ClientMessage serializes");
+    let limit = Duration::from_secs(30 + text.len() as u64 / 65_536);
+    tokio::time::timeout(limit, ws.send(Message::Text(text.into())))
+        .await
+        .unwrap_or_else(|_| Err(tungstenite::Error::Io(io::ErrorKind::TimedOut.into())))
 }
 
 /// Every file under `root` that syncs, with its size and time. Symlinks are skipped, never followed.
@@ -958,7 +1032,7 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, (u64, SystemTime)>)
         let (Ok(kind), Some(name)) = (entry.file_type(), entry.file_name().to_str().map(str::to_owned)) else { continue };
         let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
         if kind.is_dir() {
-            let wanted = rel == ".lorekeeper" || (!name.starts_with('.') && rel != "Templates");
+            let wanted = rel == ".lorekeeper" || (!name.starts_with('.') && !(prefix.is_empty() && folded(&name) == "templates"));
             if wanted && out.len() <= MAX_FILES {
                 unsafe_names += walk(&entry.path(), &rel, out);
             }
@@ -980,10 +1054,19 @@ fn open_no_follow(path: &Path) -> io::Result<fs::File> {
     fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)
 }
 
-/// Windows: symlinks need admin rights to make, and read_local has just checked this isn't one.
-#[cfg(not(unix))]
+/// Windows has no O_NOFOLLOW: the file is opened as itself even when it's a symlink or junction
+/// (FILE_FLAG_OPEN_REPARSE_POINT), and refused when it is one, so one swapped in after read_local's check isn't
+/// followed. (A folder on the way swapped for a junction in between is the remaining race, as on other systems.)
+#[cfg(windows)]
 fn open_no_follow(path: &Path) -> io::Result<fs::File> {
-    fs::File::open(path)
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    let file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::other("a symlink or junction"));
+    }
+    Ok(file)
 }
 
 /// Joining: reads the replay just until the campaign's metadata file and returns its name (None when it isn't
@@ -1112,7 +1195,7 @@ fn parse<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, ApiError> {
 /// `POST /v1/rooms`. Blocking (ureq); run it off the main thread.
 pub fn create_room(server: &str, create_key: Option<&str>) -> Result<CreateRoomResponse, ApiError> {
     let r: CreateRoomResponse = parse(api("POST", &format!("{server}/v1/rooms"), None, create_key, None)?)?;
-    if !sync_protocol::is_id(&r.room) {
+    if !sync_protocol::is_id(&r.room) || decode_secret(&r.owner_token).is_err() {
         return Err(ApiError { status: 502, code: "bad_reply".into() });
     }
     Ok(r)
@@ -1136,7 +1219,12 @@ pub fn cancel_invite(server: &str, room: &str, token: &str, invite: &str) -> Res
 
 pub fn redeem(server: &str, room: &str, invite: &str, member: &str) -> Result<RedeemResponse, ApiError> {
     let body = serde_json::json!({ "member": member });
-    parse(api("POST", &format!("{server}/v1/rooms/{room}/invites/{invite}/redeem"), None, None, Some(body))?)
+    let r: RedeemResponse = parse(api("POST", &format!("{server}/v1/rooms/{room}/invites/{invite}/redeem"), None, None, Some(body))?)?;
+    // A token is 32 bytes in base64url: anything else would only fail later, in a header, on every reconnect.
+    if decode_secret(&r.token).is_err() {
+        return Err(ApiError { status: 502, code: "bad_reply".into() });
+    }
+    Ok(r)
 }
 
 pub fn members(server: &str, room: &str, token: &str) -> Result<Vec<MemberInfo>, ApiError> {

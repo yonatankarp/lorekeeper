@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use futures_util::{SinkExt, StreamExt};
-use sync_protocol::{random_secret, Invite};
+use sync_protocol::{random_secret, Invite, PresenceMember};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -35,6 +35,23 @@ fn only_safe_pages_and_images_sync() {
     }
 }
 
+/// Names that a case-insensitive or Windows file system reads as another folder (Templates/, whose files would go up,
+/// and whose new files Lorekeeper moves into every campaign's shared templates), Windows devices, and names that
+/// show as something else.
+#[test]
+fn names_read_as_other_files_or_shown_as_other_names_dont_sync() {
+    for bad in [
+        "templates/NPC.md", "TEMPLATES/NPC.md", "Templateſ/NPC.md", "TEMPLA~1/NPC.md", "NPCs/VEXTHE~2.md", "NPCs/CON .md",
+        "NPCs/COM¹.md", "NPCs/lpt³.png", "CONIN$.md", "NPCs/\u{202e}gnp.md", "Lore/a\u{2066}b.md",
+    ] {
+        assert!(!syncs(bad), "{bad:?}");
+    }
+    for ok in ["Lore/Templates.md", "NPCs/Templates/Vex.md", "Lore/Notes ~ draft.md", "NPCs/COM10.md", "NPCs/Console.md", "Lore/שלום.md"] {
+        assert!(syncs(ok), "{ok}");
+    }
+    assert_eq!(folder_name("Strahd\u{202e}dm.exe"), None);
+}
+
 /// The same names as "sync conflict copies are found by their names" in vault.test.js; the Rust filter matches
 /// the named patterns there ("Vex (1).md" is only a copy next to its original, which a filter can't know).
 #[test]
@@ -54,6 +71,48 @@ fn conflict_copies_match_vault_js() {
     assert_eq!(conflict_name("NPCs/Vex.md", "2026-10-06 2015", 2), "NPCs/Vex (conflict 2026-10-06 2015 2).md");
     assert_eq!(conflict_name("map.png", "2026-10-06 2015", 1), "map (conflict 2026-10-06 2015).png");
     assert!(is_conflict_copy(&conflict_name("Vex.md", "2026-10-06 2015", 3)));
+    // A name at the 255-byte limit: its copy loses the end of the stem (whole characters), never the copy marker.
+    let long = format!("NPCs/{}.md", "é".repeat(126));
+    assert!(syncs(&long));
+    let copy = conflict_name(&long, "2026-10-06 2015", 12);
+    let name = copy.strip_prefix("NPCs/").unwrap();
+    assert!(name.len() <= 255 && name.ends_with("é (conflict 2026-10-06 2015 12).md") && is_conflict_copy(name), "{name}");
+}
+
+/// A hostile server's made-up changes and presence lists: nothing is remembered for an id the campaign doesn't have,
+/// and the windows get at most MAX_PRESENCE names.
+#[test]
+fn a_hostile_server_cant_grow_memory_or_flood_the_windows() {
+    let dir = temp("hostile");
+    let (key, room) = ([5u8; 32], random_id());
+    let cfg = Config {
+        root: dir.clone(),
+        state_file: dir.join("state.json"),
+        server: "https://sync.invalid".into(),
+        room: room.clone(),
+        key: Zeroizing::new(key),
+        token: Zeroizing::new("t".into()),
+        name: "Me".into(),
+    };
+    let rec = Arc::new(Rec::default());
+    let mut core = Core::new(cfg, rec.clone(), dir.canonicalize().unwrap());
+    let mut push = Push::default();
+    for seq in 1..=1000 {
+        let blob = (seq % 2 == 0).then(|| encode_blob(&[1u8; 64]));
+        assert!(core.handle(ServerMessage::Change(Change { id: random_id(), seq, blob }), &mut push).is_ok());
+    }
+    assert!(core.seen.is_empty(), "{} ids remembered", core.seen.len());
+    assert!(core.state.files.is_empty());
+    assert_eq!(core.state.seq, 1000);
+    let member = |name: &str| PresenceMember { member_id: random_id(), member: seal_member(&key, &room, name), role: Role::Member };
+    let mut members: Vec<PresenceMember> = (0..5000).map(|i| member(&format!("P{i}"))).collect();
+    members.insert(0, PresenceMember { member: "A".repeat(100_000), ..member("") });
+    assert!(core.handle(ServerMessage::Presence { members }, &mut push).is_ok());
+    let names = rec.presence.lock().unwrap().clone();
+    assert_eq!(names.len(), MAX_PRESENCE);
+    assert!(names.iter().all(|n| n.starts_with('P')), "an oversized display id is skipped");
+    assert!(fs::read_dir(&dir).unwrap().next().is_none(), "nothing written");
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -454,6 +513,93 @@ async fn a_big_image_syncs() {
     until("the big image arrives", || fs::read(b.join("Attachments/map.png")).is_ok_and(|m| m == map)).await;
     member.stop().await;
     owner.stop().await;
+}
+
+/// Names that a player's computer can't hold, or would read as its private Templates/, never stop that player's sync
+/// and never touch or upload their templates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hostile_names_neither_stall_sync_nor_reach_templates() {
+    let base = temp("names");
+    let db = base.with_extension("db");
+    let _cleanup = Cleanup(vec![base.clone(), db.clone()]);
+    let (_server, url) = start_server(&db).await;
+    let dir = base.join("player");
+    fs::create_dir_all(dir.join("Templates")).unwrap();
+    fs::write(dir.join("Templates/NPC.md"), "my own template").unwrap();
+    let u = url.clone();
+    let created = blocking(move || create_room(&u, Some(CREATE_KEY))).await.unwrap();
+    let room = Room { server: url.clone(), room: created.room.clone(), key: random_secret() };
+    let token = created.owner_token.clone();
+    let state = base.join("player.json");
+    let player = start(&room, &dir, &state, &token, "");
+    until("connected", || player.rec.last() == Some(Status::Synced)).await;
+
+    // At the 255-byte limit (a temporary name built from it would pass it), past macOS's 1024-byte limit for a whole
+    // path once the campaign folder is in front, and Templates/ by other names; then one ordinary page.
+    let at_limit = format!("NPCs/{}.md", "a".repeat(252));
+    let too_long = format!("{}/x.md", vec!["abcdefghi"; 100].join("/"));
+    let files = [
+        (at_limit.as_str(), "long name"), (too_long.as_str(), "deep"), ("templates/NPC.md", "planted"), ("Templateſ/Evil.md", "planted"),
+        ("TEMPLA~1/Evil.md", "planted"), ("NPCs/Marker.md", "after them"),
+    ];
+    put_sealed(&room, &token, &files).await;
+    until("the page after them", || player.read("NPCs/Marker.md").as_deref() == Some("after them")).await;
+    assert_eq!(player.read(&at_limit).as_deref(), Some("long name"));
+    until("synced", || player.rec.last() == Some(Status::Synced)).await;
+
+    // Changed here while another player changed it too: the copy's name is cut to fit.
+    player.stop().await;
+    fs::write(dir.join(&at_limit), "mine").unwrap();
+    put_sealed(&room, &token, &[(at_limit.as_str(), "theirs")]).await;
+    let player = start(&room, &dir, &state, &token, "");
+    until("a conflict copy of the long name", || player.conflict_copies("NPCs").len() == 1).await;
+    let copy = player.conflict_copies("NPCs").remove(0);
+    assert_eq!(player.read(&format!("NPCs/{copy}")).as_deref(), Some("theirs"));
+    until("synced", || player.rec.last() == Some(Status::Synced)).await;
+    player.stop().await;
+
+    let templates: Vec<_> = fs::read_dir(dir.join("Templates")).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(templates, ["NPC.md"]);
+    assert_eq!(fs::read_to_string(dir.join("Templates/NPC.md")).unwrap(), "my own template");
+    let synced = load_state(&state, &room.key);
+    assert!(synced.files.keys().all(|p| folded(p.split('/').next().unwrap()) != "templates" && !p.contains('~')), "{:?}", synced.files.keys());
+}
+
+/// Writes pages into the room as any party member could (sealed with the key, over their current versions),
+/// whatever their paths.
+async fn put_sealed(room: &Room, token: &str, files: &[(&str, &str)]) {
+    let mut req = format!("{}/v1/rooms/{}/live", room.server.replace("http://", "ws://"), room.room).into_client_request().unwrap();
+    req.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let send = |msg: ClientMessage| Message::Text(serde_json::to_string(&msg).unwrap().into());
+    ws.send(send(ClientMessage::Hello { since: 0, member: String::new() })).await.unwrap();
+    let mut seqs = HashMap::new();
+    while let Some(Ok(msg)) = ws.next().await {
+        let Message::Text(t) = msg else { continue };
+        if let Ok(ServerMessage::Changes { changes, more, .. }) = serde_json::from_str(t.as_str()) {
+            seqs.extend(changes.into_iter().map(|c| (c.id, c.seq)));
+            if !more {
+                break;
+            }
+        }
+    }
+    for (req, (path, text)) in files.iter().enumerate() {
+        let id = file_id(&room.key, path);
+        let file = FileContent { path: path.to_string(), content: text.as_bytes().to_vec(), ..Default::default() };
+        let blob = encode_blob(&seal(&room.key, &room.room, &id, &file));
+        ws.send(send(ClientMessage::Put { req: req as u64, base: seqs.get(&id).copied().unwrap_or(0), id, blob })).await.unwrap();
+    }
+    let last = files.len() as u64 - 1;
+    while let Some(Ok(msg)) = ws.next().await {
+        if let Message::Text(t) = msg {
+            match serde_json::from_str(t.as_str()) {
+                Ok(ServerMessage::Ack { req, .. }) if req == last => break,
+                Ok(ServerMessage::Conflict { .. } | ServerMessage::Error { .. }) => panic!("refused: {t}"),
+                _ => {}
+            }
+        }
+    }
+    let _ = ws.close(None).await;
 }
 
 /// A member token's socket that puts what a well-behaved client never would, then one good page.

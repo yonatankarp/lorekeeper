@@ -78,7 +78,8 @@ fn default_vault(app: &AppHandle) -> PathBuf {
 /// copies of the app can run side by side (docs/DEVELOPMENT.md, "Testing sync locally"). Letters, digits, - and _.
 pub(crate) fn profile() -> Option<&'static str> {
     static PROFILE: std::sync::LazyLock<Option<String>> =
-        std::sync::LazyLock::new(|| std::env::var("LOREKEEPER_PROFILE").ok().filter(|p| !p.is_empty()));
+        // Not Unicode: kept (lossily) so run() refuses it, rather than running the real profile.
+        std::sync::LazyLock::new(|| std::env::var_os("LOREKEEPER_PROFILE").filter(|p| !p.is_empty()).map(|p| p.to_string_lossy().into_owned()));
     PROFILE.as_deref()
 }
 
@@ -1733,6 +1734,16 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_test_profile_name_cant_leave_the_config_folder() {
+        for ok in ["alice", "bob-2", "test_profile", &"a".repeat(32)] {
+            assert!(valid_profile(ok), "{ok}");
+        }
+        for bad in ["..", ".", "a/b", "a\\b", "/tmp/x", "a b", "\u{fffd}", "caf\u{e9}", &"a".repeat(33)] {
+            assert!(!valid_profile(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn sessions_and_notes() {
