@@ -144,6 +144,9 @@ input[type="text"] {
   font: inherit;
 }
 .campaign-backup { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+/* Shared with my party, and which PC you play: a line of its own under the campaign. */
+.campaign-party { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin-top: 8px; }
+.campaign-party [hidden] { display: none; }
 output { min-width: 5ch; color: var(--muted); font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; }
 input[role="switch"] {
   appearance: none;

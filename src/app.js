@@ -1,10 +1,10 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
-import { escape, insertLine, linkify, parse, removeLine, sessions, stripLinks, timeline, toHtml, toText } from "./notes.js";
+import { escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
 import {
-  backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, openQuests, party, pcPageFor, questStatus,
-  recentlyMentioned, renameLinks, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter,
+  backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
+  pcPath, questStatus, recentlyMentioned, renameLinks, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -20,7 +20,8 @@ const windows = platform === "windows";
 const linux = !mac && !windows;
 const tauriWindow = window.__TAURI__.window?.getCurrentWindow();
 
-let vault = { folders: [], notes: [], currentSession: "" };
+// notes: the pages shown (a shared session's folder is one, see pages in vault.js); files: every note as on disk.
+let vault = { folders: [], notes: [], files: [], conflicts: [], currentSession: "" };
 const canObsidian = () => vault.hasObsidian || vault.obsidianInstalled; // installed but no vault yet: the button explains how
 let templates = []; // Templates/ notes: used by "New page", hidden everywhere else
 let current = null; // open page path; null is Home
@@ -34,11 +35,27 @@ let inConflict = false;
 const closedFolders = new Set();
 const KINDS = { npc: ["@", "NPC"], loot: ["#", "Loot"], quest: ["!", "Quest"], mystery: ["?", "Mystery"], quote: ['"', "Quote"] };
 let settings = { theme: "system", editorFontSize: 15, sessionView: "timeline" }; // until get_settings answers
-let sessionView = settings.sessionView; // or "journal": the grouped D&D Beyond preview; the switch changes it until restart
+let sessionView = settings.sessionView; // or "journal": a recap grouped by kind; the switch changes it until restart
 let editor = null; // created on first Edit, then reused for every page
 
-const note = (path) => vault.notes.find((n) => n.path === path);
+/** A page, or a file inside a shared session (a player's file, a sync conflict's copy). */
+const note = (path) => vault.notes.find((n) => n.path === path) ?? vault.files.find((n) => n.path === path);
 const paths = () => vault.notes.map((n) => n.path);
+/** The page a file is shown as: a player's file is part of its session's page. */
+const pageFor = (path) => vault.notes.find((n) => n.parts?.some((p) => p.path === path))?.path ?? path;
+/** In a campaign shared with your party, the PC page you play ("PCs/Sibling 5.md"); "" otherwise. */
+const me = () => {
+  const s = settings.sharing?.[settings.vaultPath];
+  return (s?.shared && s.me) || "";
+};
+/** Your own file in shared session `path` ("Sessions/Session 4/Sibling 5.md"), there yet or not; null for other pages. */
+const myFile = (path) => (note(path)?.parts && me() ? `${path}/${baseName(me())}.md` : null);
+/** The file Edit changes: in a shared session your own (see myFile), or its first when you haven't picked a character. */
+const editPath = (path = current) => (note(path)?.parts ? myFile(path) ?? note(path).parts[0]?.path ?? path : path);
+/** A file Obsidian can open for a page: in a shared session yours, or its first. */
+const obsidianPath = (path) => (note(editPath(path)) ? editPath(path) : note(path)?.parts?.[0]?.path ?? path);
+/** A session's notes in order: every player's, with authors, for a shared one. */
+const sessionItems = (n) => (n.parts ? mergeTimelines(n.parts) : timeline(n.content));
 const isSession = (path) => path?.startsWith("Sessions/");
 const alive = (path) => path === null || !!note(path); // Home, or a page still in the vault
 const modal = () => !!document.querySelector("dialog[open]");
@@ -49,10 +66,7 @@ const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD
 function ed() {
   if (!editor) {
     editor = createEditor($("editor"), {
-      onChange: () => {
-        scheduleSave();
-        syncCopy();
-      },
+      onChange: scheduleSave,
       onFollowLink: followLink,
       onImage: saveImage,
       pageNames: () => vault.notes.map((n) => baseName(n.path)),
@@ -68,7 +82,13 @@ async function loadVault() {
   const under = (dir) => (p) => p === dir || p.startsWith(`${dir}/`);
   const internal = under("Templates"), images = under(ATTACHMENTS);
   templates = v.notes.filter((n) => internal(n.path));
-  vault = { ...v, notes: v.notes.filter((n) => !internal(n.path)), folders: v.folders.filter((f) => !internal(f) && !images(f)) };
+  const files = v.notes.filter((n) => !internal(n.path));
+  const folders = v.folders.filter((f) => !internal(f));
+  vault = {
+    ...v, files, notes: pages(files, folders),
+    folders: folders.filter((f) => !isSessionFolder(f) && !images(f)), // a session folder shows as the session's page
+    conflicts: syncConflicts([...folders, ...files.map((n) => n.path), ...(v.images ?? [])]),
+  };
 }
 
 let statusTimer;
@@ -116,8 +136,10 @@ marked.use({
   ],
 });
 
+/** A [[link]] made clickable, or an ![[image]] shown (a linkify renderer). */
+const inlineLink = (target, label, m) => (m[1] && isImage(target) ? imageHtml(target, m[4] ?? target) : linkHtml(target, label));
 /** Raw text with its [[links]] made clickable and its ![[images]] shown. */
-const inlineLinks = (text) => linkify(text, (target, label, m) => (m[1] && isImage(target) ? imageHtml(target, m[4] ?? target) : linkHtml(target, label)));
+const inlineLinks = (text) => linkify(text, inlineLink);
 
 /** Status words that end a quest or a life get their own badge and icon. */
 const STATUS_ICONS = { done: "done", failed: "failed", dead: "failed" };
@@ -126,13 +148,26 @@ const STATUS_ICONS = { done: "done", failed: "failed", dead: "failed" };
 const prettyDate = (v) =>
   /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : null;
 
+/** An image property's value as a path to look up: "[[Attachments/Demus.jpg|200]]" is "Attachments/Demus.jpg". */
+const imageTarget = (value) => value.replace(/^["']|["']$/g, "").replace(/^!?\[\[|\]\]$/g, "").split("|")[0].trim();
+
+/** A note's author in a shared session: their name linking to their PC page, with its portrait small when it has one. */
+function authorHtml(author) {
+  if (!author) return "";
+  const page = pcPath(author, paths());
+  const value = page ? splitFrontmatter(note(page).content).props.find(([k]) => k.toLowerCase() === "portrait")?.[1] ?? "" : "";
+  const target = imageTarget(value);
+  const pic = target && resolveImage(target, vault.images ?? []) ? `<span class="author-portrait">${imageHtml(target, "")}</span>` : "";
+  return `<a class="wikilink author" data-target="${escape(page ? page.replace(/\.md$/i, "") : author)}" href="#">${pic}${escape(author)}</a>`;
+}
+
 /** A page's properties, as a small stat block: see shownProps. */
 function propsHtml(props, path) {
   const shown = shownProps(props, paths(), kindOf(path));
   // A portrait ("[[Attachments/Demus.jpg]]" or a plain path) shows as a picture in the corner, not as a row.
   const pic = shown.rows.find((r) => r.key === "portrait");
   shown.rows = shown.rows.filter((r) => r !== pic);
-  const portrait = pic ? `<div class="props-portrait">${imageHtml(pic.value.replace(/^!?\[\[|\]\]$/g, "").split("|")[0], baseName(path))}</div>` : "";
+  const portrait = pic ? `<div class="props-portrait">${imageHtml(imageTarget(pic.value), baseName(path))}</div>` : "";
   const rows = shown.rows.map(({ key, label, value, icon: name, path }) => {
     let html;
     if (key === "status" || key === "rarity") {
@@ -183,7 +218,7 @@ function treeHtml(node) {
 
 function renderTree() {
   const scroll = $("tree").scrollTop;
-  $("tree").innerHTML = treeHtml(buildTree(vault.folders, paths()));
+  replaceHtml($("tree"), treeHtml(buildTree(vault.folders, paths())));
   $("tree").scrollTop = scroll;
 }
 
@@ -227,15 +262,19 @@ const emptySessionHtml = `<div class="empty-state">${icon("session")}<h2>No note
   <p>Notes appear here live during the game. Start a note with a symbol to file it:</p>${legendHtml}
   <p class="legend-note">A <kbd>!</kbd> note goes in this session's Quests section. To follow a quest across sessions, make a Quest page with + New page: open ones are listed at the top of every session.</p></div>`;
 
-/** The notes in order; `removable` adds each row's delete button (the session's own Timeline view). */
-const timelineHtml = (items, removable = false) =>
+/**
+ * The notes in order, with their authors in a shared session; `removable(note)` adds that row's delete button (the
+ * session's own Timeline view: every note, or in a shared session only yours).
+ */
+const timelineHtml = (items, removable = () => false) =>
   `<ol class="timeline">${items
-    .map(({ time, kind, text, line }) => {
+    .map((item) => {
+      const { time, kind, text, line, author, path } = item;
       const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${icon(kind)}${KINDS[kind][1]}</span>` : "";
-      const remove = removable
-        ? `<button type="button" class="remove-note" data-line="${line}" aria-label="Delete note: ${escape(stripLinks(text))}" title="Delete note">${icon("trash")}</button>`
+      const remove = removable(item)
+        ? `<button type="button" class="remove-note" data-line="${line}" data-path="${escape(path ?? current)}" aria-label="Delete note: ${escape(stripLinks(text))}" title="Delete note">${icon("trash")}</button>`
         : "";
-      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}</span>${remove}</li>`;
+      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}${author ? ` <span class="by">${authorHtml(author)}</span>` : ""}</span>${remove}</li>`;
     })
     .join("")}</ol>`;
 
@@ -247,19 +286,21 @@ function openQuestsHtml() {
   return `<section class="open-quests" aria-labelledby="open-quests-title"><h2 id="open-quests-title">Open quests</h2><ul>${items.join("")}</ul></section>`;
 }
 
-function sessionHtml(content) {
-  const session = parse(content);
-  const items = timeline(content);
+/** A session page `n`: a shared one merges every player's file (see mergeTimelines), and only your own notes can be deleted. */
+function sessionHtml(n) {
+  const session = n.parts ? parseMerged(n.parts, paths()) : parse(n.content);
+  const items = sessionItems(n);
   const title = `<h1 class="session-title">${session.title ? inlineLinks(session.title) : escape(baseName(current))}</h1>`;
   if (!items.length) return title + openQuestsHtml() + emptySessionHtml;
   const pressed = (v) => `aria-pressed="${sessionView === v}"`;
   const views = `<div class="view-switch" role="group" aria-label="Session view">
     <button type="button" data-view="timeline" ${pressed("timeline")}>Timeline</button>
     <button type="button" data-view="journal" ${pressed("journal")}>Journal</button></div>`;
+  const mine = myFile(current);
   return views + title + openQuestsHtml() + (sessionView === "journal"
-    ? `<div class="journal">${toHtml({ ...session, title: "" }, linkHtml)}</div>` +
-      `<p class="session-note">This is what “Copy for D&amp;D Beyond” pastes. Click Edit to see every line.</p>`
-    : timelineHtml(items, true));
+    ? `<div class="journal">${toHtml({ ...session, title: "" }, inlineLink)}</div>` +
+      `<p class="session-note">A recap of the session, grouped by kind. Click Edit to see every line.</p>`
+    : timelineHtml(items, n.parts ? (item) => item.path === mine : () => true));
 }
 
 // ---------- home ----------
@@ -277,15 +318,22 @@ function homeHtml() {
   const card = (id, title, iconName, body, wide = false) =>
     `<section class="home-card${wide ? " wide" : ""}" aria-labelledby="home-${id}"><h2 id="home-${id}">${icon(iconName)}${title}</h2>${body}</section>`;
   const cards = [];
+  if (vault.conflicts.length) {
+    // A copy that's a note opens like any page; a folder or an image is just named.
+    const name = (path) => (note(path) ? link(path) : escape(path));
+    const items = vault.conflicts.map((c) => `<li>${name(c.path)}${c.of ? ` <span class="home-meta">copy of ${name(c.of)}</span>` : ""}</li>`);
+    cards.push(card("conflicts", "Sync conflicts", "mystery", `
+      <p class="home-meta">Your sync app kept two versions of these, changed on two computers at once. Open both, keep what you want in the original, then delete the copy.</p>
+      <ul class="home-list">${items.join("")}</ul>`, true));
+  }
   if (latest) {
-    const items = timeline(note(latest.path).content);
+    const items = sessionItems(note(latest.path));
     cards.push(card("latest", "Latest session", "session", `
       <h3 class="home-latest">${escape(latest.title)}</h3>
       <p class="home-meta">${dated(latest, items.length)}</p>
       ${items.length ? timelineHtml(items.slice(-5)) : `<p class="home-none">No notes yet. Press <kbd>⌘⌥N</kbd> during the game to jot one.</p>`}
       <div class="home-actions">
         <a href="#" class="button-link" data-path="${escape(latest.path)}">Open session</a>
-        <button type="button" class="seal" data-copy="${escape(latest.path)}"${items.length ? "" : " disabled"}>Copy for D&amp;D Beyond</button>
       </div>`, true));
   }
   if (quests.length) cards.push(card("quests", "Open quests", "quest", `<ul class="home-list">${quests.map((p) => `<li>${link(p, "quest")}</li>`).join("")}</ul>`));
@@ -320,13 +368,22 @@ function homeHtml() {
   return `<h1 class="home-title">${escape(campaign)}</h1><div class="home-grid">${cards.join("")}</div>`;
 }
 
-/** Copy is pointless until the session has a note; while editing, the unsaved text counts. */
-const syncCopy = () =>
-  ($("copy").disabled = !timeline(editing ? ed().getValue() : note(current)?.content ?? "").length);
+/**
+ * Replaces `el`'s HTML, keeping focus on the same link or button (found by its data attributes) when it's still there,
+ * since refreshes now also come from a teammate's notes arriving.
+ */
+function replaceHtml(el, html) {
+  const was = el.contains(document.activeElement) ? document.activeElement : null;
+  el.innerHTML = html;
+  const keys = Object.entries(was?.dataset ?? {});
+  if (!keys.length) return;
+  const selector = was.tagName + keys.map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(v)}"]`).join("");
+  el.querySelector(selector)?.focus({ preventScroll: true });
+}
 
 let shown = ""; // the page HTML on screen: re-rendering the same HTML would only lose keyboard focus
 function setView(html) {
-  if (html !== shown) $("view").innerHTML = shown = html;
+  if (html !== shown) replaceHtml($("view"), (shown = html));
 }
 
 function render() {
@@ -339,13 +396,11 @@ function render() {
   n ? $("home").removeAttribute("aria-current") : $("home").setAttribute("aria-current", "page");
   $("back").disabled = nav.find(-1, alive, current) < 0;
   $("forward").disabled = nav.find(1, alive, current) < 0;
-  $("delete").disabled = !n;
-  $("rename").disabled = !n;
+  $("delete").disabled = !n || !!n.parts; // a shared session is everyone's notes
+  $("rename").disabled = !n || !!n.parts;
   $("backlinks").hidden = !n;
   $("toggle").hidden = !n;
   $("obsidian").hidden = !n || !canObsidian();
-  $("copy").hidden = !n || !isSession(current);
-  syncCopy();
   $("toggle").textContent = editing ? "Done" : "Edit";
   $("editor").hidden = !editing || !n;
   $("editor-hint").hidden = !editing || !n || !isSession(current);
@@ -354,7 +409,7 @@ function render() {
   if (!n) return setView(homeHtml());
   if (!editing) {
     const { props, body } = splitFrontmatter(n.content);
-    setView(isSession(current) ? sessionHtml(n.content) : propsHtml(props, current) + marked.parse(body));
+    setView(isSession(current) ? sessionHtml(n) : propsHtml(props, current) + marked.parse(body));
   }
   const links = backlinks(current, vault.notes);
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length
@@ -371,7 +426,7 @@ async function open(path, { edit = false, to } = {}) {
   if (to === undefined) nav.visit(path);
   else nav.go(to);
   current = path;
-  base = note(path)?.content ?? "";
+  base = note(editPath())?.content ?? "";
   editing = edit;
   inConflict = false;
   $("conflict").hidden = true;
@@ -414,7 +469,7 @@ async function flush() {
 }
 
 async function save() {
-  const path = current;
+  const path = editPath();
   const content = ed().getValue();
   try {
     const written = await invoke("save_file", { path, content, base });
@@ -423,7 +478,7 @@ async function save() {
     if (n) n.content = written;
     if (path.startsWith("Quests/")) renderTree(); // a changed status moves the check mark
     // Notes added by the hotkeys while editing were kept on disk; show them in the editor too.
-    if (written !== content && written.startsWith(content) && path === current) ed().append(written.slice(content.length));
+    if (written !== content && written.startsWith(content) && path === editPath()) ed().append(written.slice(content.length));
     say("Saved");
   } catch (err) {
     if (err === "conflict") {
@@ -481,7 +536,8 @@ async function refresh() {
     return say(`Couldn't read notes: ${err}`);
   }
   if (current && !note(current)) current = null; // deleted or renamed elsewhere
-  const n = note(current);
+  if (current) current = pageFor(current); // a session that became shared since
+  const n = note(editPath());
   if (n && !dirty() && !inConflict) {
     if (editing) ed().setValue(n.content); // keeps the cursor
     base = n.content;
@@ -773,12 +829,11 @@ $("tree").addEventListener("click", (e) => {
 
 $("view").addEventListener("click", async (e) => {
   const button = e.target.closest("button");
-  if (button?.dataset.copy) return copySession(note(button.dataset.copy)?.content ?? "");
   if (button?.dataset.action) return actions[button.dataset.action]();
   if (button?.dataset.ddbRefresh !== undefined) return refreshCharacter(current, button);
   if (button?.classList.contains("remove-note")) {
     const row = [...$("view").querySelectorAll(".remove-note")].indexOf(button);
-    await deleteNote(current, +button.dataset.line);
+    await deleteNote(button.dataset.path, +button.dataset.line);
     // Keyboard users stay in the list: the next note's button, else the previous one, else the toast's Undo.
     const left = $("view").querySelectorAll(".remove-note");
     (left[Math.min(row, left.length - 1)] ?? ($("toast").hidden ? null : $("toast-undo")))?.focus();
@@ -821,26 +876,34 @@ $("results").addEventListener("keydown", (e) => {
   }
 });
 
+/** Edit on a shared session opens your own file in it, made when you have none there yet. Returns false when it can't. */
+async function ownFile() {
+  const path = editPath();
+  if (note(path) && !note(path).parts) return true;
+  if (!myFile(current)) {
+    say("Pick your character in Settings > General first");
+    return false;
+  }
+  await invoke("create_file", { path, content: playerFile(current, baseName(me()), today()) })
+    .catch((err) => String(err).endsWith("already exists.") || say(`Couldn't edit: ${err}`));
+  await refresh();
+  return !!note(path);
+}
+
 $("toggle").addEventListener("click", async () => {
   if (editing) {
     await flush();
     editing = false;
   } else {
+    if (!(await ownFile())) return;
+    if (note(current)?.parts) say(`Editing your own notes in ${baseName(current)}`);
     editing = true;
-    base = note(current)?.content ?? "";
+    base = note(editPath())?.content ?? "";
     ed().setValue(base, { reset: true });
   }
   render();
   if (editing) ed().focus();
 });
-
-/** Copies a session's notes, grouped, for the D&D Beyond journal (the header button, and the Latest session card on Home). */
-function copySession(content) {
-  const session = parse(content);
-  return invoke("copy_html", { html: toHtml(session), text: toText(session) })
-    .then(() => say("Copied. Paste it into the D&D Beyond journal"), (err) => say(`Copy failed: ${err}`));
-}
-$("copy").addEventListener("click", () => copySession(editing ? ed().getValue() : note(current)?.content ?? ""));
 
 // ---------- deleting, and undoing it ----------
 
@@ -889,6 +952,7 @@ async function restore(path, content) {
 
 async function deletePage(path) {
   if (!path || !note(path) || modal()) return;
+  if (note(path).parts) return say("A shared session holds everyone's notes. Delete your own notes from its Timeline instead.");
   if (!(await confirmDelete(path))) return;
   const name = baseName(path);
   try {
@@ -916,8 +980,8 @@ async function rewrite(path, change) {
     await refresh(); // the conflict banner is for the editor; here, show the page as it is now and change nothing
     throw "the page changed outside the app, so nothing was changed";
   }
-  n.content = written;
-  if (path === current) {
+  n.content = written; // a shared session's part too: its page reads its files' text
+  if (path === editPath()) {
     base = written;
     if (editing) ed().setValue(written);
   }
@@ -986,7 +1050,7 @@ function undoRedo(dir) {
 let renaming = null; // the page the Rename dialog is for
 
 function openRenameDialog(path) {
-  if (!path || !note(path) || modal()) return;
+  if (!path || !note(path) || note(path).parts || modal()) return; // sessions keep their names (lib.rs rename_note)
   renaming = path;
   $("rename-name").value = baseName(path);
   $("rename-error").textContent = "";
@@ -1004,7 +1068,7 @@ async function renamePage(from, to, exact = []) {
   await loadVault(); // rewrite what's on disk now, so the saves below don't conflict
   const known = paths();
   const edits = [];
-  for (const { path, content } of [...vault.notes, ...templates]) {
+  for (const { path, content } of [...vault.files, ...templates]) { // files: links in a shared session's players' files too
     const back = exact.find(([p, now]) => p === path && now === content);
     const next = back ? back[2] : renameLinks(content, from, to, known);
     if (next !== content) edits.push([path === from ? to : path, content, next]);
@@ -1071,7 +1135,7 @@ async function openInObsidian(path, launch = false) {
   $("obsidian-dialog").showModal();
 }
 
-$("obsidian").addEventListener("click", () => openInObsidian(current));
+$("obsidian").addEventListener("click", () => openInObsidian(obsidianPath(current)));
 $("obsidian-launch").addEventListener("click", () => openInObsidian(guidePath, true));
 $("obsidian-copy").addEventListener("click", () => {
   const text = $("obsidian-path").textContent;
@@ -1083,11 +1147,12 @@ $("obsidian-copy").addEventListener("click", () => {
 $("new-page").addEventListener("click", () => openNewDialog());
 $("new-session").addEventListener("click", async () => {
   try {
-    const path = await invoke("start_session");
+    const path = await invoke("start_session"); // in a shared session, your own file in it
     await refresh();
     const content = note(path)?.content ?? "";
-    record({ label: `Start ${baseName(path)}`, undo: () => trashIfUnchanged(path, content), redo: () => restore(path, content) });
-    open(path);
+    const page = pageFor(path);
+    record({ label: `Start ${baseName(page)}`, undo: () => trashIfUnchanged(path, content), redo: () => restore(path, content) });
+    open(page);
   } catch (err) {
     say(`Couldn't start a session: ${err}`);
   }
@@ -1097,7 +1162,7 @@ $("take-theirs").addEventListener("click", async () => {
   inConflict = false;
   $("conflict").hidden = true;
   await refresh();
-  base = note(current)?.content ?? "";
+  base = note(editPath())?.content ?? "";
   ed().setValue(base);
   render();
 });
@@ -1106,7 +1171,7 @@ $("keep-mine").addEventListener("click", async () => {
   $("conflict").hidden = true;
   const mine = ed().getValue();
   await loadVault();
-  base = note(current)?.content ?? ""; // save over what's on disk now
+  base = note(editPath())?.content ?? ""; // save over what's on disk now
   ed().setValue(mine); // a refresh during the await may have loaded theirs
   saving = save().finally(() => (saving = null));
 });
@@ -1223,7 +1288,7 @@ async function buildMenu() {
 
 function copyLink(path) {
   const text = `[[${baseName(path)}]]`;
-  // A native menu click isn't a user gesture, so WebKit may refuse; plain text, since copy_html also writes HTML, which Obsidian converts on paste.
+  // A native menu click isn't a user gesture, so WebKit may refuse; then the clipboard plugin writes it, as plain text.
   navigator.clipboard.writeText(text)
     .catch(() => invoke("plugin:clipboard-manager|write_text", { text }))
     .then(() => say(`Copied ${text}`), (err) => say(`Copy failed: ${err}`));
@@ -1239,7 +1304,7 @@ $("sidebar").addEventListener("contextmenu", (e) => {
   const items = file !== undefined
     ? [
         { text: "Open", action: () => open(file) },
-        ...(canObsidian() ? [{ text: "Open in Obsidian", action: () => openInObsidian(file) }] : []),
+        ...(canObsidian() ? [{ text: "Open in Obsidian", action: () => openInObsidian(obsidianPath(file)) }] : []),
         { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },

@@ -42,12 +42,12 @@ If the current session's last note is over 12 hours old, the box offers the next
 
 ## After the game
 
-- **Sessions** open as a **Timeline** (every note with its time). **Journal** shows them grouped the way **Copy for D&D Beyond** pastes them. Open quests are listed at the top.
+- **Sessions** open as a **Timeline** (every note with its time). **Journal** shows a recap of the session grouped by kind: what happened, NPCs, loot, quests, mysteries and quotes. Open quests are listed at the top.
 - **+ New page** (`⌘N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest, Lore or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
 - **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
 - **Edit** (`⌘E`) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
 - **Rename** (`F2`) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
-- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and embedded as `![[Pasted image 20261005143012.png]]`, the way Obsidian does it; the page shows the image. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB. **Copy for D&D Beyond** leaves images out: upload them there yourself.
+- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and embedded as `![[Pasted image 20261005143012.png]]`, the way Obsidian does it; the page shows the image. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB.
 - **Linked from** at the bottom of every page lists the sessions and pages that mention it.
 - `⌘K` searches, `⌘,` opens Settings, `⌘+` / `⌘−` zoom.
 
@@ -92,6 +92,27 @@ Backups made by older versions of Lorekeeper (in `Apps/Lorekeeper/Campaigns`, `L
 
 Name a campaign next to it in **Settings > General**; the name shows in the sidebar, on Home and in the tray. Each campaign needs its own name, since the names keep their backups apart. A new name starts a new backup: the old one stays where it was, and changing the name back carries it on. A campaign you remove keeps its name, so adding the folder again carries on its backups; so does a folder you add later with the name of a removed campaign, which is what you want after moving a folder (otherwise give it another name).
 
+## Playing with your party
+
+The whole party can keep one campaign together: everyone jots notes during the game, and every session shows all of them, each with who wrote it. It works through Google Drive for desktop (Dropbox works the same way); Lorekeeper itself never goes online for this.
+
+1. **One person shares the campaign folder.** Put it in Google Drive (say `My Drive/Lorekeeper/Scale & Frost`), then share that folder with the other players as **Editor**.
+2. **Everyone else adds it to their Drive:** in Google Drive on the web, open **Shared with me**, right-click the folder, **Organize > Add shortcut**, and put the shortcut in **My Drive**. Drive for desktop then shows it on your computer.
+3. **Everyone adds it in Lorekeeper:** **Settings > General > Add campaign…**, choosing that folder (inside the Google Drive folder on your computer).
+4. **Everyone turns on Shared with my party** next to the campaign and picks their character under **I play**. Characters are the pages in `PCs/`, so make or import them first (one person can import the whole party from D&D Beyond).
+
+What changes in a shared campaign:
+
+- Your quick notes go to a file of your own: `Sessions/Session 4/Sibling 5.md` for Sibling 5. Two players never write the same file, so Drive never has to choose between them. Until you pick your character, the note box refuses to save and keeps your note.
+- A session shows everyone's notes as one timeline, in time order, each with its author (and their portrait, if their PC page has one). The Journal shows them grouped, with authors too. You can delete your own notes from the Timeline; **Edit** opens your own file.
+- **New session** starts the next session for everyone. If someone already started one in the last 12 hours and you haven't written in it yet, New session joins that one instead, so a party pressing it together stays in one session. Simplest: let one person (the DM, say) start sessions, and everyone else just writes.
+- `↑` in the note box and the "start a new session?" offer only look at your own notes.
+- Sessions from before you turned sharing on stay as they were; the first note after it starts the next session.
+- Everything else (NPCs, places, quests, your PC page) is shared as it is: anyone can edit any page.
+- New notes from the others appear on their own within a few seconds of Drive syncing them.
+
+It's not a live co-editor: two people editing the same page at the same time (say an NPC page) can end up with two versions. Drive then keeps both, naming one like `Mirela (1).md`, and Lorekeeper lists them under **Sync conflicts** on Home. Open both, keep what you want in the original, then delete the copy.
+
 ## Backups
 
 **Settings > Backups**, any of these:
@@ -108,7 +129,7 @@ Backups run on each new session, every 30 minutes while notes change, once a day
 
 ## Settings
 
-- **General:** campaigns (notes folders), the D&D Beyond sign-in, launch at login, "saved" notifications, updates.
+- **General:** campaigns (notes folders), sharing them with your party, the D&D Beyond sign-in, launch at login, "saved" notifications, updates.
 - **Hotkeys:** record new shortcuts; a shortcut another app already uses is refused and the old one keeps working.
 - **Appearance:** Light (Tome), Dark (Dungeon) or System, editor font size, Timeline or Journal by default.
 - **Backups:** see above.

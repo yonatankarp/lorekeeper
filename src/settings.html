@@ -41,9 +41,11 @@
           </div>
           <p class="error" id="campaigns-error" role="alert"></p>
           <p class="error" id="backupNames-error" role="alert"></p>
+          <p class="error" id="sharing-error" role="alert"></p>
         </div>
       </div>
       <p class="hint">Switch campaigns at the top of the sidebar or from the tray menu. Remove only forgets a campaign here: its notes and backups stay where they are. A campaign is called after its folder unless you give it a name; the name shows in the sidebar and the tray, and each campaign backs up separately under it. A new name starts a new backup; the old one stays, and changing the name back carries it on. Tip: pick a folder inside your Obsidian vault or iCloud Drive.</p>
+      <p class="hint">Playing with your party: put the campaign folder in a shared Google Drive folder, and have everyone add it here as a campaign, turn on Shared with my party and pick their character. Each player's quick notes then go to a file of their own, and every session shows everyone's notes together.</p>
       <template id="campaign-row">
         <div class="row campaign">
           <div class="row-label">
@@ -54,6 +56,12 @@
             <label class="campaign-backup"><span>Name<span class="sr-only campaign-sr"></span></span>
               <input type="text" class="campaign-backup-name" spellcheck="false" autocomplete="off" /></label>
             <button type="button" class="ghost campaign-remove">Remove<span class="sr-only campaign-sr"></span></button>
+          </div>
+          <div class="campaign-party">
+            <label class="campaign-backup"><input type="checkbox" role="switch" class="campaign-shared" />
+              <span>Shared with my party<span class="sr-only campaign-sr"></span></span></label>
+            <label class="campaign-backup campaign-me-label"><span>I play<span class="sr-only campaign-sr"></span></span>
+              <select class="campaign-me"></select></label>
           </div>
         </div>
       </template>
