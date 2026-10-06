@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     backup,
-    cloud::{self, bearer, call, ok, Provider},
+    cloud::{self, bearer, ok, Provider},
     dropbox, gdrive, github,
     github::AGENT,
     Settings,
@@ -64,13 +64,15 @@ pub struct Done {
 pub struct Places {
     /// The open campaign's name.
     campaign: String,
+    /// Its backup name: the folder it has in each backup.
+    name: String,
     /// Where its dated copies are; "" when folder backup is off.
     folder: String,
-    /// Its GitHub repository.
+    /// Its folder in the GitHub repository, "<repo>/<name>".
     repo: String,
-    /// Its folder in the Dropbox app folder, "Campaigns/<name>".
+    /// Its folder in the Dropbox app folder, "<name>".
     dropbox: String,
-    /// The name of its folder in My Drive.
+    /// Its folder in My Drive, "Lorekeeper/<name>".
     drive: String,
 }
 
@@ -83,9 +85,10 @@ pub fn places(s: &Settings) -> Places {
     Places {
         campaign: backup::campaign_name(&s.vault_path),
         folder,
-        repo: backup::campaign_repo(&s.github_repo, &name),
+        repo: format!("{}/{name}", s.github_repo),
         dropbox: dropbox::root(&name).trim_start_matches('/').to_string(),
-        drive: gdrive::top_folder(&name),
+        drive: format!("{}/{name}", gdrive::SHARED),
+        name,
     }
 }
 
@@ -234,8 +237,10 @@ fn github_get(token: &str, path: &str) -> Result<Value, String> {
     github::ok(reply)
 }
 
-fn github_commits(token: &str, owner: &str, repo: &str) -> Result<Vec<Choice>, String> {
-    let v = github_get(token, &format!("/repos/{owner}/{repo}/commits?per_page=10"))?;
+/// The last 10 commits that changed the campaign's folder `name`.
+fn github_commits(token: &str, owner: &str, repo: &str, name: &str) -> Result<Vec<Choice>, String> {
+    let url = tauri::Url::parse_with_params("https://api.github.com/", [("path", name), ("per_page", "10")]).expect("valid URL");
+    let v = github_get(token, &format!("/repos/{owner}/{repo}/commits?{}", url.query().unwrap_or("")))?;
     let commits = v.as_array().cloned().unwrap_or_default();
     Ok(commits
         .iter()
@@ -292,19 +297,29 @@ fn download(p: Provider, send: impl Fn() -> Result<ureq::http::Response<ureq::Bo
     }
 }
 
-/// (path, file id) of every file in the campaign's folder (`root`, see Places).
-fn dropbox_files(token: &str, root: &str) -> Result<Vec<(String, String)>, String> {
+/// The part of a Dropbox path inside the listed folder: "/Strahd/NPCs/Vex.md" -> "NPCs/Vex.md".
+/// The folder's own part is dropped whatever its case, which Dropbox may show differently.
+fn inside_folder(path: &str) -> Option<&str> {
+    path.trim_start_matches('/').split_once('/').map(|(_, rel)| rel).filter(|rel| !rel.is_empty())
+}
+
+/// (path, file id) of every file in the campaign's folder `name`; none before its first backup.
+fn dropbox_files(token: &str, name: &str) -> Result<Vec<(String, String)>, String> {
     let p = Provider::Dropbox;
-    let mut v = ok(p, dropbox::rpc(token, "files/list_folder", &json!({ "path": "", "recursive": true, "limit": 2000 }))?)?;
+    let reply = dropbox::rpc(token, "files/list_folder", &json!({ "path": dropbox::root(name), "recursive": true, "limit": 2000 }))?;
+    if reply.0 == 409 && reply.1["error_summary"].as_str().is_some_and(|s| s.starts_with("path/not_found")) {
+        return Ok(Vec::new());
+    }
+    let mut v = ok(p, reply)?;
     let mut out = Vec::new();
     loop {
         for e in v["entries"].as_array().into_iter().flatten().filter(|e| e[".tag"] == "file") {
-            if let (Some(path), Some(id)) = (e["path_display"].as_str(), e["id"].as_str()) {
-                out.push((path.trim_start_matches('/').to_string(), id.to_string()));
+            if let (Some(rel), Some(id)) = (e["path_display"].as_str().and_then(inside_folder), e["id"].as_str()) {
+                out.push((rel.to_string(), id.to_string()));
             }
         }
         if v["has_more"] != true {
-            return Ok(rooted(out, root));
+            return Ok(out);
         }
         let cursor = v["cursor"].as_str().unwrap_or("").to_string();
         v = ok(p, dropbox::rpc(token, "files/list_folder/continue", &json!({ "cursor": cursor }))?)?;
@@ -318,30 +333,17 @@ fn dropbox_file(token: &str, id: &str) -> Result<Vec<u8>, String> {
     })
 }
 
-fn drive_list(token: &str, query: &str, fields: &str) -> Result<Vec<Value>, String> {
-    let (p, mut out, mut page) = (Provider::Google, Vec::new(), String::new());
-    loop {
-        let mut params = vec![("q", query), ("fields", fields), ("pageSize", "1000")];
-        if !page.is_empty() {
-            params.push(("pageToken", page.as_str()));
-        }
-        let url = tauri::Url::parse_with_params(DRIVE_FILES, &params).expect("valid URL");
-        let v = ok(p, call(p, || AGENT.get(url.as_str()).header("Authorization", bearer(token)).call())?)?;
-        out.extend(v["files"].as_array().cloned().unwrap_or_default());
-        match v["nextPageToken"].as_str() {
-            Some(t) if !t.is_empty() => page = t.to_string(),
-            _ => return Ok(out),
+/// The campaign's `name` folders in every Lorekeeper folder the app made (one per computer that
+/// backed up, say), newest first.
+fn drive_roots(token: &str, name: &str) -> Result<Vec<Value>, String> {
+    let mut found = Vec::new();
+    for shared in gdrive::folders(token, gdrive::SHARED, "root")? {
+        if let Some(id) = shared["id"].as_str().filter(|id| is_drive_id(id)) {
+            found.extend(gdrive::folders(token, name, id)?);
         }
     }
-}
-
-/// The `name` folders the app made in My Drive (one per computer that backed up), newest first.
-fn drive_roots(token: &str, name: &str) -> Result<Vec<Value>, String> {
-    let name = name.replace('\\', "\\\\").replace('\'', "\\'"); // quoted for Drive's query language
-    let q = format!("name = '{name}' and mimeType = '{DRIVE_FOLDER}' and 'root' in parents and trashed = false");
-    let mut roots = drive_list(token, &q, "nextPageToken,files(id,createdTime)")?;
-    roots.sort_by(|a, b| b["createdTime"].as_str().cmp(&a["createdTime"].as_str()));
-    Ok(roots)
+    found.sort_by(|a, b| b["createdTime"].as_str().cmp(&a["createdTime"].as_str()));
+    Ok(found)
 }
 
 fn is_drive_id(id: &str) -> bool {
@@ -352,7 +354,7 @@ fn is_drive_id(id: &str) -> bool {
 fn drive_files(token: &str, folder: &str) -> Result<Vec<(String, String)>, String> {
     let (mut out, mut stack) = (Vec::new(), vec![(String::new(), folder.to_string())]);
     while let Some((prefix, id)) = stack.pop() {
-        for f in drive_list(token, &format!("'{id}' in parents and trashed = false"), "nextPageToken,files(id,name,mimeType)")? {
+        for f in gdrive::list(token, &format!("'{id}' in parents and trashed = false"), "nextPageToken,files(id,name,mimeType)")? {
             let (Some(name), Some(fid)) = (f["name"].as_str(), f["id"].as_str()) else { continue };
             let rel = if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") };
             match f["mimeType"].as_str().unwrap_or("") {
@@ -389,11 +391,11 @@ pub fn list(source: Source, s: &Settings, w: &Places) -> Result<Vec<Choice>, Str
             let names = snapshots(Path::new(&w.folder))?;
             names.into_iter().map(|n| Choice { label: n.rsplit(' ').next().unwrap_or(&n).to_string(), id: n }).collect()
         }
-        Source::Github => github_commits(&github::load_token()?, &s.github_user, &w.repo)?,
-        Source::Dropbox => current(Provider::Dropbox, dropbox_files(&cloud::access_token(Provider::Dropbox)?, &w.dropbox)?.len())?,
+        Source::Github => github_commits(&github::load_token()?, &s.github_user, &s.github_repo, &w.name)?,
+        Source::Dropbox => current(Provider::Dropbox, dropbox_files(&cloud::access_token(Provider::Dropbox)?, &w.name)?.len())?,
         Source::Google => {
             let token = cloud::access_token(Provider::Google)?;
-            let roots = drive_roots(&token, &w.drive)?;
+            let roots = drive_roots(&token, &w.name)?;
             let mut choices = Vec::new();
             for r in roots.iter().filter_map(|r| Some((r["id"].as_str().filter(|id| is_drive_id(id))?, r["createdTime"].as_str().unwrap_or("")))) {
                 let n = drive_files(&token, r.0)?.len();
@@ -426,14 +428,15 @@ pub fn restore(source: Source, id: &str, s: &Settings, w: &Places, target: &Path
                 return not_found();
             }
             let token = github::load_token()?;
-            let base = format!("/repos/{}/{}", s.github_user, w.repo);
-            let found = github_files(&token, &base, id)?;
+            let base = format!("/repos/{}/{}", s.github_user, s.github_repo);
+            // Only the campaign's folder: the repository holds every campaign.
+            let found = rooted(github_files(&token, &base, id)?, &w.name);
             // ponytail: one request per file; GitHub allows 5,000 an hour, plenty for a notes vault.
             write_all(at, found, |sha| github_blob(&token, &base, sha), progress)
         }
         Source::Dropbox => {
             let token = cloud::access_token(Provider::Dropbox)?;
-            let found = dropbox_files(&token, &w.dropbox)?;
+            let found = dropbox_files(&token, &w.name)?;
             write_all(at, found, |fid| dropbox_file(&token, fid), progress)
         }
         Source::Google => {
@@ -475,7 +478,10 @@ fn web_page(source: Source, s: &Settings, w: &Places, drive_id: Option<&str>) ->
     let mut url;
     match source {
         Source::Folder => unreachable!("a backup folder is shown in the file manager, not the browser"),
-        Source::Github => return format!("https://github.com/{}/{}", s.github_user, w.repo),
+        Source::Github => {
+            url = tauri::Url::parse("https://github.com").unwrap();
+            url.path_segments_mut().unwrap().extend([&s.github_user, &s.github_repo, "tree", "HEAD", &w.name]);
+        }
         Source::Dropbox => {
             url = tauri::Url::parse("https://www.dropbox.com/home/Apps/Lorekeeper").unwrap();
             url.path_segments_mut().unwrap().extend(w.dropbox.split('/').filter(|p| !p.is_empty()));
@@ -484,7 +490,7 @@ fn web_page(source: Source, s: &Settings, w: &Places, drive_id: Option<&str>) ->
             Some(id) => return format!("https://drive.google.com/drive/folders/{id}"),
             None => {
                 url = tauri::Url::parse("https://drive.google.com/drive/search").unwrap();
-                url.query_pairs_mut().append_pair("q", &w.drive);
+                url.query_pairs_mut().append_pair("q", &w.name);
             }
         },
     }
@@ -502,9 +508,8 @@ pub fn open_backup(app: AppHandle, source: Source) -> Result<(), String> {
         crate::open_external(dir.ok_or("The backup folder isn't there. If it's on a drive, connect it.")?);
         return Ok(());
     }
-    let campaign = backup::backup_name(&s, &s.vault_path);
     let config = app.path().app_config_dir().ok();
-    let drive_id = config.and_then(|dir| cloud::drive_folder_id(&dir, &s.google_user, &campaign));
+    let drive_id = config.and_then(|dir| cloud::drive_folder_id(&dir, &s.google_user, &w.name));
     crate::open_external(web_page(source, &s, &w, drive_id.as_deref()));
     Ok(())
 }
@@ -579,8 +584,13 @@ mod tests {
         assert_eq!(under_root("Cursed/Vex.md", "Curse"), None, "a name that only starts the same isn't inside");
         assert_eq!(under_root("Curse", "Curse"), None);
         assert_eq!(under_root("Curse/", "Curse"), None);
-        let files = vec![("A/x.md".to_string(), 1), ("B/y.md".to_string(), 2)];
+        // A GitHub backup: only the campaign's folder, never another's or old files at the top.
+        let files = vec![("A/x.md".to_string(), 1), ("B/y.md".to_string(), 2), ("README.md".to_string(), 3), ("Ab/z.md".to_string(), 4)];
         assert_eq!(rooted(files, "A"), vec![("x.md".to_string(), 1)]);
+        // A Dropbox listing of the campaign's folder, whatever case Dropbox shows it in.
+        assert_eq!(inside_folder("/Strahd/NPCs/Vex.md"), Some("NPCs/Vex.md"));
+        assert_eq!(inside_folder("/strahd/Vex.md"), Some("Vex.md"));
+        assert_eq!(inside_folder("/Strahd"), None);
     }
 
     #[test]
@@ -619,29 +629,30 @@ mod tests {
         };
         let other = Settings { vault_path: path(&side), ..main.clone() };
 
-        // Every campaign, the first one too, backs up to places named after it.
-        let w = places(&main);
-        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str(), w.campaign.as_str()),
-            (path(&backups.join("Lore")).as_str(), "lorekeeper-notes-lore", "Campaigns/Lore", "Lorekeeper - Lore", "Lore"));
-        // Another campaign: its own places.
-        let w = places(&other);
-        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups.join("Side")).as_str(), "lorekeeper-notes-side", "Campaigns/Side", "Lorekeeper - Side"));
-        // A backup name of your own moves every place.
-        let named = Settings { backup_names: [(path(&side), "Curse of Strahd".to_string())].into(), ..other.clone() };
-        let w = places(&named);
-        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str(), w.campaign.as_str()),
-            (path(&backups.join("Curse of Strahd")).as_str(), "lorekeeper-notes-curse-of-strahd", "Campaigns/Curse of Strahd", "Lorekeeper - Curse of Strahd", "Side"));
-        let w = places(&Settings { backup_names: [(path(&lore), "Phandelver".to_string())].into(), ..main.clone() });
-        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str()), (path(&backups.join("Phandelver")).as_str(), "lorekeeper-notes-phandelver", "Campaigns/Phandelver"));
+        // Every campaign, the first one too, is a folder named after it in each backup.
+        let places_of = |s: &Settings| {
+            let w = places(s);
+            [w.campaign, w.name, w.folder, w.repo, w.dropbox, w.drive]
+        };
+        assert_eq!(places_of(&main), ["Lore", "Lore", path(&backups.join("Lore")).as_str(), "lorekeeper-notes/Lore", "Lore", "Lorekeeper/Lore"]);
+        // Another campaign: its own folders, next to the first one's.
+        assert_eq!(places_of(&other), ["Side", "Side", path(&backups.join("Side")).as_str(), "lorekeeper-notes/Side", "Side", "Lorekeeper/Side"]);
+        // A backup name of your own moves every place, and a repository of your own is shared the same way.
+        let named = Settings { backup_names: [(path(&side), "Curse of Strahd".to_string())].into(), github_repo: "dnd".into(), ..other.clone() };
+        assert_eq!(places_of(&named), ["Side", "Curse of Strahd", path(&backups.join("Curse of Strahd")).as_str(), "dnd/Curse of Strahd", "Curse of Strahd", "Lorekeeper/Curse of Strahd"]);
+        let named_main = Settings { backup_names: [(path(&lore), "Lorekeeper".to_string()), (path(&side), "Strahd".to_string())].into(), ..main.clone() };
+        assert_eq!(places_of(&named_main)[3..], ["lorekeeper-notes/Lorekeeper", "Lorekeeper", "Lorekeeper/Lorekeeper"]);
+        assert_eq!(places_of(&Settings { vault_path: path(&side), ..named_main.clone() })[3..], ["lorekeeper-notes/Strahd", "Strahd", "Lorekeeper/Strahd"]);
 
         // Their pages on the web.
         let signed_in = Settings { github_user: "vex".into(), ..main.clone() };
         let page = |source, s: &Settings, id| web_page(source, s, &places(s), id);
-        assert_eq!(page(Source::Github, &signed_in, None), "https://github.com/vex/lorekeeper-notes-lore");
-        assert_eq!(page(Source::Dropbox, &main, None), "https://www.dropbox.com/home/Apps/Lorekeeper/Campaigns/Lore");
-        assert_eq!(page(Source::Dropbox, &other, None), "https://www.dropbox.com/home/Apps/Lorekeeper/Campaigns/Side");
+        assert_eq!(page(Source::Github, &signed_in, None), "https://github.com/vex/lorekeeper-notes/tree/HEAD/Lore");
+        assert_eq!(page(Source::Github, &Settings { github_user: "vex".into(), ..named.clone() }, None), "https://github.com/vex/dnd/tree/HEAD/Curse%20of%20Strahd");
+        assert_eq!(page(Source::Dropbox, &main, None), "https://www.dropbox.com/home/Apps/Lorekeeper/Lore");
+        assert_eq!(page(Source::Dropbox, &named, None), "https://www.dropbox.com/home/Apps/Lorekeeper/Curse%20of%20Strahd");
         assert_eq!(page(Source::Google, &other, Some("abc123")), "https://drive.google.com/drive/folders/abc123");
-        assert_eq!(page(Source::Google, &other, None), "https://drive.google.com/drive/search?q=Lorekeeper+-+Side");
+        assert_eq!(page(Source::Google, &other, None), "https://drive.google.com/drive/search?q=Side");
 
         for (s, note, other_note) in [(&main, "Vex.md", "Bob.md"), (&other, "Bob.md", "Vex.md")] {
             let w = places(s);

@@ -2,9 +2,9 @@
 //!
 //! Sign-in opens the browser (OAuth authorization code with PKCE, no client secret) and receives the
 //! code on a one-request web server at 127.0.0.1. The refresh token lives in the OS credential store.
-//! A manifest per provider and campaign (cloud-<provider>.json in the config folder for the main
-//! campaign, cloud-<provider>-<campaign>.json for the others) records what was uploaded, so each
-//! backup sends only new and changed files and removes the ones deleted here.
+//! A manifest per provider and campaign (cloud-<provider>-<campaign>.json in the config folder)
+//! records what was uploaded, so each backup sends only new and changed files and removes the ones
+//! deleted here.
 
 use std::{
     borrow::Cow,
@@ -462,9 +462,11 @@ pub struct Uploaded {
 pub struct Manifest {
     /// The account it belongs to; another account starts from scratch.
     pub account: String,
+    /// Where the files went (see place); another place starts from scratch.
+    pub place: String,
     /// Vault path ("NPCs/Vex.md") -> what is there now.
     pub files: BTreeMap<String, Uploaded>,
-    /// Google Drive only: folder path -> id, "" being the Lorekeeper folder.
+    /// Google Drive only: folder path -> id, "" being the campaign's folder.
     pub folders: BTreeMap<String, String>,
 }
 
@@ -473,10 +475,19 @@ fn manifest_file(config_dir: &Path, p: Provider, campaign: &str) -> PathBuf {
     config_dir.join(format!("cloud-{}-{}.json", p.key(), crate::backup::slug(campaign)))
 }
 
-/// The id of a campaign's Google Drive folder, once `account` has backed it up.
+/// Where a campaign's files go: "dropbox:/Strahd", "google:Lorekeeper/Strahd".
+pub fn place(p: Provider, campaign: &str) -> String {
+    match p {
+        Provider::Dropbox => format!("dropbox:{}", dropbox::root(campaign)),
+        Provider::Google => format!("google:{}/{campaign}", gdrive::SHARED),
+    }
+}
+
+/// The id of a campaign's Google Drive folder, once `account` has backed it up there.
 pub fn drive_folder_id(config_dir: &Path, account: &str, campaign: &str) -> Option<String> {
     let m = load_manifest(&manifest_file(config_dir, Provider::Google, campaign));
-    m.folders.get("").filter(|id| m.account == account && !id.is_empty()).cloned()
+    let current = m.account == account && m.place == place(Provider::Google, campaign);
+    m.folders.get("").filter(|id| current && !id.is_empty()).cloned()
 }
 
 fn load_manifest(file: &Path) -> Manifest {
@@ -528,7 +539,8 @@ fn size(bytes: u64) -> String {
 }
 
 /// What a campaign's backup starts from: the vault's files and that campaign's own manifest, so
-/// another campaign's files never look deleted. A manifest from another account starts over.
+/// another campaign's files never look deleted. A manifest from another account, or of files that
+/// went to another place (an older layout, say), starts over: nothing it lists is deleted.
 /// Returns (manifest file, manifest, files, skipped files).
 pub fn prepare(p: Provider, account: &str, config_dir: &Path, vault: &Path, campaign: &str) -> Result<(PathBuf, Manifest, Vec<Local>, Vec<String>), String> {
     // Read the vault first: a missing folder must never turn into deleting everything.
@@ -538,14 +550,16 @@ pub fn prepare(p: Provider, account: &str, config_dir: &Path, vault: &Path, camp
     }
     let file = manifest_file(config_dir, p, campaign);
     let mut m = load_manifest(&file);
-    if !m.account.is_empty() && m.account != account {
+    let place = place(p, campaign);
+    if (!m.account.is_empty() && m.account != account) || m.place != place {
         m = Manifest::default();
     }
     m.account = account.into();
+    m.place = place;
     Ok((file, m, local, skipped))
 }
 
-/// One backup run of a campaign ("" = the main one). What finished is recorded even when the run
+/// One backup run of a campaign. What finished is recorded even when the run
 /// fails partway, so the next one carries on from there. Returns a warning for the status line ("" if none).
 pub fn backup(p: Provider, account: &str, config_dir: &Path, vault: &Path, campaign: &str) -> Result<String, String> {
     let (file, mut m, local, skipped) = prepare(p, account, config_dir, vault, campaign)?;
@@ -553,7 +567,7 @@ pub fn backup(p: Provider, account: &str, config_dir: &Path, vault: &Path, campa
     let plan = diff(&local, &skipped, &m.files);
     let result = match p {
         Provider::Dropbox => dropbox::push(&token, &plan, &mut m, &dropbox::root(campaign)),
-        Provider::Google => gdrive::push(&token, &plan, &mut m, &gdrive::top_folder(campaign)),
+        Provider::Google => gdrive::push(&token, &plan, &mut m, campaign),
     };
     let _ = fs::write(&file, serde_json::to_string_pretty(&m).unwrap_or_default());
     result?;
@@ -577,11 +591,53 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(drive_folder_id(&dir, "a@x", "Side"), None, "no backup yet");
-        let m = Manifest { account: "a@x".into(), folders: [("".to_string(), "abc".to_string())].into(), ..Manifest::default() };
-        fs::write(manifest_file(&dir, Provider::Google, "Side"), serde_json::to_string(&m).unwrap()).unwrap();
+        let file = manifest_file(&dir, Provider::Google, "Side");
+        let m = Manifest { account: "a@x".into(), place: "google:Lorekeeper/Side".into(), folders: [("".to_string(), "abc".to_string())].into(), ..Manifest::default() };
+        fs::write(&file, serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(drive_folder_id(&dir, "a@x", "Side").as_deref(), Some("abc"));
         assert_eq!(drive_folder_id(&dir, "b@x", "Side"), None, "another account");
         assert_eq!(drive_folder_id(&dir, "a@x", ""), None, "another campaign");
+        // A folder from an older layout ("Lorekeeper - Side" in My Drive) isn't this campaign's place now.
+        let old = Manifest { place: String::new(), ..m };
+        fs::write(&file, serde_json::to_string(&old).unwrap()).unwrap();
+        assert_eq!(drive_folder_id(&dir, "a@x", "Side"), None, "an older layout");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_from_another_place_starts_over_and_deletes_nothing() {
+        let dir = std::env::temp_dir().join(format!("dnd-notes-cloud-place-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let (config, vault) = (dir.join("config"), dir.join("Strahd"));
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("Vex.md"), "# Vex").unwrap();
+        assert_eq!((place(Provider::Dropbox, "Strahd"), place(Provider::Google, "Strahd")), ("dropbox:/Strahd".to_string(), "google:Lorekeeper/Strahd".to_string()));
+        assert_ne!(place(Provider::Dropbox, "Strahd"), place(Provider::Dropbox, "Lorekeeper"));
+
+        // Manifests from older layouts (no place, or Campaigns/<name>) list files that aren't in the new place.
+        for (p, old_place) in [(Provider::Dropbox, ""), (Provider::Dropbox, "dropbox:/Campaigns/Strahd"), (Provider::Google, "")] {
+            let old = Manifest {
+                account: "me@x".into(),
+                place: old_place.into(),
+                files: [("Gone.md", "a"), ("Vex.md", "b")].map(|(k, h)| (k.to_string(), Uploaded { hash: h.into(), id: "id1".into() })).into(),
+                folders: [("".to_string(), "old-folder".to_string())].into(),
+            };
+            fs::write(manifest_file(&config, p, "Strahd"), serde_json::to_string(&old).unwrap()).unwrap();
+            let (_, m, local, skipped) = prepare(p, "me@x", &config, &vault, "Strahd").unwrap();
+            assert!(m.files.is_empty() && m.folders.is_empty(), "{old_place:?}");
+            assert_eq!(m.place, place(p, "Strahd"));
+            let plan = diff(&local, &skipped, &m.files);
+            assert!(plan.delete.is_empty(), "nothing at the old place or the new one is deleted");
+            assert_eq!(plan.upload.len(), 1, "everything goes up to the new place");
+        }
+
+        // The current place carries on where it left off.
+        let now = Manifest { account: "me@x".into(), place: place(Provider::Dropbox, "Strahd"), files: [("Vex.md".to_string(), Uploaded { hash: github::git_blob_sha(b"# Vex"), id: String::new() })].into(), ..Manifest::default() };
+        fs::write(manifest_file(&config, Provider::Dropbox, "Strahd"), serde_json::to_string(&now).unwrap()).unwrap();
+        let (_, m, local, skipped) = prepare(Provider::Dropbox, "me@x", &config, &vault, "Strahd").unwrap();
+        let plan = diff(&local, &skipped, &m.files);
+        assert_eq!((m.files.len(), plan.upload.len(), plan.delete.len()), (1, 0, 0));
         fs::remove_dir_all(&dir).unwrap();
     }
 }
