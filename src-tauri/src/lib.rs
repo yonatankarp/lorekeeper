@@ -44,7 +44,7 @@ const TEMPLATES: [(&str, &str); 7] = [
     ("Item", "---\ntype: item\nrarity:\nowner:\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
     ("Faction", "---\ntype: faction\nleader:\nbase:\n---\n# {{title}}\n\n## Goals\n\n## Members\n\n## Notes\n"),
     ("Quest", "---\ntype: quest\nstatus: open\ngiver:\nlocation:\nreward:\nstarted: {{date}}\n---\n# {{title}}\n\n## Objective\n\n## Leads\n\n## Log\n"),
-    ("Lore", "---\ntype: lore\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
+    ("Lore", "---\ntype: lore\ncategory:\nsource:\nlearned: {{date}}\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
 ];
 
 /// The templates every vault had before Templates/.seeded existed.

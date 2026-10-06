@@ -127,7 +127,7 @@ const FOLDER_KINDS = { NPCs: "npc", PCs: "pc", Locations: "location", Items: "it
 export const kindOf = (path) => FOLDER_KINDS[path.split("/")[0]] ?? "note";
 
 /** Icons for well-known properties; a value naming a page shows that page's icon instead. */
-const PROP_ICONS = { reward: "loot", rarity: "item", giver: "npc", leader: "npc", owner: "npc", player: "pc", location: "location", base: "location", region: "location" };
+const PROP_ICONS = { category: "lore", reward: "loot", rarity: "item", giver: "npc", leader: "npc", owner: "npc", player: "pc", location: "location", base: "location", region: "location" };
 
 /** Labels that read better than the property's name. */
 const PROP_LABELS = { player: "Played by", "first-met": "First met" };
