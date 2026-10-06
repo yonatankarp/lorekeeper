@@ -1,11 +1,10 @@
-What's new in 0.5.0:
-- Campaigns: keep several notes folders and switch from the sidebar or tray; each backs up separately
-- Rename a page and every link follows
-- Paste or drop images and maps into your notes
-- Restore a backup from Settings > Backups
-- Note box: press Up to fix your last note; after a long break it offers a new session
+What's new in 0.6.0:
+- Lore pages for gods, history and legends, in their own Lore folder
+- Backup names: give each campaign the name its backups go under
+- Show in Finder, Open in Dropbox, Open in Google Drive and Open on GitHub next to each backup
+- Settings and Open Lorekeeper from the menu bar take you back to your app when closed (macOS)
 
-Also new since 0.3: backups to Dropbox, Google Drive and GitHub, and a quick note returns you to the app you were using.
+Also new since 0.4: campaigns, renaming pages, images and maps, and restoring a backup.
 
 Downloads: macOS `.dmg` (Apple Silicon and Intel), Windows `-setup.exe`, Linux `.AppImage`. Lorekeeper 0.2.0 and later update themselves; the `.tar.gz`, `.sig` and `latest.json` files are for that.
 
