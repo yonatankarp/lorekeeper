@@ -353,6 +353,9 @@ async fn two_players_sync_through_the_server() {
     let (u, r) = (url.clone(), room.room.clone());
     let rogue_token = blocking(move || redeem(&u, &r, &rogue_invite, "")).await.unwrap().token;
     rogue_puts(&room, &rogue_token).await;
+    // A garbage blob planted where a file doesn't exist yet: creating that file later still works.
+    member.write("NPCs/Future.md", "planted over");
+    until("a file created over a planted blob", || owner.read("NPCs/Future.md").as_deref() == Some("planted over")).await;
     until("the good change after the hostile ones", || {
         member.read("NPCs/Good.md").as_deref() == Some("fine") && owner.read("NPCs/Good.md").as_deref() == Some("fine")
     })
@@ -416,14 +419,49 @@ async fn two_players_sync_through_the_server() {
     let again = start(&room, &member_dir, &member_state, &member_token, "Syloth");
     until("a revoked token is refused", || again.rec.last() == Some(Status::Removed)).await;
     owner.stop().await;
+    // No secret is ever written to a state file.
+    for file in [base.join("owner-state.json"), member_state.clone()] {
+        let text = fs::read_to_string(&file).unwrap();
+        for secret in [owner_token.as_str(), member_token.as_str(), &sync_protocol::encode_secret(&room.key)] {
+            assert!(!text.contains(secret), "a secret in {}", file.display());
+        }
+    }
     eprintln!("end-to-end sync test took {:?}", started.elapsed());
+}
+
+/// A map over tungstenite's default 16 MiB frame and the server's 4 MiB page goes both ways: the frame caps are
+/// really raised. Its own test, since moving 17 MiB through a debug build takes a few seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_big_image_syncs() {
+    let base = temp("big");
+    let db = base.with_extension("db");
+    let _cleanup = Cleanup(vec![base.clone(), db.clone()]);
+    let (_server, url) = start_server(&db).await;
+    let (a, b) = (base.join("a"), base.join("b"));
+    fs::create_dir_all(a.join("Attachments")).unwrap();
+    fs::create_dir_all(&b).unwrap();
+    let map: Vec<u8> = (0..17 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    fs::write(a.join("Attachments/map.png"), &map).unwrap();
+    let u = url.clone();
+    let created = blocking(move || create_room(&u, Some(CREATE_KEY))).await.unwrap();
+    let room = Room { server: url.clone(), room: created.room.clone(), key: random_secret() };
+    let owner = start(&room, &a, &base.join("a.json"), &created.owner_token, "");
+    let (u, r, t) = (url.clone(), room.room.clone(), created.owner_token.clone());
+    let invite = blocking(move || create_invite(&u, &r, &t)).await.unwrap().invite;
+    let (u, r) = (url.clone(), room.room.clone());
+    let token = blocking(move || redeem(&u, &r, &invite, "")).await.unwrap().token;
+    let member = start(&room, &b, &base.join("b.json"), &token, "");
+    until("the big image arrives", || fs::read(b.join("Attachments/map.png")).is_ok_and(|m| m == map)).await;
+    member.stop().await;
+    owner.stop().await;
 }
 
 /// A member token's socket that puts what a well-behaved client never would, then one good page.
 async fn rogue_puts(room: &Room, token: &str) {
     let mut req = format!("{}/v1/rooms/{}/live", room.server.replace("http://", "ws://"), room.room).into_client_request().unwrap();
     req.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let config = WebSocketConfig::default().max_message_size(Some(MAX_FRAME)).max_frame_size(Some(MAX_FRAME));
+    let (mut ws, _) = tokio_tungstenite::connect_async_with_config(req, Some(config), true).await.unwrap();
     let send = |msg: ClientMessage| Message::Text(serde_json::to_string(&msg).unwrap().into());
     ws.send(send(ClientMessage::Hello { since: 0, member: String::new() })).await.unwrap();
     // The current version of every file, to aim the server-side delete and the garbage overwrite.
@@ -451,6 +489,8 @@ async fn rogue_puts(room: &Room, token: &str) {
     puts.push((other.clone(), sealed(&other, "NPCs/Real.md", "pwned")));
     // Garbage that isn't a blob for this room at all.
     puts.push((file_id(&key, "NPCs/garbage.md"), encode_blob(&[7u8; 200])));
+    // Garbage where a file will be created later.
+    puts.push((file_id(&key, "NPCs/Future.md"), encode_blob(&[5u8; 200])));
     // Garbage over a file everyone has, and the server's own delete of another.
     let lorelei = file_id(&key, "PCs/Lorelei.md");
     puts.push((lorelei.clone(), encode_blob(&[9u8; 200])));

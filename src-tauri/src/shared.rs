@@ -234,17 +234,33 @@ fn removed(app: &AppHandle, path: &str) {
 /// Keeps the webview from changing a campaign's room (only Share and Join set it), and leaves the room of a joined
 /// campaign you remove from Lorekeeper. The owner's secrets stay: they're the only way to invite or remove players.
 pub(crate) fn guard_settings(app: &AppHandle, old: &Settings, new: &mut Settings) {
+    for room in guard(old, new) {
+        let app = app.clone();
+        std::thread::spawn(move || forget_room(&app, &room));
+    }
+}
+
+/// See guard_settings; returns the rooms to forget. A save from a window that hadn't heard of a campaign yet (no
+/// sharing entry for it) can't drop or leave it: its entry and its place in the list come back.
+fn guard(old: &Settings, new: &mut Settings) -> Vec<String> {
     for (path, sh) in new.sharing.iter_mut() {
         let o = old.sharing.get(path).cloned().unwrap_or_default();
         (sh.server, sh.room, sh.role, sh.removed) = (o.server, o.room, o.role, o.removed);
     }
-    for path in old.campaigns.iter().filter(|p| !new.campaigns.contains(p)) {
-        if let Some(sh) = new.sharing.get_mut(path).filter(|sh| sh.role == "member" && !sh.room.is_empty()) {
-            let room = std::mem::take(&mut sh.room);
-            let app = app.clone();
-            std::thread::spawn(move || forget_room(&app, &room));
+    let mut forget = Vec::new();
+    let dropped: Vec<&String> = old.campaigns.iter().filter(|p| !new.campaigns.contains(p)).collect();
+    for path in dropped {
+        match new.sharing.get_mut(path) {
+            Some(sh) if sh.role == "member" && !sh.room.is_empty() => forget.push(std::mem::take(&mut sh.room)),
+            Some(_) => {}
+            None if old.sharing.get(path).is_some_and(|sh| !sh.room.is_empty()) => new.campaigns.push(path.clone()),
+            None => {}
         }
     }
+    for (path, sh) in &old.sharing {
+        new.sharing.entry(path.clone()).or_insert_with(|| sh.clone());
+    }
+    forget
 }
 
 // ---------- commands for the windows ----------
@@ -448,16 +464,71 @@ pub(crate) async fn sync_join(app: AppHandle, link: String) -> Result<String, St
     let name = sync::fetch_name(&server, &room, &key, &token).await.unwrap_or_else(|| "Shared campaign".into());
     let library = library_dir(&app);
     let s = current_settings(&app);
-    let taken = |p: &Path| {
-        let folder = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-        p.exists() || s.campaigns.iter().any(|c| crate::backup::campaign_name(c).to_lowercase() == folder)
+    // The first free folder whose name also passes the campaign checks (names and backup names must differ).
+    let with = |p: &Path| {
+        let mut s = s.clone();
+        let path = p.to_string_lossy().into_owned();
+        s.campaigns.push(path.clone());
+        s.sharing.insert(path, Sharing { shared: true, server: server.clone(), room: room.clone(), role: "member".into(), ..Sharing::default() });
+        s
     };
-    let folder = (1..).map(|n| library.join(if n == 1 { name.clone() } else { format!("{name} {n}") })).find(|p| !taken(p)).expect("a free name");
-    fs::create_dir_all(&folder).map_err(|e| format!("Couldn't make the campaign's folder: {e}"))?;
-    let path = folder.to_string_lossy().into_owned();
-    let mut s = s.clone();
-    s.campaigns.push(path.clone());
-    s.sharing.insert(path.clone(), Sharing { shared: true, me: String::new(), server, room, role: "member".into(), removed: false });
+    let s = (1..=100)
+        .map(|n| library.join(if n == 1 { name.clone() } else { format!("{name} {n}") }))
+        .filter(|p| !p.exists())
+        .map(|p| with(&p))
+        .find(|s| crate::backup::check_campaigns(s).is_ok())
+        .ok_or("Couldn't find a free folder name for the campaign.")?;
+    let path = s.campaigns.last().expect("just added").clone();
+    fs::create_dir_all(&path).map_err(|e| format!("Couldn't make the campaign's folder: {e}"))?;
     store_settings(&app, &s)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synced(role: &str, room: &str) -> Sharing {
+        Sharing { shared: true, server: "https://lorekeeper.yonatankarp.com".into(), room: room.into(), role: role.into(), ..Sharing::default() }
+    }
+
+    #[test]
+    fn the_settings_window_cant_redirect_or_drop_a_room() {
+        let old = Settings {
+            campaigns: vec!["/a".into(), "/b".into(), "/c".into()],
+            sharing: [("/a".into(), synced("owner", "rooma")), ("/b".into(), synced("member", "roomb")), ("/c".into(), synced("member", "roomc"))].into(),
+            ..Settings::default()
+        };
+        // A window tries to point a room at another server, take over another room, and make itself the owner.
+        let mut new = old.clone();
+        new.sharing.insert("/a".into(), Sharing { server: "https://evil.example".into(), room: "other".into(), ..synced("member", "") });
+        new.sharing.insert("/b".into(), Sharing { role: "owner".into(), removed: true, me: "PCs/Arn.md".into(), ..synced("member", "roomb") });
+        assert!(guard(&old, &mut new).is_empty());
+        assert_eq!(new.sharing["/a"], synced("owner", "rooma"));
+        assert_eq!(new.sharing["/b"], Sharing { me: "PCs/Arn.md".into(), ..synced("member", "roomb") }, "only shared and me are the window's");
+
+        // Removing a joined campaign leaves its room; removing your own keeps it (the owner token can't be replaced).
+        let mut new = Settings { campaigns: vec!["/c".into()], ..old.clone() };
+        assert_eq!(guard(&old, &mut new), ["roomb"]);
+        assert_eq!(new.sharing["/b"].room, "");
+        assert_eq!(new.sharing["/a"].room, "rooma");
+
+        // A window that hadn't heard of a campaign (no entry for it) can't drop it or leave it.
+        let mut stale = Settings { campaigns: vec!["/a".into(), "/b".into()], sharing: old.sharing.clone(), ..old.clone() };
+        stale.sharing.remove("/c");
+        assert!(guard(&old, &mut stale).is_empty());
+        assert!(stale.campaigns.contains(&"/c".to_string()));
+        assert_eq!(stale.sharing["/c"], synced("member", "roomc"));
+    }
+
+    #[test]
+    fn a_pasted_invite_says_which_server_its_for() {
+        let link = |server: &str| Invite { server: server.into(), room: sync_protocol::random_id(), invite: sync_protocol::random_id(), key: [1; 32] }.link();
+        let default = sync_check_invite(link(sync::DEFAULT_SERVER)).unwrap();
+        assert!(default.is_default);
+        let other = sync_check_invite(link("https://sync.example.org")).unwrap();
+        assert_eq!((other.server.as_str(), other.is_default), ("https://sync.example.org", false));
+        assert!(sync_check_invite(link("https://lorekeeper.yonatankarp.com.evil.example")).is_ok_and(|c| !c.is_default));
+        assert!(sync_check_invite("https://example.org/not-an-invite".into()).is_err());
+    }
 }

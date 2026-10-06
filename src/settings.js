@@ -426,6 +426,7 @@ $("join-go").addEventListener("click", async () => {
   try {
     const path = await invoke("sync_join", { link: joinChecked });
     $("join-dialog").close();
+    render(await invoke("get_settings")); // the joined campaign, before anything saves on top of older settings
     await addCampaign(path); // opens it: the download starts
     syncErrors.set(path, "Downloading the campaign. Then pick the character you play under I play.");
     render(current);

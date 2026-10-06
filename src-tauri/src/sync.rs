@@ -265,7 +265,12 @@ struct Push {
     paused_until: Option<tokio::time::Instant>,
     /// The server refused more files (room full): nothing more is sent.
     blocked: bool,
+    /// Conflicts per path since its last ack; past MAX_RETRIES the path waits for the next connection, so a
+    /// server that keeps answering conflict can't make the engine spin.
+    retries: HashMap<String, u32>,
 }
+
+const MAX_RETRIES: u32 = 5;
 
 struct Core {
     cfg: Config,
@@ -490,7 +495,9 @@ impl Core {
                 names.sort_by_key(|n| n.to_lowercase());
                 self.sink.presence(&names);
             }
-            ServerMessage::Ack { req, seq } => match s.inflight.remove(&req) {
+            ServerMessage::Ack { req, seq } => match s.inflight.remove(&req).inspect(|f| {
+                s.retries.remove(f.path());
+            }) {
                 Some(Flight::Put { path, hash, len }) => {
                     let id = file_id(&self.cfg.key, &path);
                     if self.seen.get(&id).is_none_or(|&s| s < seq) {
@@ -511,8 +518,30 @@ impl Core {
             },
             ServerMessage::Conflict { req, seq, blob } => {
                 if let Some(f) = s.inflight.remove(&req) {
-                    let id = file_id(&self.cfg.key, f.path());
-                    self.apply(Change { id, seq, blob }, false)?;
+                    let path = f.path().to_string();
+                    let id = file_id(&self.cfg.key, &path);
+                    self.apply(Change { id: id.clone(), seq, blob }, false)?;
+                    // Whatever that version was (even one not from the party, or one already seen), the next push
+                    // builds on it.
+                    match self.state.files.get_mut(&path) {
+                        Some(e) if e.seq < seq => {
+                            e.seq = seq;
+                            if !e.gone {
+                                e.hash = UNSYNCED.into();
+                            }
+                        }
+                        Some(_) => {}
+                        None => {
+                            let entry = Entry { id, seq, hash: UNSYNCED.into(), len: 0, gone: false };
+                            self.state.files.insert(path.clone(), entry);
+                        }
+                    }
+                    self.dirty = true;
+                    let retries = s.retries.entry(path).or_default();
+                    *retries += 1;
+                    if *retries > MAX_RETRIES {
+                        self.warn("A file keeps conflicting on the sync server; it waits until the next connection.");
+                    }
                     s.rescan = true; // what's still different here goes again, over the newer version
                 }
             }
@@ -555,6 +584,9 @@ impl Core {
         }
         while s.paused_until.is_none() && s.inflight.len() < WINDOW {
             let Some(path) = s.queue.pop_front() else { break };
+            if s.retries.get(&path).is_some_and(|&n| n > MAX_RETRIES) {
+                continue;
+            }
             let req = s.next_req;
             if let Some((msg, flight)) = self.prepare(&path, req) {
                 if send(ws, &msg).await.is_err() {
@@ -574,7 +606,9 @@ impl Core {
             return Ok(Vec::new());
         }
         let mut disk = BTreeMap::new();
-        walk(&self.root, "", &mut disk);
+        if walk(&self.root, "", &mut disk) > 0 {
+            self.warn("Some pages or images have names that don't work on every computer (a ? or :, or a name like CON) and stay on this computer only.");
+        }
         if disk.len() > MAX_FILES {
             return Err(End::Fatal("The campaign has more files than sync handles (20,000).".into()));
         }
@@ -603,7 +637,7 @@ impl Core {
         self.cache.retain(|rel, _| disk.contains_key(rel));
         // A synced metadata file that's gone means this may not be the campaign's real folder (a drive that isn't
         // mounted, an emptied folder): never turn that into deleting everyone's files.
-        let lost_metadata = self.state.files.contains_key(METADATA) && !disk.contains_key(METADATA);
+        let lost_metadata = self.state.files.get(METADATA).is_some_and(|e| !e.gone) && !disk.contains_key(METADATA);
         if lost_metadata {
             self.warn("The campaign folder looks incomplete, so deletions aren't synced.");
         } else {
@@ -636,7 +670,7 @@ impl Core {
             }
             // Deleted here: an encrypted tombstone, never the server's own delete (which anyone with a token
             // could send, so other players ignore it).
-            Ok(Local::Missing) if entry.is_some_and(|e| !e.gone) && self.root.is_dir() => {
+            Ok(Local::Missing) if entry.is_some_and(|e| !e.gone) && self.root.is_dir() && path != METADATA => {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
                 let blob = encode_blob(&seal(&self.cfg.key, &self.cfg.room, &id, &FileContent::tombstone(path, now)));
                 Some((ClientMessage::Put { req, id, base, blob }, Flight::Delete { path: path.to_string() }))
@@ -650,17 +684,21 @@ impl Core {
     fn apply(&mut self, c: Change, advance: bool) -> Result<(), End> {
         if self.seen.get(&c.id).is_none_or(|&seen| seen < c.seq) {
             let result = match c.blob.as_deref().map(|blob| self.open_blob(&c.id, blob)) {
-                Some(Some(file)) if file.deleted => self.remote_delete(&file.path, &c.id, c.seq),
-                Some(Some(file)) => self.remote_put(file, &c.id, c.seq),
+                Some(Some(file)) if !file.deleted => self.remote_put(file, &c.id, c.seq),
+                // The metadata file is never deleted: joiners need it, and its absence pauses deletions.
+                Some(Some(file)) if file.path != METADATA => self.remote_delete(&file.path, &c.id, c.seq),
                 // Not sealed by the party: a server-side delete (anyone with a token can send one) or a blob that
                 // doesn't open. Local files stay as they are, and yours goes back up over it.
                 untrusted => {
                     if untrusted.is_none() {
                         self.warn("Ignored a deletion that didn't come from anyone in the party.");
                     }
-                    if let Some(e) = self.state.files.values_mut().find(|e| e.id == c.id && !e.gone) {
-                        (e.seq, e.hash) = (c.seq, UNSYNCED.into());
-                        self.repair = true;
+                    if let Some(e) = self.state.files.values_mut().find(|e| e.id == c.id) {
+                        e.seq = c.seq;
+                        if !e.gone {
+                            e.hash = UNSYNCED.into();
+                            self.repair = true;
+                        }
                     }
                     Ok(())
                 }
@@ -913,21 +951,27 @@ async fn send(ws: &mut Ws, msg: &ClientMessage) -> Result<(), tungstenite::Error
 }
 
 /// Every file under `root` that syncs, with its size and time. Symlinks are skipped, never followed.
-fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, (u64, SystemTime)>) {
+/// Returns how many pages and images were left out for their names alone.
+fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, (u64, SystemTime)>) -> usize {
+    let mut unsafe_names = 0;
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
         let (Ok(kind), Some(name)) = (entry.file_type(), entry.file_name().to_str().map(str::to_owned)) else { continue };
         let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
         if kind.is_dir() {
             let wanted = rel == ".lorekeeper" || (!name.starts_with('.') && rel != "Templates");
             if wanted && out.len() <= MAX_FILES {
-                walk(&entry.path(), &rel, out);
+                unsafe_names += walk(&entry.path(), &rel, out);
             }
         } else if kind.is_file() && syncs(&rel) {
             if let Ok(meta) = entry.metadata() {
                 out.insert(rel, (meta.len(), meta.modified().unwrap_or(UNIX_EPOCH)));
             }
+        } else if kind.is_file() && !name.starts_with('.') && !is_conflict_copy(&name) {
+            let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+            unsafe_names += usize::from(ext == "md" || crate::IMAGE_EXTS.contains(&ext.as_str()));
         }
     }
+    unsafe_names
 }
 
 #[cfg(unix)]

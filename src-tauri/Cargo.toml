@@ -53,6 +53,15 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+# Sync's crypto and encoding at full speed in debug builds and tests too: unoptimized, a 20 MB portrait takes seconds.
+[profile.dev.package]
+chacha20 = { opt-level = 3 }
+poly1305 = { opt-level = 3 }
+blake3 = { opt-level = 3 }
+data-encoding = { opt-level = 3 }
+serde_json = { opt-level = 3 }
+tungstenite = { opt-level = 3 }
+
 [profile.release]
 codegen-units = 1
 lto = true
