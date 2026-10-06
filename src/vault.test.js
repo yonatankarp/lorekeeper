@@ -54,6 +54,9 @@ test("frontmatter, search, templates, names", () => {
   assert.equal(fillTemplate("# {{title}}\nMet {{date}}, {{title}}", "Bob", "2026-10-04"), "# Bob\nMet 2026-10-04, Bob");
   assert.equal(folderFor("NPC", ["NPCs", "PCs"]), "NPCs");
   assert.equal(folderFor("Monster", ["NPCs"]), "");
+  assert.equal(folderFor("Lore", ["NPCs", "Lore"]), "Lore");
+  assert.equal(folderFor("lore", ["LORE"]), "LORE");
+  assert.equal(folderFor("Item", ["Item", "Items"]), "Items");
   assert.equal(badName("Mirela"), "");
   assert.ok(badName("a/b"));
   assert.ok(badName("[[x]]"));
@@ -95,12 +98,13 @@ test("recently mentioned: pages linked from the last two sessions, most mentione
   const vault = [
     { path: "Sessions/Session 1.md", content: "- [[Old Town]] [[Old Town]] [[Old Town]]" }, // too old
     { path: "Sessions/Session 2.md", content: "- @[[Mirela]] at [[Phandalin]]\n- [[The Crows|crows]] [[Nobody]] [[Pip]]" },
-    { path: "Sessions/Session 10.md", content: "- [[mirela]] lied, [[Crow Signet]]\n- [[Phandalin#Inn|inn]] [[Mirela]]" },
+    { path: "Sessions/Session 10.md", content: "- [[mirela]] lied, [[Crow Signet]]\n- [[Phandalin#Inn|inn]] [[Mirela]] [[The Old Gods]]" },
     { path: "NPCs/Mirela.md", content: "" },
     { path: "Locations/Phandalin.md", content: "" },
     { path: "Locations/Old Town.md", content: "" },
     { path: "Items/Crow Signet.md", content: "" },
     { path: "Factions/The Crows.md", content: "" },
+    { path: "Lore/The Old Gods.md", content: "" },
     { path: "PCs/Pip.md", content: "" }, // the party isn't "mentioned"
   ];
   assert.deepEqual(sessionPaths(vault), ["Sessions/Session 10.md", "Sessions/Session 2.md", "Sessions/Session 1.md"]);
@@ -109,6 +113,7 @@ test("recently mentioned: pages linked from the last two sessions, most mentione
     { path: "Locations/Phandalin.md", kind: "location", count: 2 },
     { path: "Items/Crow Signet.md", kind: "item", count: 1 },
     { path: "Factions/The Crows.md", kind: "faction", count: 1 },
+    { path: "Lore/The Old Gods.md", kind: "lore", count: 1 },
   ]);
   assert.equal(recentlyMentioned(vault, 2).length, 2);
   assert.deepEqual(recentlyMentioned([]), []);

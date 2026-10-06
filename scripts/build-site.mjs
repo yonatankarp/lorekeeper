@@ -101,7 +101,7 @@ ${[["@", "npc", "NPC"], ["#", "loot", "Loot"], ["!", "quest", "Quest"], ["?", "m
 </ul>`,
   ],
   ["session", "Sessions as a timeline", `<p>Every note keeps its time, so a session reads like the tale it was. <strong>Copy for D&amp;D Beyond</strong> turns it into a tidy recap for the party's shared journal.</p>`],
-  ["location", "The campaign vault", `<p>NPCs, PCs, places, items, factions and quests, joined by <code>[[links]]</code> with backlinks on every page. It's all plain Markdown, so Obsidian opens it as a vault.</p>`],
+  ["location", "The campaign vault", `<p>NPCs, PCs, places, items, factions, quests and lore, joined by <code>[[links]]</code> with backlinks on every page. It's all plain Markdown, so Obsidian opens it as a vault.</p>`],
   ["loot", "Backups, your way", `<p>To a folder, Dropbox, Google Drive or a private GitHub repository, straight from your computer to your own account. No servers, no accounts, <a href="PRIVACY.html">no analytics</a>.</p>`],
   ["home", "Tome or Dungeon", `<p>Aged parchment and red rubrics by day, torchlit stone and candle gold by night, set in the 5e book fonts. It follows your system, or pick one.</p>`],
 ];

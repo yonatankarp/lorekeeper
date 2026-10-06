@@ -461,7 +461,8 @@ async function refresh() {
 
 // ---------- new page ----------
 
-const TYPES = ["NPC", "PC", "Location", "Item", "Faction", "Quest"]; // built in: the vault gets their templates and folders
+const FOLDERS = { NPC: "NPCs", PC: "PCs", Location: "Locations", Item: "Items", Faction: "Factions", Quest: "Quests", Lore: "Lore" };
+const TYPES = Object.keys(FOLDERS); // built in: the vault gets their templates and folders
 let lastType = "Note"; // what "+ New page" offers first: the type last created, until restart
 let newFrom = ""; // the folder the dialog was opened from, where a Note goes
 
@@ -475,8 +476,8 @@ function newTypes() {
 /** The type whose pages live in `folder` ("NPCs" holds NPC pages), or "". */
 const typeFor = (folder) => newTypes().find((t) => t !== "Note" && folderFor(t, [folder])) ?? "";
 
-/** Where a new page goes: its type's plural folder (created for a built-in type), else the vault root; a Note goes where the dialog was opened. */
-const folderOf = (type) => (type === "Note" ? newFrom : folderFor(type, vault.folders) || (TYPES.includes(type) ? `${type}s` : ""));
+/** Where a new page goes: its type's folder (created for a built-in type), else the vault root; a Note goes where the dialog was opened. */
+const folderOf = (type) => (type === "Note" ? newFrom : folderFor(type, vault.folders) || (FOLDERS[type] ?? ""));
 
 const templateOf = (type) => templates.find((t) => baseName(t.path).toLowerCase() === type.toLowerCase());
 const chosenType = () => $("new-chips").querySelector("input:checked")?.value ?? "Note";

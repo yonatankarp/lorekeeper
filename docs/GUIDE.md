@@ -41,7 +41,7 @@ If the current session's last note is over 12 hours old, the box offers the next
 ## After the game
 
 - **Sessions** open as a **Timeline** (every note with its time). **Journal** shows them grouped the way **Copy for D&D Beyond** pastes them. Open quests are listed at the top.
-- **+ New page** (`⌘N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
+- **+ New page** (`⌘N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest, Lore or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
 - **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
 - **Edit** (`⌘E`) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
 - **Rename** (`F2`) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
@@ -54,10 +54,12 @@ If the current session's last note is over 12 hours old, the box offers the next
 Notes are plain Markdown in `Documents/Lorekeeper` (change it in **Settings > General**):
 
 ```
-Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Templates/
+Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Lore/  Templates/
 ```
 
-`Templates/` holds the starting text for new pages (Obsidian's `{{title}}` and `{{date}}` work). Edit them in Obsidian or any editor.
+`Lore/` is for anything that isn't a person, place or thing: gods, history, legends.
+
+`Templates/` holds the starting text for new pages (Obsidian's `{{title}}` and `{{date}}` work). Edit them in Obsidian or any editor. A template of your own, say `Templates/Monster.md`, adds **Monster** to **+ New page**; its pages go into a `Monsters` or `Monster` folder if you make one.
 
 **Obsidian:** open the notes folder as a vault (or put it inside an existing vault) and the **Obsidian** button opens pages there. Until then the button shows how.
 

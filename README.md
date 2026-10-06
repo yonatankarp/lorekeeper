@@ -11,7 +11,7 @@ Session notes for D&D players. Jot things down during the game without leaving D
 - **Notes from anywhere:** `⌘⌥N` opens a one-line note box over any app; `⌘⇧S` saves the text you selected.
 - **Notes sort themselves:** start with `@` NPC, `#` loot, `!` quest, `?` mystery or `"` quote.
 - **Sessions as a timeline,** and **Copy for D&D Beyond** for the shared journal.
-- **A campaign vault:** NPCs, PCs, places, items, factions and quests with `[[links]]` and backlinks. Plain Markdown that Obsidian can open.
+- **A campaign vault:** NPCs, PCs, places, items, factions, quests and lore with `[[links]]` and backlinks. Plain Markdown that Obsidian can open.
 - **Backups** to a folder (Google Drive, Dropbox, iCloud, USB) or to GitHub, and **automatic updates**.
 
 ## Download

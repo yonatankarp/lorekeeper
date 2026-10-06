@@ -86,9 +86,11 @@ export function search(query, notes) {
 export const fillTemplate = (template, title, date) =>
   template.replaceAll("{{title}}", title).replaceAll("{{date}}", date);
 
-/** Template "NPC" goes to folder "NPCs" when it exists, else the vault root. */
-export const folderFor = (templateName, folders) =>
-  folders.find((f) => f.toLowerCase() === `${templateName}s`.toLowerCase()) ?? "";
+/** Template "NPC" goes to folder "NPCs", or a folder with its own name ("Lore" to "Lore"), when it exists, else the vault root. */
+export function folderFor(templateName, folders) {
+  const named = (name) => folders.find((f) => f.toLowerCase() === name.toLowerCase());
+  return named(`${templateName}s`) ?? named(templateName) ?? "";
+}
 
 /** A quest page's `status` property, lowercased and unquoted; missing or empty counts as "open". */
 export function questStatus(content) {
@@ -120,9 +122,9 @@ export const party = (notes) =>
     })
     .sort((a, b) => naturally(baseName(a.path), baseName(b.path)));
 
-const MENTIONED = { NPCs: "npc", Locations: "location", Items: "item", Factions: "faction" };
+const MENTIONED = { NPCs: "npc", Locations: "location", Items: "item", Factions: "faction", Lore: "lore" };
 
-/** NPC, Location, Item and Faction pages linked from the latest two sessions: [{ path, kind, count }], most mentioned first. */
+/** NPC, Location, Item, Faction and Lore pages linked from the latest two sessions: [{ path, kind, count }], most mentioned first. */
 export function recentlyMentioned(notes, n = 8) {
   const paths = notes.map((note) => note.path);
   const counts = new Map();

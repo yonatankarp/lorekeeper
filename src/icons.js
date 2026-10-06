@@ -18,6 +18,8 @@ const PATHS = {
   item: `<path d="M6.3 1.5h3.4M7 1.5v4.1a4.5 4.5 0 1 0 2 0V1.5"/><path d="M4 10.5h8"/>`,
   // pennant on a pole
   faction: `<path d="M3.5 14.5v-13M3.5 2.5h9l-2 3 2 3h-9"/>`,
+  // closed tome with a clasp
+  lore: `<path d="M3.5 2.5a1 1 0 0 1 1-1h8v11h-8a1 1 0 0 0 0 2h8"/><path d="M3.5 2.5v11M12.5 6h-2v2.5h2"/>`,
   // page with a folded corner
   note: `<path d="M3.5 1.5h6l3 3v10h-9z"/><path d="M9.5 1.5v3h3M5.5 8h5M5.5 10.5h5"/>`,
   // quest outcomes in the sidebar
