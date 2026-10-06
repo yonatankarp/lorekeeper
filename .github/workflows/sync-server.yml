@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -45,6 +47,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Short commit
         id: sha
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -64,5 +68,8 @@ jobs:
             ghcr.io/yonatankarp/lorekeeper-sync:sha-${{ steps.sha.outputs.short }}
             ghcr.io/yonatankarp/lorekeeper-sync:latest
           labels: org.opencontainers.image.revision=${{ github.sha }}
+          # SLSA provenance and an SBOM, attached to the image as attestations.
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
