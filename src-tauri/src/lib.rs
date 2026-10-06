@@ -39,7 +39,7 @@ mod updater;
 const VAULT_FOLDERS: [&str; 9] = ["Sessions", "PCs", "NPCs", "Locations", "Items", "Factions", "Quests", "Lore", "Templates"];
 
 const TEMPLATES: [(&str, &str); 7] = [
-    ("PC", "---\ntype: pc\nplayer:\nclass:\nrace:\nlevel:\n---\n# {{title}}\n\n## Backstory\n\n## Notes\n"),
+    ("PC", "---\ntype: pc\nplayer:\nclass:\nrace:\nlevel:\nbackground:\nalignment:\nportrait:\ndndbeyond:\n---\n# {{title}}\n\n## Appearance\n\n## Personality\n\n## Goals\n\n## Relationships\n\n## Notes\n"),
     ("NPC", "---\ntype: npc\nrace:\nrole:\nlocation:\nstatus: alive\nfirst-met: {{date}}\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
     ("Location", "---\ntype: location\nregion:\n---\n# {{title}}\n\n## Description\n\n## Notable people\n\n## Notes\n"),
     ("Item", "---\ntype: item\nrarity:\nowner:\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
@@ -58,7 +58,7 @@ const LOGIN_ARG: &str = "--from-login";
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// The notes folder chosen in Settings.
-fn notes_dir(app: &AppHandle) -> PathBuf {
+pub(crate) fn notes_dir(app: &AppHandle) -> PathBuf {
     PathBuf::from(&app.state::<Mutex<Settings>>().lock().unwrap().vault_path)
 }
 
@@ -233,7 +233,7 @@ fn is_image(p: &Path) -> bool {
 }
 
 /// vault_file for images: only plain relative paths with an image extension.
-fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(crate) fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
     let ok = is_image(p) && p.components().all(|c| matches!(c, Component::Normal(_)));
     if ok { Ok(root.join(p)) } else { Err(format!("Not an image in the vault: {rel}")) }
@@ -1328,6 +1328,7 @@ pub fn run() {
             dndbeyond::dndbeyond_status,
             dndbeyond::dndbeyond_lookup,
             dndbeyond::dndbeyond_character,
+            dndbeyond::dndbeyond_portrait,
             restore::restore_list,
             restore::restore_target,
             restore::restore_start,

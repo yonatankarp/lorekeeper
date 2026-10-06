@@ -427,6 +427,7 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 #view hr { margin: 24px 0; }
 #view .session-title::after { margin-top: 10px; }
 .props {
+  display: flow-root; /* holds the floated portrait */
   margin: 0 0 18px;
   padding: 10px 14px;
   border: 1px solid var(--line);
@@ -434,6 +435,9 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
   background: var(--surface-panel);
   font-size: 15px;
 }
+/* A PC's portrait from D&D Beyond, in the stat block's corner. */
+.props-portrait { float: right; margin: 0 0 6px 14px; }
+.props-portrait img { display: block; width: 96px; height: 96px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
 .props dl { display: grid; grid-template-columns: max-content 1fr; align-items: baseline; gap: 2px 16px; margin: 0; }
 /* "Human Barbarian, level 1": the stat block's first line, as under a monster's name. */
 .props-summary { margin: 0; font-style: italic; color: var(--accent-text); }

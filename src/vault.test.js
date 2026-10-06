@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
+  backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
 } from "./vault.js";
 
@@ -221,4 +221,23 @@ test("D&D Beyond characters find their PC page and update only what they own", (
 test("the D&D Beyond row is labelled", () => {
   const rows = shownProps([["dndbeyond", "https://www.dndbeyond.com/characters/5"]], [], "pc").rows;
   assert.deepEqual(rows.map((r) => [r.key, r.label, r.path]), [["dndbeyond", "D&D Beyond", ""]]);
+});
+
+test("fillSection writes only into an empty section, adding a missing one before Notes", () => {
+  const md = "# Demus\n\n## Appearance\n\n## Personality\nGrumpy.\n\n## Notes\n- hi\n";
+  assert.equal(fillSection(md, "Appearance", "Tall."), "# Demus\n\n## Appearance\n\nTall.\n\n## Personality\nGrumpy.\n\n## Notes\n- hi\n");
+  assert.equal(fillSection(md, "Personality", "Kind."), md, "written already: left alone");
+  assert.equal(fillSection(md, "Goals", "Gold."), "# Demus\n\n## Appearance\n\n## Personality\nGrumpy.\n\n## Goals\n\nGold.\n\n## Notes\n- hi\n");
+  assert.equal(fillSection("# A\n", "Goals", "Gold."), "# A\n\n## Goals\n\nGold.\n");
+  assert.equal(fillSection(md, "Goals", ""), md);
+  assert.equal(fillSection("# A\r\n\r\n## Goals\r\n", "Goals", "Gold."), "# A\r\n\r\n## Goals\r\n\r\nGold.\r\n");
+});
+
+test("characterProps sets background, alignment and a portrait only when there is none", () => {
+  const c = { race: "Human", classes: "Barbarian (Berserker)", level: 1, background: "Folk Hero", alignment: "Chaotic Good", url: "https://www.dndbeyond.com/characters/5", player: "x", appearance: "Tall.", personality: "**Ideals:** Family." };
+  const page = "---\ntype: pc\nplayer: Ofer\nportrait:\n---\n# Demus\n\n## Appearance\n\n## Notes\n";
+  const out = characterProps(page, c, "Attachments/Demus.jpg");
+  assert.match(out, /^---\ntype: pc\nplayer: Ofer\nportrait: "\[\[Attachments\/Demus\.jpg\]\]"\nrace: Human\nclass: Barbarian \(Berserker\)\nlevel: 1\nbackground: Folk Hero\nalignment: Chaotic Good\ndndbeyond: /);
+  assert.match(out, /## Appearance\n\nTall\.\n\n## Personality\n\n\*\*Ideals:\*\* Family\.\n\n## Notes\n/);
+  assert.match(characterProps(out, c, "Attachments/Demus 2.jpg"), /portrait: "\[\[Attachments\/Demus\.jpg\]\]"/, "an existing portrait stays");
 });

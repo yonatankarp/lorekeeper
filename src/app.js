@@ -128,6 +128,10 @@ const prettyDate = (v) =>
 /** A page's properties, as a small stat block: see shownProps. */
 function propsHtml(props, path) {
   const shown = shownProps(props, paths(), kindOf(path));
+  // A portrait ("[[Attachments/Demus.jpg]]" or a plain path) shows as a picture in the corner, not as a row.
+  const pic = shown.rows.find((r) => r.key === "portrait");
+  shown.rows = shown.rows.filter((r) => r !== pic);
+  const portrait = pic ? `<div class="props-portrait">${imageHtml(pic.value.replace(/^!?\[\[|\]\]$/g, "").split("|")[0], baseName(path))}</div>` : "";
   const rows = shown.rows.map(({ key, label, value, icon: name, path }) => {
     let html;
     if (key === "status" || key === "rarity") {
@@ -148,7 +152,7 @@ function propsHtml(props, path) {
     return `<dt>${escape(label)}</dt><dd>${html}</dd>`;
   });
   const sum = shown.summary ? `<p class="props-summary">${icon(kindOf(path))}${escape(shown.summary)}</p>` : "";
-  return sum || rows.length ? `<div class="props">${sum}${rows.length ? `<dl>${rows.join("")}</dl>` : ""}</div>` : "";
+  return portrait || sum || rows.length ? `<div class="props">${portrait}${sum}${rows.length ? `<dl>${rows.join("")}</dl>` : ""}</div>` : "";
 }
 
 // ---------- sidebar ----------
@@ -643,6 +647,17 @@ async function replayImport(changes, back) {
 }
 
 /**
+ * Saves a character's D&D Beyond portrait as Attachments/<name>.<ext> when the page has none yet, and returns its path
+ * ("" when there's nothing to save or it failed: a missing portrait never stops an import).
+ * ponytail: undoing an import leaves a downloaded portrait in Attachments/; remove it by hand if you want.
+ */
+async function savePortrait(c, md, name) {
+  const has = splitFrontmatter(md).props.some(([k, v]) => k.toLowerCase() === "portrait" && v.replace(/^["']|["']$/g, "").trim());
+  if (!c.portrait || has) return "";
+  return invoke("dndbeyond_portrait", { url: c.portrait, stem: `${ATTACHMENTS}/${name}` }).catch(() => "");
+}
+
+/**
  * Writes characters into their PC pages (see pcPageFor and characterProps), making the ones that are missing from the PC
  * template, as one undoable action. Returns the pages written and the characters that failed.
  */
@@ -657,7 +672,8 @@ async function importCharacters(chars) {
       const page = pcPageFor(c, vault.notes);
       if (page) {
         const before = note(page).content;
-        await rewrite(page, (md) => characterProps(md, c));
+        const portrait = await savePortrait(c, before, name);
+        await rewrite(page, (md) => characterProps(md, c, portrait));
         if (note(page).content !== before) changes.push([page, before, note(page).content]);
         continue;
       }
@@ -666,7 +682,7 @@ async function importCharacters(chars) {
       let path = `${folder}/${name}.md`;
       if (taken(path)) path = `${folder}/${name} (${c.id}).md`; // a page of that name belongs to another character
       const tpl = templateOf("PC");
-      const content = characterProps(tpl ? fillTemplate(tpl.content, name, today()) : `# ${name}\n\n`, c);
+      const content = characterProps(tpl ? fillTemplate(tpl.content, name, today()) : `# ${name}\n\n`, c, await savePortrait(c, "", name));
       await invoke("create_file", { path, content });
       vault.notes.push({ path, content });
       changes.push([path, "", content]);
@@ -718,7 +734,9 @@ async function refreshCharacter(path, button) {
   try {
     const c = await invoke("dndbeyond_character", { id: Number(id) });
     const before = note(path).content;
-    await rewrite(path, (md) => characterProps(md, c));
+    const portrait = await savePortrait(c, before, name);
+    await rewrite(path, (md) => characterProps(md, c, portrait));
+    if (portrait) await refresh(); // the new picture has to be in the vault's image list to show
     const after = note(path).content;
     if (after === before) return say(`${name} is up to date`);
     record({ label: `Refresh ${name}`, undo: () => putBack(path, after, before), redo: () => putBack(path, before, after) });

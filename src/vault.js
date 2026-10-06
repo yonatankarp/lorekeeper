@@ -268,11 +268,38 @@ export function safePageName(name, fallback) {
 }
 
 /**
- * A PC page brought up to date with a D&D Beyond character: `race`, `class`, `level` and the `dndbeyond` sheet link are
- * replaced (unless D&D Beyond left them blank); `player` is only filled in when empty, so a name you typed stays. The body
- * is never touched.
+ * `md` with `text` under its `## heading` when that section is still empty: a section with anything written in it is left
+ * alone, and a missing one is added before "## Notes" (or at the end).
  */
-export function characterProps(md, c) {
-  const updates = { race: c.race, class: c.classes, level: c.level ? String(c.level) : "", dndbeyond: c.url, player: c.player };
-  return setProps(md, Object.fromEntries(Object.entries(updates).filter(([, v]) => v)), { onlyIfEmpty: ["player"] });
+export function fillSection(md, heading, text) {
+  if (!text) return md;
+  const nl = md.includes("\r\n") ? "\r\n" : "\n";
+  const lines = md.split(nl);
+  const block = ["", ...text.split("\n"), ""];
+  const at = lines.findIndex((l) => l.trim().toLowerCase() === `## ${heading}`.toLowerCase());
+  if (at === -1) {
+    const notes = lines.findIndex((l) => /^##\s+notes\s*$/i.test(l));
+    if (notes === -1) return `${md.replace(/\s*$/, "")}${nl}${nl}## ${heading}${nl}${block.join(nl)}`;
+    lines.splice(notes, 0, `## ${heading}`, ...block);
+    return lines.join(nl);
+  }
+  let end = at + 1;
+  while (end < lines.length && !/^#{1,2}\s/.test(lines[end])) end++;
+  if (lines.slice(at + 1, end).some((l) => l.trim())) return md;
+  lines.splice(at + 1, end - at - 1, ...block);
+  return lines.join(nl);
+}
+
+/**
+ * A PC page brought up to date with a D&D Beyond character: `race`, `class`, `level`, `background`, `alignment` and the
+ * `dndbeyond` sheet link are replaced (unless D&D Beyond left them blank); `player` and `portrait` (a saved image's path) are
+ * only filled in when empty, so what you set stays. Appearance and Personality are written only into empty sections.
+ */
+export function characterProps(md, c, portrait = "") {
+  const updates = {
+    race: c.race, class: c.classes, level: c.level ? String(c.level) : "", background: c.background, alignment: c.alignment,
+    dndbeyond: c.url, player: c.player, portrait: portrait && `[[${portrait}]]`,
+  };
+  const props = setProps(md, Object.fromEntries(Object.entries(updates).filter(([, v]) => v)), { onlyIfEmpty: ["player", "portrait"] });
+  return fillSection(fillSection(props, "Appearance", c.appearance), "Personality", c.personality);
 }

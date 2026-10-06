@@ -175,6 +175,15 @@ pub struct Character {
     pub level: u64,
     pub player: String,
     pub url: String,
+    pub background: String,
+    /// "Chaotic Good"; "" when not set.
+    pub alignment: String,
+    /// Markdown for the page's Appearance section: the sheet's looks and appearance text ("" when none).
+    pub appearance: String,
+    /// Markdown for the Personality section: traits, ideals, bonds and flaws ("" when none).
+    pub personality: String,
+    /// The character's portrait on D&D Beyond ("" when none), for dndbeyond_portrait.
+    pub portrait: String,
     /// Why this one couldn't be read ("" when it was).
     pub error: String,
 }
@@ -197,17 +206,18 @@ pub fn party(v: &Value) -> Vec<(u64, String, String)> {
 pub fn parse_character(id: u64, v: &Value) -> Character {
     let d = &v["data"];
     let race = Some(text(&d["race"]["fullName"])).filter(|r| !r.is_empty()).unwrap_or_else(|| text(&d["race"]["baseName"]));
-    let classes: Vec<(String, u64)> = d["classes"]
+    let classes: Vec<(String, u64, String)> = d["classes"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(|c| (text(&c["definition"]["name"]), c["level"].as_u64().unwrap_or(0)))
-        .filter(|(name, _)| !name.is_empty())
+        .map(|c| (text(&c["definition"]["name"]), c["level"].as_u64().unwrap_or(0), text(&c["subclassDefinition"]["name"])))
+        .filter(|(name, _, _)| !name.is_empty())
         .collect();
+    let sub = |s: &str| if s.is_empty() { String::new() } else { format!(" ({s})") };
     let names = match classes.as_slice() {
-        [(name, _)] => name.clone(),
-        many => many.iter().map(|(name, level)| format!("{name} {level}")).collect::<Vec<_>>().join(" / "),
+        [(name, _, s)] => format!("{name}{}", sub(s)),
+        many => many.iter().map(|(name, level, s)| format!("{name} {level}{}", sub(s))).collect::<Vec<_>>().join(" / "),
     };
     let own_entry = party(v).into_iter().find(|m| m.0 == id).map(|m| m.2).unwrap_or_default();
     let player = Some(text(&d["username"])).filter(|p| !p.is_empty()).unwrap_or(own_entry);
@@ -219,8 +229,69 @@ pub fn parse_character(id: u64, v: &Value) -> Character {
         level: classes.iter().map(|c| c.1).sum(),
         player,
         url: sheet_url(id),
+        background: Some(text(&d["background"]["definition"]["name"])).filter(|b| !b.is_empty()).unwrap_or_else(|| text(&d["background"]["customBackground"]["name"])),
+        alignment: d["alignmentId"].as_u64().and_then(|a| ALIGNMENTS.get(a.wrapping_sub(1) as usize)).unwrap_or(&"").to_string(),
+        appearance: appearance(d),
+        personality: personality(&d["traits"]),
+        portrait: Some(text(&d["decorations"]["avatarUrl"])).filter(|u| portrait_url(u).is_some()).unwrap_or_default(),
         error: String::new(),
     }
+}
+
+/// D&D Beyond's alignmentId, 1 to 9.
+const ALIGNMENTS: [&str; 9] = [
+    "Lawful Good", "Neutral Good", "Chaotic Good", "Lawful Neutral", "Neutral", "Chaotic Neutral", "Lawful Evil", "Neutral Evil", "Chaotic Evil",
+];
+
+/// "Age 25 · Height 6'2" ..." from the sheet's looks, then its appearance text.
+fn appearance(d: &Value) -> String {
+    let looks: Vec<String> = [("Gender", "gender"), ("Age", "age"), ("Height", "height"), ("Weight", "weight"), ("Eyes", "eyes"), ("Hair", "hair"), ("Skin", "skin")]
+        .iter()
+        .filter_map(|(label, key)| {
+            let v = d[*key].as_str().map(str::trim).map(String::from).or_else(|| d[*key].as_u64().map(|n| n.to_string()))?;
+            (!v.is_empty()).then(|| format!("{label} {v}"))
+        })
+        .collect();
+    [looks.join(" · "), text(&d["traits"]["appearance"])].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n")
+}
+
+/// The sheet's personality traits, ideals, bonds and flaws, one bold-labelled paragraph each.
+fn personality(traits: &Value) -> String {
+    [("Traits", "personalityTraits"), ("Ideals", "ideals"), ("Bonds", "bonds"), ("Flaws", "flaws")]
+        .iter()
+        .filter_map(|(label, key)| Some(text(&traits[*key])).filter(|t| !t.is_empty()).map(|t| format!("**{label}:** {}", t.replace('\n', " "))))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// A portrait address worth downloading: https on dndbeyond.com or a subdomain.
+fn portrait_url(url: &str) -> Option<Url> {
+    let u: Url = url.parse().ok()?;
+    let host = u.host_str()?;
+    (u.scheme() == "https" && (host == "dndbeyond.com" || host.ends_with(".dndbeyond.com"))).then_some(u)
+}
+
+/// The image type from its first bytes; None for anything that isn't a picture the page can show.
+fn image_ext(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0xFF, 0xD8, 0xFF, ..] => Some("jpg"),
+        [0x89, b'P', b'N', b'G', ..] => Some("png"),
+        [b'G', b'I', b'F', b'8', ..] => Some("gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("webp"),
+        _ => None,
+    }
+}
+
+/// Downloads a portrait (at most 10 MB, a real image) as bytes and its extension.
+fn download_portrait(url: &str) -> Result<(Vec<u8>, &'static str), String> {
+    let url = portrait_url(url).ok_or("That portrait isn't on D&D Beyond.")?;
+    let mut resp = AGENT.get(url.as_str()).call().map_err(|e| format!("Couldn't download the portrait ({e})."))?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't download the portrait ({}).", resp.status().as_u16()));
+    }
+    let bytes = resp.body_mut().with_config().limit(10 << 20).read_to_vec().map_err(|e| format!("Couldn't download the portrait ({e})."))?;
+    let ext = image_ext(&bytes).ok_or("D&D Beyond's portrait isn't a picture Lorekeeper can show.")?;
+    Ok((bytes, ext))
 }
 
 // ---------- looking characters up ----------
@@ -354,6 +425,34 @@ pub async fn dndbeyond_character(id: u64) -> Result<Character, String> {
     crate::off_main(move || Ok(parse_character(id, &character_json(id, token()?.as_deref())?))).await
 }
 
+/// Saves a character's portrait into the notes folder as `<stem>.<ext>` (`<stem> 2.<ext>` and so on when taken; never
+/// overwrites) and returns its path in the vault, for the page's `portrait` property.
+#[tauri::command]
+pub async fn dndbeyond_portrait(app: AppHandle, url: String, stem: String) -> Result<String, String> {
+    let root = crate::notes_dir(&app);
+    crate::off_main(move || {
+        let (bytes, ext) = download_portrait(&url)?;
+        for n in 1..100 {
+            let rel = if n == 1 { format!("{stem}.{ext}") } else { format!("{stem} {n}.{ext}") };
+            let path = crate::vault_image(&root, &rel)?;
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut f) => {
+                    std::io::Write::write_all(&mut f, &bytes).map_err(|e| e.to_string())?;
+                    crate::backup::mark_changed();
+                    return Ok(rel);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Err("Too many portraits with that name.".into())
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -417,6 +516,9 @@ mod tests {
                 { "level": 3, "definition": { "name": "Fighter" }, "subclassDefinition": { "name": "Champion" } },
                 { "level": 1, "definition": { "name": "Rogue" } }
             ],
+            "background": { "definition": { "name": "Folk Hero" } }, "alignmentId": 3,
+            "age": 52, "eyes": "Grey", "hair": "", "traits": { "appearance": "A braided beard.", "ideals": "Family.\nAlways.", "flaws": " " },
+            "decorations": { "avatarUrl": "https://www.dndbeyond.com/avatars/1/2/demus.jpeg" },
             "campaign": { "characters": [
                 { "characterId": 5, "characterName": "Demus", "username": "demus_player" },
                 { "characterId": 6, "characterName": "Vex", "username": "vexer" },
@@ -429,10 +531,15 @@ mod tests {
                 id: 5,
                 name: "Demus".into(),
                 race: "Hill Dwarf".into(),
-                classes: "Fighter 3 / Rogue 1".into(),
+                classes: "Fighter 3 (Champion) / Rogue 1".into(),
                 level: 4,
                 player: "demus_player".into(),
                 url: "https://www.dndbeyond.com/characters/5".into(),
+                background: "Folk Hero".into(),
+                alignment: "Chaotic Good".into(),
+                appearance: "Age 52 · Eyes Grey\n\nA braided beard.".into(),
+                personality: "**Ideals:** Family. Always.".into(),
+                portrait: "https://www.dndbeyond.com/avatars/1/2/demus.jpeg".into(),
                 error: String::new(),
             }
         );
@@ -448,5 +555,21 @@ mod tests {
         let empty = parse_character(9, &json!({ "data": { "classes": "oops", "race": null } }));
         assert_eq!((empty.name.as_str(), empty.classes.as_str(), empty.level), ("", "", 0));
         assert!(party(&Value::Null).is_empty());
+        assert_eq!((empty.alignment.as_str(), empty.portrait.as_str()), ("", ""));
+        let custom = parse_character(9, &json!({ "data": { "background": { "customBackground": { "name": "Exile" } }, "alignmentId": 10,
+            "decorations": { "avatarUrl": "http://evil.example/x.jpg" } } }));
+        assert_eq!((custom.background.as_str(), custom.alignment.as_str(), custom.portrait.as_str()), ("Exile", "", ""));
+    }
+
+    #[test]
+    fn portraits_only_from_dndbeyond_and_only_pictures() {
+        assert!(portrait_url("https://www.dndbeyond.com/avatars/1.jpeg").is_some());
+        for bad in ["http://www.dndbeyond.com/a.jpg", "https://dndbeyond.com.evil.net/a.jpg", "https://evil.net/a.jpg", "nope"] {
+            assert!(portrait_url(bad).is_none(), "{bad}");
+        }
+        assert_eq!(image_ext(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("jpg"));
+        assert_eq!(image_ext(b"\x89PNG\r\n"), Some("png"));
+        assert_eq!(image_ext(b"RIFF1234WEBPVP8"), Some("webp"));
+        assert_eq!(image_ext(b"<html>"), None);
     }
 }
