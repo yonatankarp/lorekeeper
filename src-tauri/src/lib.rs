@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -330,6 +331,9 @@ struct Settings {
     /// The campaign that backs up where Lorekeeper always did (see backup::backup_name): the notes
     /// folder from before there were campaigns. The settings window can't change it.
     main_campaign: String,
+    /// Notes folder -> the name its backups go under, when you gave it one (see backup::backup_name).
+    /// Kept after a campaign is removed, so adding the folder again carries on its backups.
+    backup_names: BTreeMap<String, String>,
     theme: String,
     editor_font_size: u32,
     session_view: String,
@@ -359,6 +363,7 @@ impl Default for Settings {
             vault_path: String::new(),
             campaigns: Vec::new(),
             main_campaign: String::new(),
+            backup_names: BTreeMap::new(),
             theme: "system".into(),
             editor_font_size: 15,
             session_view: "timeline".into(),
@@ -463,7 +468,8 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     if !s.campaigns.contains(&s.vault_path) {
         return Err("The campaign you're in can't be removed. Switch to another one first.".into());
     }
-    backup::check_campaigns(&s.campaigns, &s.main_campaign)?;
+    s.backup_names = s.backup_names.into_iter().map(|(k, v)| (k, v.trim().to_string())).filter(|(_, v)| !v.is_empty()).collect();
+    backup::check_campaigns(&s)?;
     if !THEMES.contains(&s.theme.as_str()) {
         return Err(format!("Unknown theme \"{}\".", s.theme));
     }
@@ -1061,7 +1067,12 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         set_launch_at_login(&app, new.launch_at_login)?;
     }
     store_settings(&app, &new)?;
-    if new.backup_folder != old.backup_folder {
+    if backup::backup_name(&new, &new.vault_path) != backup::backup_name(&old, &old.vault_path) {
+        // A new backup name: every backup starts over in its new place, right away.
+        for kind in [backup::Kind::Folder, backup::Kind::Github].into_iter().chain(cloud::ALL.map(backup::Kind::Cloud)) {
+            backup::reset(&app, kind);
+        }
+    } else if new.backup_folder != old.backup_folder {
         backup::reset(&app, backup::Kind::Folder); // a new place: back up there right away
     }
     Ok(new)
@@ -1640,6 +1651,15 @@ mod tests {
             Settings { campaigns: vec![tmp.clone(), "/x/Lorekeeper backup 2026-03-07".into()], ..ok.clone() },
             Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_folder: "/x/Side/Backups".into(), ..ok.clone() },
             Settings { campaigns: vec![tmp.clone(), "/".into()], ..ok.clone() },
+            // Backup names: they differ from every other campaign's (typed or from its folder), and work as folder names.
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into(), "/x/Strahd".into()], backup_names: [("/x/Side".into(), "strahd".into())].into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into(), "/x/Other".into()], backup_names: [("/x/Side".into(), "Same!".into()), ("/x/Other".into(), "same".into())].into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "Lorekeeper backup 2026-03-07".into())].into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "a/b".into())].into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "Who?".into())].into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "Side.".into())].into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [("/x/Side".into(), "!!!".into())].into(), ..ok.clone() },
+            Settings { campaigns: vec![tmp.clone(), "/x/Side".into()], backup_names: [(tmp.clone(), "side".into())].into(), main_campaign: tmp.clone(), ..ok.clone() },
         ];
         let strahd = std::env::temp_dir().join("Curse of Strahd").to_string_lossy().into_owned();
         let two = Settings { campaigns: vec![tmp.clone(), strahd], ..ok.clone() };
@@ -1648,6 +1668,18 @@ mod tests {
         let restored = std::env::temp_dir().join("Lorekeeper backup 2026-03-07").to_string_lossy().into_owned();
         let odd = Settings { vault_path: restored.clone(), campaigns: vec![restored.clone()], main_campaign: restored, ..ok.clone() };
         assert_eq!(validate(odd.clone()).unwrap(), odd);
+        // A backup name fixes a folder name that can't name backups, and is saved trimmed; an empty one is dropped.
+        let side = "/x/Side".to_string();
+        let names = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        let fixed = Settings { campaigns: vec![tmp.clone(), "/x/Lorekeeper backup 2026-03-07".into()], backup_names: names(&[("/x/Lorekeeper backup 2026-03-07", "Old")]), ..ok.clone() };
+        assert_eq!(validate(fixed.clone()).unwrap(), fixed);
+        let typed = Settings { campaigns: vec![tmp.clone(), side.clone()], backup_names: names(&[(&side, "  Curse of Strahd "), (&tmp, " ")]), ..ok.clone() };
+        assert_eq!(validate(typed).unwrap().backup_names, names(&[(&side, "Curse of Strahd")]));
+        // Two folders can trade names; a removed campaign's name is kept for when it's added again.
+        let swapped = Settings { campaigns: vec![tmp.clone(), side.clone(), "/x/Strahd".into()], backup_names: names(&[(&side, "Strahd"), ("/x/Strahd", "Side")]), ..ok.clone() };
+        assert_eq!(validate(swapped.clone()).unwrap(), swapped);
+        let kept = Settings { backup_names: names(&[("/gone/Side", "Side")]), ..ok.clone() };
+        assert_eq!(validate(kept.clone()).unwrap(), kept);
         for s in bad {
             assert!(validate(s.clone()).is_err(), "{s:?} should be refused");
         }
@@ -1834,6 +1866,9 @@ mod tests {
         let s = Settings { vault_path: path(&lore), campaigns: vec![path(&lore), path(&side)], main_campaign: path(&lore), ..Settings::default() };
         let (main, other) = (backup::backup_name(&s, &path(&lore)), backup::backup_name(&s, &path(&side)));
         assert_eq!((main.as_str(), other.as_str()), ("", "Side"));
+        // A backup name of your own wins, for the main campaign too; an empty one doesn't count.
+        let named = Settings { backup_names: [(path(&lore), "Phandelver".into()), (path(&side), String::new())].into(), ..s.clone() };
+        assert_eq!((backup::backup_name(&named, &path(&lore)), backup::backup_name(&named, &path(&side))), ("Phandelver".into(), "Side".into()));
 
         // Back up a campaign as a run would, recording every upload in its manifest.
         let back_up = |vault: &Path, name: &str| {

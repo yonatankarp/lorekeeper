@@ -69,14 +69,14 @@ Sessions/  PCs/  NPCs/  Locations/  Items/  Factions/  Quests/  Lore/  Templates
 
 Running more than one game? Give each campaign its own notes folder: **Settings > General > Add campaign…**. Switch with the campaign name at the top of the sidebar or the tray's **Campaign** menu. The window, the hotkey notes and the backups all follow the campaign you switch to. **Remove** only forgets a campaign in Lorekeeper; its notes folder and backups stay.
 
-Each campaign backs up on its own, so switching never overwrites or deletes another campaign's backup. Your first campaign (the notes folder you had before adding campaigns) keeps backing up exactly where it always did. Every other campaign, named after its folder (say `Strahd`), goes to:
+Each campaign backs up on its own, so switching never overwrites or deletes another campaign's backup. Your first campaign (the notes folder you had before adding campaigns) keeps backing up exactly where it always did. Every other campaign goes under its **backup name**, which is its folder's name unless you give it one (say `Strahd`):
 
 - **Folder backup:** a `Strahd` folder inside your backup folder.
 - **Dropbox:** `Apps/Lorekeeper/Campaigns/Strahd`.
 - **Google Drive:** a `Lorekeeper - Strahd` folder.
 - **GitHub:** its own private repository, `lorekeeper-notes-strahd`.
 
-Campaign folders need different names, since the names keep their backups apart. A folder you add later with the name of a removed campaign carries on that campaign's backups, which is what you want after moving a folder; otherwise rename the new folder first.
+Set a campaign's backup name next to it in **Settings > General**. Giving your first campaign one moves its backups to these places too. Each campaign needs its own backup name, since the names keep their backups apart. A new name starts a new backup: the old one stays where it was, and changing the name back carries it on. A campaign you remove keeps its backup name, so adding the folder again carries on its backups; so does a folder you add later with the name of a removed campaign, which is what you want after moving a folder (otherwise give it another backup name).
 
 ## Backups
 

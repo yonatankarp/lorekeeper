@@ -73,7 +73,7 @@ pub struct Places {
     dropbox: String,
     /// The name of its folder in My Drive.
     drive: String,
-    /// The main campaign only: the other campaigns' Dropbox folders, which aren't its notes.
+    /// The main campaign only: the Dropbox folders of other campaigns, which aren't its notes.
     #[serde(skip)]
     others: Vec<String>,
 }
@@ -81,8 +81,14 @@ pub struct Places {
 pub fn places(s: &Settings) -> Places {
     let name = backup::backup_name(s, &s.vault_path);
     let dropbox_dir = |name: &str| dropbox::root(name).trim_start_matches('/').to_string();
+    // The main campaign's Dropbox backup is the app folder itself, with the other campaigns' in
+    // Campaigns/: all of that is left out, renamed and removed campaigns' too, unless the notes have
+    // a Campaigns folder of their own; then only the current campaigns' folders are.
     let others = match name.as_str() {
-        "" => s.campaigns.iter().map(|c| backup::backup_name(s, c)).filter(|n| !n.is_empty()).map(|n| dropbox_dir(&n)).collect(),
+        "" if Path::new(&s.vault_path).join("Campaigns").is_dir() => {
+            s.campaigns.iter().map(|c| backup::backup_name(s, c)).filter(|n| !n.is_empty()).map(|n| dropbox_dir(&n)).collect()
+        }
+        "" => vec!["Campaigns".to_string()],
         _ => Vec::new(),
     };
     let folder = match (s.backup_folder.as_str(), name.as_str()) {
@@ -632,14 +638,26 @@ mod tests {
         };
         let other = Settings { vault_path: path(&side), ..main.clone() };
 
-        // The main campaign: the places from before campaigns, minus the other campaign's Dropbox folder.
+        // The main campaign: the places from before campaigns, minus the other campaigns' Dropbox folders,
+        // all of Campaigns/, so a renamed or removed campaign's old folder isn't restored with it either.
         let w = places(&main);
         assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups).as_str(), "lorekeeper-notes", "", "Lorekeeper"));
-        assert_eq!((w.campaign.as_str(), w.others.clone()), ("Lore", vec!["Campaigns/Side".to_string()]));
+        assert_eq!((w.campaign.as_str(), w.others.clone()), ("Lore", vec!["Campaigns".to_string()]));
+        // Notes with a Campaigns folder of their own keep it: then only the campaigns' folders are left out.
+        fs::create_dir_all(lore.join("Campaigns")).unwrap();
+        assert_eq!(places(&main).others, ["Campaigns/Side"]);
+        fs::remove_dir_all(lore.join("Campaigns")).unwrap();
         // Another campaign: only its own places.
         let w = places(&other);
         assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str()), (path(&backups.join("Side")).as_str(), "lorekeeper-notes-side", "Campaigns/Side", "Lorekeeper - Side"));
         assert!(w.others.is_empty());
+        // A backup name of your own moves every place, the main campaign's too.
+        let named = Settings { backup_names: [(path(&side), "Curse of Strahd".to_string())].into(), ..other.clone() };
+        let w = places(&named);
+        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.drive.as_str(), w.campaign.as_str()),
+            (path(&backups.join("Curse of Strahd")).as_str(), "lorekeeper-notes-curse-of-strahd", "Campaigns/Curse of Strahd", "Lorekeeper - Curse of Strahd", "Side"));
+        let w = places(&Settings { backup_names: [(path(&lore), "Phandelver".to_string())].into(), ..main.clone() });
+        assert_eq!((w.folder.as_str(), w.repo.as_str(), w.dropbox.as_str(), w.others.len()), (path(&backups.join("Phandelver")).as_str(), "lorekeeper-notes-phandelver", "Campaigns/Phandelver", 0));
 
         // Their pages on the web.
         let signed_in = Settings { github_user: "vex".into(), ..main.clone() };

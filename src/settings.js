@@ -181,17 +181,26 @@ $("editorFontSize").addEventListener("input", (e) => { $("editorFontSize-value")
 const campaignName = (path) => path.split(/[\\/]/).filter(Boolean).pop() || path;
 
 function renderCampaigns(s) {
+  // Redrawn on every settings change: a backup name being typed keeps its text and focus.
+  const typing = document.activeElement?.classList.contains("campaign-backup-name") ? document.activeElement : null;
   for (const row of document.querySelectorAll(".campaign")) row.remove();
   for (const path of s.campaigns) {
     const row = $("campaign-row").content.firstElementChild.cloneNode(true);
     const name = campaignName(path), active = path === s.vaultPath;
     row.querySelector(".campaign-name").textContent = active ? `${name} (open now)` : name;
     row.querySelector(".campaign-path").textContent = path;
-    row.querySelector(".campaign-sr").textContent = ` ${name}`;
+    for (const el of row.querySelectorAll(".campaign-sr")) el.textContent = ` ${name}`;
+    // Saved on change, not per keystroke: each save starts a backup in the new name's places.
+    const backupName = row.querySelector(".campaign-backup-name");
+    backupName.value = typing?.dataset.path === path ? typing.value : s.backupNames?.[path] ?? "";
+    backupName.dataset.path = path;
+    backupName.placeholder = path === s.mainCampaign ? "Original backup" : name;
+    backupName.addEventListener("change", () => save({ backupNames: { ...current.backupNames, [path]: backupName.value.trim() } }));
     const remove = row.querySelector(".campaign-remove");
     remove.disabled = active; // switch to another campaign first
     remove.addEventListener("click", () => save({ campaigns: current.campaigns.filter((c) => c !== path) }));
     $("campaign-add").before(row);
+    if (typing?.dataset.path === path) backupName.focus();
   }
 }
 

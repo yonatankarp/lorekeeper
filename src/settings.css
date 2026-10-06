@@ -133,6 +133,16 @@ select {
   font: inherit;
 }
 input[type="range"] { width: 160px; margin: 0; accent-color: var(--accent); }
+input[type="text"] {
+  width: 14em;
+  padding: 4px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+}
+.campaign-backup { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
 output { min-width: 5ch; color: var(--muted); font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; }
 input[role="switch"] {
   appearance: none;

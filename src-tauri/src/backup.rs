@@ -151,11 +151,16 @@ pub fn slug(name: &str) -> String {
     out.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
 }
 
-/// Where a campaign's backups go: "" for the main campaign (the notes folder from before there were
-/// campaigns), which keeps backing up exactly where it always did; any other campaign's name, which
-/// gives it places of its own. So a backup of one campaign never overwrites or deletes another's.
+/// Where a campaign's backups go: the backup name you gave it in Settings; else "" for the main
+/// campaign (the notes folder from before there were campaigns), which keeps backing up exactly
+/// where it always did; else its folder's name. A name gives a campaign places of its own, so a
+/// backup of one campaign never overwrites or deletes another's.
 pub fn backup_name(s: &Settings, vault: &str) -> String {
-    if vault == s.main_campaign { String::new() } else { campaign_name(vault) }
+    match s.backup_names.get(vault).filter(|n| !n.is_empty()) {
+        Some(name) => name.clone(),
+        None if vault == s.main_campaign => String::new(),
+        None => campaign_name(vault),
+    }
 }
 
 /// The GitHub repository: the main campaign's, or "lorekeeper-notes-<slug>" for another campaign.
@@ -163,18 +168,34 @@ pub fn campaign_repo(repo: &str, name: &str) -> String {
     if name.is_empty() { repo.to_string() } else { format!("{repo}-{}", slug(name)) }
 }
 
-/// Campaign names must differ (ignoring case, as Dropbox does), and so must the slugs of those that
-/// name their backups (all but the main campaign). A dated copy's name would be pruned by the folder backup.
-pub fn check_campaigns(campaigns: &[String], main: &str) -> Result<(), String> {
-    let named = |c: &String| c != main;
-    for (i, a) in campaigns.iter().enumerate() {
-        let name = campaign_name(a);
-        if named(a) && (Path::new(a).file_name().is_none() || is_snapshot(&name) || slug(&name).is_empty()) {
-            return Err(format!("\"{name}\" can't be a campaign's folder name. Rename the folder first."));
+/// Campaign folder names must differ (ignoring case, as Dropbox does) to tell them apart, and the
+/// backup names (see backup_name) must too, slugs included. A dated copy's name would be pruned by
+/// the folder backup. A name you type also has to work as a folder name everywhere it's used.
+pub fn check_campaigns(s: &Settings) -> Result<(), String> {
+    for (i, a) in s.campaigns.iter().enumerate() {
+        let folder = campaign_name(a);
+        if let Some(b) = s.campaigns[i + 1..].iter().find(|b| campaign_name(b).to_lowercase() == folder.to_lowercase()) {
+            return Err(format!("You already have a campaign called \"{}\". Rename one of the folders so you can tell them apart.", campaign_name(b)));
         }
-        let same = |b: &&String| campaign_name(b).to_lowercase() == name.to_lowercase() || (named(a) && named(b) && slug(&campaign_name(b)) == slug(&name));
-        if let Some(b) = campaigns[i + 1..].iter().find(same) {
-            return Err(format!("You already have a campaign called \"{}\". Rename one of the folders so each has its own backups.", campaign_name(b)));
+        let name = backup_name(s, a);
+        if name.is_empty() {
+            continue;
+        }
+        let typed = s.backup_names.contains_key(a);
+        let bad_chars = || name != name.trim() || name.ends_with('.') || name.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c));
+        if (!typed && Path::new(a).file_name().is_none()) || is_snapshot(&name) || slug(&name).is_empty() || (typed && bad_chars()) {
+            return Err(if typed {
+                format!("\"{name}\" can't be a backup name. Leave out / \\ : * ? \" < > |, and spaces or a dot at the end.")
+            } else {
+                format!("\"{name}\" can't name a campaign's backups. Give it a backup name, or rename the folder.")
+            });
+        }
+        let same = |b: &&String| {
+            let other = backup_name(s, b);
+            !other.is_empty() && (other.to_lowercase() == name.to_lowercase() || slug(&other) == slug(&name))
+        };
+        if let Some(b) = s.campaigns[i + 1..].iter().find(same) {
+            return Err(format!("\"{folder}\" and \"{}\" would back up to the same place. Give one of them another backup name.", campaign_name(b)));
         }
     }
     Ok(())
