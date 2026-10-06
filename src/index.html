@@ -55,11 +55,34 @@
           <legend id="new-types-label">What are you making?</legend>
           <div id="new-chips" class="chips"></div>
         </fieldset>
+        <button type="button" id="new-ddb" class="ghost" hidden>Import from D&amp;D Beyond…</button>
         <label>Name <input id="new-name" aria-required="true" autocomplete="off" /></label>
         <p id="new-error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" id="new-cancel" class="ghost">Cancel</button>
           <button id="new-create" value="create">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- PC pages from D&D Beyond characters (app.js, dndbeyond.rs). -->
+    <dialog id="ddb-dialog" aria-labelledby="ddb-title">
+      <form id="ddb-form" method="dialog" novalidate>
+        <h2 id="ddb-title">Import from D&amp;D Beyond</h2>
+        <div class="ddb-lookup">
+          <label>Character or campaign link
+            <input id="ddb-link" placeholder="dndbeyond.com/characters/…" autocomplete="off" spellcheck="false" aria-describedby="ddb-help" /></label>
+          <button id="ddb-find" value="find" class="ghost">Look up</button>
+        </div>
+        <p id="ddb-help" class="tip">A character brings its campaign's party along. A campaign link needs you signed in to D&amp;D Beyond in Settings, and so do characters that aren't public.</p>
+        <fieldset id="ddb-found" hidden>
+          <legend>Characters found</legend>
+          <div id="ddb-list"></div>
+        </fieldset>
+        <p id="ddb-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" id="ddb-cancel" class="ghost">Cancel</button>
+          <button id="ddb-import" value="import" class="seal" disabled>Import</button>
         </div>
       </form>
     </dialog>

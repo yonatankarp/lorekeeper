@@ -641,7 +641,18 @@ dialog label.chip {
 dialog label.chip:has(:checked) { border-color: var(--accent-text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-text); }
 .chip:has(:checked) .icon { color: var(--accent-text); }
 .chip:has(:focus-visible) { outline: 2px solid var(--accent-text); outline-offset: 2px; }
-#new-error, #rename-error { color: var(--accent-text); min-height: 1.2em; margin: 0 0 8px; font-size: 15px; }
+#new-error, #rename-error, #ddb-error { color: var(--accent-text); min-height: 1.2em; margin: 0 0 8px; font-size: 15px; }
+#new-ddb { margin: -4px 0 14px; }
+/* Import from D&D Beyond: the link and Look up on one line, then a checklist of what was found. */
+#ddb-dialog { width: min(520px, calc(100vw - 32px)); }
+.ddb-lookup { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 8px; }
+.ddb-lookup label { flex: 1; margin: 0; }
+#ddb-dialog .tip { margin: 0 0 12px; font-size: 14.5px; color: var(--muted); }
+#ddb-found { min-width: 0; margin: 0 0 8px; padding: 0; border: 0; }
+#ddb-found legend { margin-bottom: 6px; padding: 0; font-weight: 700; font-size: 15px; }
+#ddb-list { max-height: 260px; overflow-y: auto; }
+dialog label.ddb-row { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; font-weight: 400; }
+.props .props-action { margin-left: 6px; padding: 0 8px; font-size: 14px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 #obsidian-dialog .steps { margin: 0 0 12px; padding-left: 20px; font-size: 15.5px; line-height: 1.45; }
 #obsidian-dialog .steps li { margin-bottom: 8px; }

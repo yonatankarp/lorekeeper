@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backlinks, badName, buildTree, fillTemplate, folderFor, kindOf, openQuests, party, questStatus, recentlyMentioned, resolve, search, sessionPaths, shownProps, splitFrontmatter } from "./vault.js";
+import {
+  backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
+  recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
+} from "./vault.js";
 
 const notes = [
   { path: "Sessions/Session 2.md", content: "# Session 2\n- 20:15 @[[Mirela]] again\n- 20:30 went to [[Locations/Phandalin|town]]" },
@@ -157,4 +160,65 @@ test("shownProps leaves out the type and empty values, names labels, and links p
   assert.deepEqual(npc.rows.map((r) => [r.key, r.path]), [["location", "Locations/Phandalin.md"], ["status", ""]]);
   assert.equal(shownProps([["type", "pc"], ["level", "3"]], paths, "note").summary, "Level 3", "the type property wins over the folder");
   assert.equal(kindOf("Ideas.md"), "note");
+});
+
+test("setProps changes only the given properties and keeps everything else byte for byte", () => {
+  const md = "---\ntype: pc\nRace: elf\n# a comment\nplayer:\naliases:\n  - Dem\n---\n# Demus\n\nrace: not a property\n";
+  assert.equal(
+    setProps(md, { race: "Hill Dwarf", level: "3" }),
+    "---\ntype: pc\nRace: Hill Dwarf\n# a comment\nplayer:\naliases:\n  - Dem\nlevel: 3\n---\n# Demus\n\nrace: not a property\n",
+  );
+  // CRLF files get CRLF lines; the body is untouched.
+  assert.equal(setProps("---\r\ntype: pc\r\n---\r\nBody\r\n", { level: 2 }), "---\r\ntype: pc\r\nlevel: 2\r\n---\r\nBody\r\n");
+  // No frontmatter, or an empty block: made, never doubled.
+  assert.equal(setProps("# Vex\n", { race: "Elf" }), "---\nrace: Elf\n---\n# Vex\n");
+  assert.equal(setProps("", { race: "Elf" }), "---\nrace: Elf\n---\n");
+  assert.equal(setProps("---\n---\n# Vex\n---\nmore\n", { race: "Elf" }), "---\nrace: Elf\n---\n# Vex\n---\nmore\n");
+  assert.equal(setProps("---\r\n---\r\nBody", { race: "Elf" }), "---\r\nrace: Elf\r\n---\r\nBody");
+  // Values that would read as something else in YAML are quoted; a list under a replaced key goes with it.
+  assert.equal(setProps("---\nclass:\n  - Old\nx: 1\n---\n", { class: "A: B", race: "#1", note: "[x]" }),
+    '---\nclass: "A: B"\nx: 1\nrace: "#1"\nnote: "[x]"\n---\n');
+  assert.equal(setProps("---\na: 1\n---\n", { url: "https://www.dndbeyond.com/characters/5" }), "---\na: 1\nurl: https://www.dndbeyond.com/characters/5\n---\n");
+  // onlyIfEmpty: missing, blank and "" are empty; a value or a list isn't.
+  const only = { onlyIfEmpty: ["player"] };
+  assert.equal(setProps("---\nplayer:\n---\n", { player: "x" }, only), "---\nplayer: x\n---\n");
+  assert.equal(setProps('---\nplayer: ""\n---\n', { player: "x" }, only), "---\nplayer: x\n---\n");
+  assert.equal(setProps("---\ntype: pc\n---\n", { player: "x" }, only), "---\ntype: pc\nplayer: x\n---\n");
+  assert.equal(setProps("---\nPlayer: Ofer\n---\n", { player: "x" }, only), "---\nPlayer: Ofer\n---\n");
+  assert.equal(setProps("---\nplayer:\n  - Ofer\n---\n", { player: "x" }, only), "---\nplayer:\n  - Ofer\n---\n");
+});
+
+test("D&D Beyond characters find their PC page and update only what they own", () => {
+  const sheet = "https://www.dndbeyond.com/characters/5";
+  assert.equal(dndBeyondId(`---\ndndbeyond: ${sheet}\n---\n`), "5");
+  assert.equal(dndBeyondId('---\ndndbeyond: "https://www.dndbeyond.com/profile/x/characters/77/abc"\n---\n'), "77");
+  assert.equal(dndBeyondId("---\ndndbeyond: https://evil.com/characters/5\n---\n"), "");
+  assert.equal(dndBeyondId("# none"), "");
+
+  const pcs = [
+    { path: "PCs/Someone.md", content: `---\ndndbeyond: ${sheet}\n---\n` },
+    { path: "PCs/demus.md", content: "---\ntype: pc\n---\n" },
+    { path: "PCs/Vex.md", content: "---\ndndbeyond: https://www.dndbeyond.com/characters/9\n---\n" },
+    { path: "NPCs/Bob.md", content: "" },
+  ];
+  assert.equal(pcPageFor({ id: 5, name: "Demus" }, pcs), "PCs/Someone.md", "the sheet link wins over the name");
+  assert.equal(pcPageFor({ id: 6, name: " Demus " }, pcs), "PCs/demus.md");
+  assert.equal(pcPageFor({ id: 7, name: "Vex" }, pcs), null, "another character's page is never taken");
+  assert.equal(pcPageFor({ id: 8, name: "Bob" }, pcs), null, "only PCs/");
+
+  assert.equal(safePageName("Sir: Demus / the #1", "Character 5"), "Sir Demus the 1");
+  assert.equal(safePageName("..Vex", "x"), "Vex");
+  assert.equal(safePageName(" ?? ", "Character 5"), "Character 5");
+
+  const c = { race: "Hill Dwarf", classes: "Fighter 3 / Rogue 1", level: 4, player: "demus_player", url: sheet };
+  const page = "---\ntype: pc\nplayer: Ofer\nclass: Barbarian\nrace:\nlevel: 1\n---\n# Demus\n\n## Backstory\nrace: kept\n";
+  assert.equal(characterProps(page, c),
+    `---\ntype: pc\nplayer: Ofer\nclass: Fighter 3 / Rogue 1\nrace: Hill Dwarf\nlevel: 4\ndndbeyond: ${sheet}\n---\n# Demus\n\n## Backstory\nrace: kept\n`);
+  assert.equal(characterProps("---\nplayer:\nrace: Elf\n---\n", { ...c, race: "", level: 0 }),
+    `---\nplayer: demus_player\nrace: Elf\nclass: Fighter 3 / Rogue 1\ndndbeyond: ${sheet}\n---\n`, "blanks from D&D Beyond change nothing");
+});
+
+test("the D&D Beyond row is labelled", () => {
+  const rows = shownProps([["dndbeyond", "https://www.dndbeyond.com/characters/5"]], [], "pc").rows;
+  assert.deepEqual(rows.map((r) => [r.key, r.label, r.path]), [["dndbeyond", "D&D Beyond", ""]]);
 });

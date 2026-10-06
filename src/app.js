@@ -3,8 +3,8 @@ import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, parse, removeLine, sessions, stripLinks, timeline, toHtml, toText } from "./notes.js";
 import {
-  backlinks, badName, baseName, buildTree, fillTemplate, folderFor, openQuests, party, questStatus, recentlyMentioned, renameLinks,
-  kindOf, resolve, search, shownProps, splitFrontmatter,
+  backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, openQuests, party, pcPageFor, questStatus,
+  recentlyMentioned, renameLinks, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -133,6 +133,12 @@ function propsHtml(props, path) {
     if (key === "status" || key === "rarity") {
       const word = value.toLowerCase();
       html = `<span class="${key} ${key}-${escape(word.replace(/[^a-z]/g, ""))}">${STATUS_ICONS[word] ? icon(STATUS_ICONS[word]) : ""}${escape(value)}</span>`;
+    } else if (key === "dndbeyond") {
+      // The sheet opens in the browser (the document click handler sends https links to open_url).
+      html = sheetId(value)
+        ? `<a href="${escape(value)}">Character sheet</a> <button type="button" class="ghost props-action" data-ddb-refresh ` +
+          `title="Refresh from D&amp;D Beyond" aria-label="Refresh from D&amp;D Beyond">Refresh</button>`
+        : inlineLinks(value);
     } else if (path) {
       html = `<a class="wikilink" data-target="${escape(value)}" href="#">${icon(name)}${escape(value)}</a>`;
     } else {
@@ -502,7 +508,10 @@ const folderOf = (type) => (type === "Note" ? newFrom : folderFor(type, vault.fo
 
 const templateOf = (type) => templates.find((t) => baseName(t.path).toLowerCase() === type.toLowerCase());
 const chosenType = () => $("new-chips").querySelector("input:checked")?.value ?? "Note";
-const syncNewTitle = () => ($("new-title").textContent = chosenType() === "Note" ? "New note" : `New ${chosenType()}`);
+function syncNewTitle() {
+  $("new-title").textContent = chosenType() === "Note" ? "New note" : `New ${chosenType()}`;
+  $("new-ddb").hidden = chosenType() !== "PC";
+}
 
 /**
  * Asks what you're making and its name; the type picks the template and the folder. From a folder (its empty-folder
@@ -559,6 +568,161 @@ $("new-form").addEventListener("submit", async (e) => {
   open(path, { edit: true });
 });
 
+// ---------- D&D Beyond: PC pages from characters (dndbeyond.rs fetches them) ----------
+
+let found = []; // the characters the last lookup returned
+
+function openDdbDialog() {
+  found = [];
+  $("ddb-link").value = "";
+  $("ddb-error").textContent = "";
+  renderFound();
+  $("ddb-dialog").showModal();
+  $("ddb-link").focus();
+}
+
+/** The checklist: each character with what it is, who plays it and whether it updates a page or makes one. */
+function renderFound() {
+  $("ddb-found").hidden = !found.length;
+  $("ddb-list").innerHTML = found
+    .map((c, i) => {
+      const page = c.error ? null : pcPageFor(c, vault.notes);
+      const what = [[c.race, c.classes].filter(Boolean).join(" "), c.level ? `level ${c.level}` : ""].filter(Boolean).join(", ");
+      const details = c.error || [what, c.player && `played by ${c.player}`, page ? `update ${baseName(page)}` : "new page"].filter(Boolean).join(" · ");
+      return `<label class="ddb-row"><input type="checkbox" value="${i}"${c.error ? " disabled" : " checked"} />` +
+        `<span><strong>${escape(c.name)}</strong> <span class="home-meta">${escape(details)}</span></span></label>`;
+    })
+    .join("");
+  syncImport();
+}
+const syncImport = () => ($("ddb-import").disabled = !$("ddb-list").querySelector("input:checked"));
+
+async function lookUp() {
+  const link = $("ddb-link").value.trim();
+  $("ddb-error").textContent = "";
+  if (!link) {
+    $("ddb-error").textContent = "Paste a character or campaign link first.";
+    return $("ddb-link").focus();
+  }
+  $("ddb-find").disabled = true;
+  $("ddb-find").textContent = "Looking up…";
+  try {
+    found = await invoke("dndbeyond_lookup", { link });
+  } catch (err) {
+    found = [];
+    $("ddb-error").textContent = String(err);
+  }
+  $("ddb-find").disabled = false;
+  $("ddb-find").textContent = "Look up";
+  renderFound();
+  ($("ddb-list").querySelector("input:checked") ?? $("ddb-link")).focus();
+}
+
+/** Puts a page's text back to `content` while it still holds `expected` (the import's own undo and redo). */
+async function putBack(path, expected, content) {
+  await flush();
+  if (note(path)?.content !== expected) throw `${baseName(path)} has changed since, so it was kept`;
+  await rewrite(path, () => content);
+}
+
+/** Undoes (back) or redoes an import's [path, before, after] changes ("" = no page); a page changed since is kept. */
+async function replayImport(changes, back) {
+  const kept = [];
+  for (const [path, before, after] of changes) {
+    const [from, to] = back ? [after, before] : [before, after];
+    await (from ? (to ? putBack(path, from, to) : trashIfUnchanged(path, from)) : restore(path, to)).catch((err) => kept.push(String(err)));
+  }
+  if (kept.length) throw kept.join("; ");
+}
+
+/**
+ * Writes characters into their PC pages (see pcPageFor and characterProps), making the ones that are missing from the PC
+ * template, as one undoable action. Returns the pages written and the characters that failed.
+ */
+async function importCharacters(chars) {
+  await flush();
+  await loadVault(); // write over what's on disk now
+  const changes = [];
+  const failed = [];
+  for (const c of chars) {
+    const name = safePageName(c.name, `Character ${c.id}`);
+    try {
+      const page = pcPageFor(c, vault.notes);
+      if (page) {
+        const before = note(page).content;
+        await rewrite(page, (md) => characterProps(md, c));
+        if (note(page).content !== before) changes.push([page, before, note(page).content]);
+        continue;
+      }
+      const folder = folderOf("PC");
+      const taken = (p) => vault.notes.some((n) => n.path.toLowerCase() === p.toLowerCase());
+      let path = `${folder}/${name}.md`;
+      if (taken(path)) path = `${folder}/${name} (${c.id}).md`; // a page of that name belongs to another character
+      const tpl = templateOf("PC");
+      const content = characterProps(tpl ? fillTemplate(tpl.content, name, today()) : `# ${name}\n\n`, c);
+      await invoke("create_file", { path, content });
+      vault.notes.push({ path, content });
+      changes.push([path, "", content]);
+    } catch (err) {
+      failed.push(`${name}: ${err}`);
+    }
+  }
+  await refresh();
+  if (changes.length) record({ label: "Import from D&D Beyond", undo: () => replayImport(changes, true), redo: () => replayImport(changes, false) });
+  return { changes, failed };
+}
+
+async function importChosen() {
+  const chosen = [...$("ddb-list").querySelectorAll("input:checked")].map((box) => found[+box.value]);
+  $("ddb-import").disabled = true;
+  const { changes, failed } = await importCharacters(chosen);
+  const done = `${changes.length} page${changes.length === 1 ? "" : "s"} written`;
+  if (failed.length) {
+    renderFound();
+    $("ddb-error").textContent = `${done}. Couldn't import ${failed.join("; ")}`;
+    return;
+  }
+  $("ddb-dialog").close();
+  say(changes.length ? `Imported from D&D Beyond: ${done}` : "Already up to date");
+  if (chosen.length === 1 && changes.length) open(changes[0][0]);
+}
+
+$("new-ddb").addEventListener("click", () => {
+  $("new-dialog").close();
+  openDdbDialog();
+});
+$("ddb-list").addEventListener("change", syncImport);
+$("ddb-cancel").addEventListener("click", () => $("ddb-dialog").close());
+$("ddb-form").addEventListener("submit", (e) => {
+  const what = e.submitter?.value;
+  if (what !== "find" && what !== "import") return;
+  e.preventDefault();
+  if (what === "find") lookUp();
+  else importChosen();
+});
+
+/** "Refresh from D&D Beyond" on a PC page: the same update as an import, undoable. */
+async function refreshCharacter(path, button) {
+  const id = dndBeyondId(note(path)?.content ?? "");
+  if (!id) return;
+  const name = baseName(path);
+  button.disabled = true;
+  say(`Refreshing ${name}…`);
+  try {
+    const c = await invoke("dndbeyond_character", { id: Number(id) });
+    const before = note(path).content;
+    await rewrite(path, (md) => characterProps(md, c));
+    const after = note(path).content;
+    if (after === before) return say(`${name} is up to date`);
+    record({ label: `Refresh ${name}`, undo: () => putBack(path, after, before), redo: () => putBack(path, before, after) });
+    say(`Updated ${name}${c.level ? `: level ${c.level}` : ""}`);
+  } catch (err) {
+    say(`Couldn't refresh ${name}: ${err}`);
+  } finally {
+    button.disabled = false; // a no-op once the page re-rendered
+  }
+}
+
 // ---------- events ----------
 
 document.addEventListener("click", (e) => {
@@ -585,6 +749,7 @@ $("view").addEventListener("click", async (e) => {
   const button = e.target.closest("button");
   if (button?.dataset.copy) return copySession(note(button.dataset.copy)?.content ?? "");
   if (button?.dataset.action) return actions[button.dataset.action]();
+  if (button?.dataset.ddbRefresh !== undefined) return refreshCharacter(current, button);
   if (button?.classList.contains("remove-note")) {
     const row = [...$("view").querySelectorAll(".remove-note")].indexOf(button);
     await deleteNote(current, +button.dataset.line);

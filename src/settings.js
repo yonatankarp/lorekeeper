@@ -429,6 +429,44 @@ async function cloudSignIn(p) {
   cloudEl(p, current[`${p}User`] ? "cloud-now" : "cloud-sign-in").focus();
 }
 
+// ---------- D&D Beyond: sign-in happens in D&D Beyond's own page, in a window of its own ----------
+
+let ddbSigningIn = false;
+async function showDdb() {
+  const on = await invoke("dndbeyond_status").catch(() => false);
+  if (ddbSigningIn) return;
+  $("ddb-status").textContent = on ? "Signed in" : "Not signed in";
+  $("ddb-sign-in").hidden = on;
+  $("ddb-sign-out").hidden = !on;
+}
+$("ddb-sign-in").addEventListener("click", async () => {
+  ddbSigningIn = true;
+  $("ddb-error").textContent = "";
+  $("ddb-sign-in").disabled = true;
+  $("ddb-status").textContent = "Finish signing in in the D&D Beyond window…";
+  try {
+    await invoke("dndbeyond_sign_in");
+  } catch (err) {
+    if (!/cancelled/.test(err)) $("ddb-error").textContent = String(err);
+  }
+  ddbSigningIn = false;
+  $("ddb-sign-in").disabled = false;
+  await showDdb();
+  $($("ddb-sign-in").hidden ? "ddb-sign-out" : "ddb-sign-in").focus();
+});
+$("ddb-sign-out").addEventListener("click", async () => {
+  $("ddb-error").textContent = "";
+  try {
+    await invoke("dndbeyond_sign_out");
+  } catch (err) {
+    $("ddb-error").textContent = String(err);
+  }
+  await showDdb();
+  $("ddb-sign-in").focus();
+});
+listen("dndbeyond-changed", showDdb);
+showDdb();
+
 // ---------- restore: lists a backup, downloads it into a new folder, never over the notes folder ----------
 
 let restore = null; // the open dialog's state: { source, parent, target, done, running }

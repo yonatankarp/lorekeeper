@@ -51,6 +51,16 @@ If the current session's last note is over 12 hours old, the box offers the next
 - **Linked from** at the bottom of every page lists the sessions and pages that mention it.
 - `⌘K` searches, `⌘,` opens Settings, `⌘+` / `⌘−` zoom.
 
+## Characters from D&D Beyond
+
+PC pages can come straight from D&D Beyond character sheets:
+
+1. **Sign in** (once): **Settings > General > D&D Beyond > Sign in…** opens D&D Beyond's own sign-in page. Your password goes to D&D Beyond, never to Lorekeeper. Google sign-in is often refused in app windows like this one; use a Wizards, Apple or Twitch login instead. Public characters work without signing in; campaigns and "Campaign Only" characters need it.
+2. **Import:** **+ New page**, choose **PC**, then **Import from D&D Beyond…**. Paste a character link (`dndbeyond.com/characters/…`) or a campaign link (`dndbeyond.com/campaigns/…`) and click **Look up**. A character brings the rest of its campaign's party along. Tick the characters you want and click **Import**. Each one updates its page in `PCs/` (the one linking to its sheet, else the one with its name) or gets a new page from the PC template.
+3. **Refresh:** on a PC page, **Refresh** next to **Character sheet** reads the character again, say after a level up. **Edit > Undo** puts the page back, after an import too.
+
+What D&D Beyond updates: `race`, `class`, `level` and the `dndbeyond` sheet link. `player` is only filled in when it's empty, so a player's real name you typed stays. Nothing else on the page changes: your other properties and the notes below them are never touched.
+
 ## Your notes
 
 Notes are plain Markdown in `Documents/Lorekeeper` (change it in **Settings > General**):
@@ -96,7 +106,7 @@ Backups run on each new session, every 30 minutes while notes change, once a day
 
 ## Settings
 
-- **General:** campaigns (notes folders), launch at login, "saved" notifications, updates.
+- **General:** campaigns (notes folders), the D&D Beyond sign-in, launch at login, "saved" notifications, updates.
 - **Hotkeys:** record new shortcuts; a shortcut another app already uses is refused and the old one keeps working.
 - **Appearance:** Light (Tome), Dark (Dungeon) or System, editor font size, Timeline or Journal by default.
 - **Backups:** see above.

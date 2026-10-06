@@ -22,6 +22,7 @@ use tauri_plugin_notification::NotificationExt;
 
 mod backup;
 mod cloud;
+mod dndbeyond;
 mod dropbox;
 mod gdrive;
 mod github;
@@ -1322,6 +1323,11 @@ pub fn run() {
             cloud_sign_in,
             cloud_sign_in_cancel,
             cloud_sign_out,
+            dndbeyond::dndbeyond_sign_in,
+            dndbeyond::dndbeyond_sign_out,
+            dndbeyond::dndbeyond_status,
+            dndbeyond::dndbeyond_lookup,
+            dndbeyond::dndbeyond_character,
             restore::restore_list,
             restore::restore_target,
             restore::restore_start,
@@ -1365,9 +1371,9 @@ pub fn run() {
             }
             Ok(())
         })
-        // Closing a window only hides it; the app keeps running in the tray.
+        // Closing a window only hides it; the app keeps running in the tray. The D&D Beyond sign-in window really closes.
         .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } => {
+            WindowEvent::CloseRequested { api, .. } if window.label() != dndbeyond::LABEL => {
                 api.prevent_close();
                 let _ = window.hide();
                 #[cfg(target_os = "macos")]

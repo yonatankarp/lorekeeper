@@ -130,7 +130,7 @@ export const kindOf = (path) => FOLDER_KINDS[path.split("/")[0]] ?? "note";
 const PROP_ICONS = { category: "lore", reward: "loot", rarity: "item", giver: "npc", leader: "npc", owner: "npc", player: "pc", location: "location", base: "location", region: "location" };
 
 /** Labels that read better than the property's name. */
-const PROP_LABELS = { player: "Played by", "first-met": "First met" };
+const PROP_LABELS = { player: "Played by", "first-met": "First met", dndbeyond: "D&D Beyond" };
 const capital = (s) => s.replace(/^./, (c) => c.toUpperCase());
 
 /** The line that sums up a PC ("Human Barbarian, level 1") or an NPC ("Human, miner's exchange"), and the keys it uses. */
@@ -204,4 +204,75 @@ export function renameLinks(md, from, to, paths) {
     if (/\.md$/i.test(old)) name += ".md";
     return `${bang}[[${target.replace(old, () => name)}${heading}${alias === undefined ? "" : `|${alias}`}]]`;
   });
+}
+
+// ---------- D&D Beyond characters ----------
+
+/** Like splitFrontmatter's, and an empty block ("---\n---") counts too. */
+const FRONTMATTER = /^---(\r?\n)(?:([\s\S]*?)\r?\n)??(---[ \t]*(?:\r?\n|$))/;
+const PROP_LINE = /^([^:#\s][^:]*):\s?(.*)$/;
+/** A value as YAML: quoted when it would otherwise mean something else (a leading indicator, ": ", " #"). */
+const yamlValue = (v) => (/^[\s\-?:,[\]{}#&*!|>'"%@`]|: | #|\s$/.test(v) ? JSON.stringify(v) : v);
+
+/**
+ * `md` with the properties in `updates` ({ key: value }) set: an existing key (any case) keeps its spelling and place and
+ * gets the new value, a missing one is added at the end, and frontmatter is made when there is none. Keys in `onlyIfEmpty`
+ * are only set when missing or blank. Every other line and the body stay exactly as they were.
+ */
+export function setProps(md, updates, { onlyIfEmpty = [] } = {}) {
+  const m = md.match(FRONTMATTER);
+  const nl = m?.[1] ?? (md.includes("\r\n") ? "\r\n" : "\n");
+  const lines = m?.[2]?.split(nl) ?? [];
+  const todo = new Map(Object.entries(updates).map(([k, v]) => [k.toLowerCase(), [k, String(v)]]));
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const kv = lines[i].match(PROP_LINE);
+    const key = kv?.[1].trim().toLowerCase();
+    if (!kv || !todo.has(key)) {
+      out.push(lines[i]);
+      continue;
+    }
+    let end = i + 1; // a list or folded text under the key belongs to it
+    while (end < lines.length && /^(\s+\S|-(\s|$))/.test(lines[end])) end++;
+    const empty = end === i + 1 && !kv[2].replace(/^["']|["']$/g, "").trim();
+    out.push(...(onlyIfEmpty.includes(key) && !empty ? lines.slice(i, end) : [`${kv[1].trimEnd()}: ${yamlValue(todo.get(key)[1])}`]));
+    todo.delete(key);
+    i = end - 1;
+  }
+  for (const [k, v] of todo.values()) out.push(`${k}: ${yamlValue(v)}`);
+  const inner = out.length ? out.join(nl) + nl : "";
+  return m ? `---${nl}${inner}${m[3]}${md.slice(m[0].length)}` : `---${nl}${inner}---${nl}${md}`;
+}
+
+/** The character id in a D&D Beyond sheet link, or "". */
+export const sheetId = (url) => url.match(/^https:\/\/(?:www\.)?dndbeyond\.com\/(?:[^?#]*\/)?characters\/(\d+)/)?.[1] ?? "";
+
+/** The D&D Beyond character id in a page's `dndbeyond` link, or "". */
+export const dndBeyondId = (content) => sheetId(prop(splitFrontmatter(content).props, "dndbeyond"));
+
+/**
+ * The PCs/ page of a D&D Beyond character ({ id, name }): the one linking to its sheet, else one with its name (any case)
+ * that doesn't link to another character's sheet. null when there is none.
+ */
+export function pcPageFor(character, notes) {
+  const pcs = notes.filter((n) => n.path.startsWith("PCs/"));
+  const id = String(character.id);
+  const named = (n) => baseName(n.path).toLowerCase() === character.name.trim().toLowerCase() && [id, ""].includes(dndBeyondId(n.content));
+  return (pcs.find((n) => dndBeyondId(n.content) === id) ?? pcs.find(named))?.path ?? null;
+}
+
+/** `name` as a page name: characters badName refuses become spaces; `fallback` when nothing usable is left. */
+export function safePageName(name, fallback) {
+  const clean = name.replace(/[\\/:*?"<>|#^[\]]/g, " ").replace(/\s+/g, " ").trim().replace(/^\.+\s*/, "");
+  return badName(clean) ? fallback : clean;
+}
+
+/**
+ * A PC page brought up to date with a D&D Beyond character: `race`, `class`, `level` and the `dndbeyond` sheet link are
+ * replaced (unless D&D Beyond left them blank); `player` is only filled in when empty, so a name you typed stays. The body
+ * is never touched.
+ */
+export function characterProps(md, c) {
+  const updates = { race: c.race, class: c.classes, level: c.level ? String(c.level) : "", dndbeyond: c.url, player: c.player };
+  return setProps(md, Object.fromEntries(Object.entries(updates).filter(([, v]) => v)), { onlyIfEmpty: ["player"] });
 }
