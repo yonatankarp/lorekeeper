@@ -28,6 +28,7 @@ mod gdrive;
 mod github;
 mod obsidian;
 mod restore;
+mod sync;
 mod updater;
 mod watch;
 

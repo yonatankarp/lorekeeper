@@ -35,6 +35,21 @@ ring = "0.17"
 base64 = "0.23"
 tauri-plugin-updater = "2"
 trash = "5.2.9"
+# Shared campaigns (sync.rs): the protocol crate, and a WebSocket client on Tauri's tokio runtime with rustls and
+# ring, the same TLS as ureq (no OpenSSL).
+sync-protocol = { path = "../sync-protocol" }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "__rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+zeroize = "1"
+
+[dev-dependencies]
+# The sync engine's end-to-end test runs the real server in-process.
+sync-server = { path = "../sync-server" }
+axum = "0.8.9"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -52,6 +67,9 @@ glib = { path = "patches/glib-0.18.5" }
 # Returning focus to the app the quick-note box was opened over.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
+
+# O_NOFOLLOW when sync reads files to upload.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]

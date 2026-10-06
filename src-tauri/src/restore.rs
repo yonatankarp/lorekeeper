@@ -97,20 +97,24 @@ pub fn places(s: &Settings) -> Places {
 /// A backup's file name ("NPCs/Vex.md") as a path inside the restore folder, or None when it could
 /// escape it or can't be a file name here: absolute, `..`, empty parts, drive prefixes.
 pub fn safe_rel(name: &str) -> Option<PathBuf> {
-    let part_ok = |p: &str| {
-        let windows_ok = || {
-            let stem = p.split('.').next().unwrap_or("").to_ascii_uppercase();
-            let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
-                || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
-            !reserved && !p.ends_with(['.', ' ']) && !p.chars().any(|c| c.is_control() || "\\:*?\"<>|".contains(c))
-        };
-        !p.is_empty() && p != "." && p != ".." && !p.contains('\0') && (!cfg!(windows) || windows_ok())
-    };
-    if !name.split('/').all(part_ok) {
+    if !name.split('/').all(|p| safe_part(p, cfg!(windows))) {
         return None;
     }
     let path = PathBuf::from(name);
     path.components().all(|c| matches!(c, Component::Normal(_))).then_some(path)
+}
+
+/// One name in a path that's safe to create: not empty, `.` or `..`, no NUL, and with `windows` also none of
+/// Windows' reserved names or characters, control characters, or a trailing dot or space. Sync passes `windows` on
+/// every system, so a name one player's computer can't hold never reaches anyone.
+pub fn safe_part(p: &str, windows: bool) -> bool {
+    let windows_ok = || {
+        let stem = p.split('.').next().unwrap_or("").to_ascii_uppercase();
+        let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+            || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+        !reserved && !p.ends_with(['.', ' ']) && !p.chars().any(|c| c.is_control() || "\\:*?\"<>|/".contains(c))
+    };
+    !p.is_empty() && p != "." && p != ".." && !p.contains('\0') && (!windows || windows_ok())
 }
 
 /// The part of a backup path under `root`: everything when root is "".
