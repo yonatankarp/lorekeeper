@@ -1,7 +1,7 @@
-// Turns a session file into grouped sections and D&D Beyond-ready HTML.
+// Turns a session file into a timeline and sections grouped by kind (the Journal view).
 // Hotkey notes look like "- 21:43 @Mirela the innkeeper"; the first character picks the section.
 // Hand-written bullets and paragraphs count too, so nothing typed in the editor is silently dropped.
-import { baseName, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
+import { authorOf, baseName, naturally, pcPath, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
 import { IMAGE_EMBED } from "./images.js";
 
 export const SECTIONS = [
@@ -77,11 +77,53 @@ export const escape = (s) =>
 const plainLink = (_, bang, target, heading, label) => label ?? target;
 export const stripLinks = (text) => text.replace(WIKILINK, plainLink);
 
-/** Groups without image embeds, which can't paste into D&D Beyond; a note that was only an image is left out. */
-const withoutImages = (groups) =>
-  Object.fromEntries(Object.entries(groups).map(([k, items]) => [k, items.map((t) => t.replace(IMAGE_EMBED, "").replace(/\s{2,}/g, " ").trim()).filter(Boolean)]));
-
 const filled = (groups) => SECTIONS.filter(([key]) => groups[key].length);
+
+// ---------- shared sessions: one file per player in Sessions/Session N/ (see pages in vault.js) ----------
+
+/** "21:43" as minutes; -1 for a line without a time. */
+const minutes = (time) => (time ? time.split(":").reduce((h, m) => h * 60 + Number(m)) : -1);
+
+/**
+ * Every player's notes in one timeline: timeline() items with `author` (see authorOf) and `path` (the file the note is
+ * in), by time, then by author. A line without a time stays after the note before it in its file, and a time that jumps
+ * back more than 6 hours is past midnight.
+ * ponytail: a player whose first note is after midnight sorts before the others' notes from before it.
+ */
+export function mergeTimelines(parts) {
+  const all = parts.flatMap(({ path, content }) => {
+    let at = -1;
+    let day = 0;
+    return timeline(content).map((n) => {
+      const t = minutes(n.time);
+      if (t >= 0) {
+        if (t + day < at - 360) day += 1440;
+        at = t + day;
+      }
+      return { ...n, author: authorOf(path), path, at };
+    });
+  });
+  return all.sort((a, b) => a.at - b.at || naturally(a.author, b.author));
+}
+
+/**
+ * parse() for a shared session: the merged notes grouped by kind, each followed by its author as a link to their PC page
+ * (`paths`: the vault's pages), "... ([[PCs/Sibling 5|Sibling 5]])". Image-only notes get no author.
+ */
+export function parseMerged(parts, paths = []) {
+  const groups = Object.fromEntries(SECTIONS.map(([key]) => [key, []]));
+  for (const { kind, text, author } of mergeTimelines(parts)) {
+    const page = author && (pcPath(author, paths)?.replace(/\.md$/i, "") ?? author);
+    groups[kind].push(page && text.replace(IMAGE_EMBED, "").trim() ? `${text} ([[${page}|${author}]])` : text);
+  }
+  return { title: parts.map((p) => parse(p.content).title).find(Boolean) ?? "", groups };
+}
+
+/** The start of `pc`'s own file in shared session folder `folder`, as lib.rs writes it (start_file). */
+export function playerFile(folder, pc, date) {
+  const n = baseName(folder).replace(/^Session /, "");
+  return `---\nsession: ${n}\ndate: ${date}\nauthor: "[[${pc}]]"\n---\n# Session ${n} - ${date}\n\n`;
+}
 
 /**
  * Escapes text and renders its [[links]] with `link(target, labelHtml, match)` (target raw, label escaped; match[1]
@@ -99,21 +141,13 @@ export function linkify(text, link) {
 }
 
 /**
- * HTML for D&D Beyond. `link(target, labelHtml)` renders [[links]];
- * the default writes the label only, so the journal never shows brackets.
+ * The Journal view: a recap grouped by kind. `link(target, labelHtml, match)` renders [[links]] and ![[embeds]] (see
+ * linkify); the default writes the label only, so it never shows brackets.
  */
 export function toHtml({ title, groups }, link = (target, label) => label) {
-  groups = withoutImages(groups);
   const item = (t) => linkify(t, link);
   const head = title ? `<h2>${escape(stripLinks(title))}</h2>` : "";
   return head + filled(groups)
     .map(([key, label]) => `<h3>${label}</h3><ul>${groups[key].map((t) => `<li>${item(t)}</li>`).join("")}</ul>`)
     .join("");
-}
-
-export function toText({ title, groups }) {
-  groups = withoutImages(groups);
-  const parts = title ? [stripLinks(title)] : [];
-  for (const [key, label] of filled(groups)) parts.push(`${label}\n${groups[key].map((t) => `• ${stripLinks(t)}`).join("\n")}`);
-  return parts.join("\n\n");
 }

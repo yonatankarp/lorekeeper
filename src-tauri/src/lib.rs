@@ -29,9 +29,11 @@ mod github;
 mod obsidian;
 mod restore;
 mod updater;
+mod watch;
 
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
 //   Sessions/Session N.md   written by the hotkeys
+//   Sessions/Session N/<PC>.md   the same in a campaign shared with your party: one file per player
 //   PCs/ NPCs/ Locations/ Items/ Factions/ Quests/ Lore/   your pages
 //   Templates/   starting text for "New page" (Obsidian's {{title}} / {{date}} syntax)
 //   Templates/.seeded   the default templates written so far, one name per line
@@ -133,15 +135,21 @@ fn create_vault_folders(dir: &Path, home: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn session_number(file_name: &str) -> Option<u32> {
-    file_name.strip_prefix("Session ")?.strip_suffix(".md")?.parse().ok()
+/// "Session 3.md" (a file) or "Session 3" (a shared session's folder): 3.
+fn session_number(name: &str, is_dir: bool) -> Option<u32> {
+    let n = name.strip_prefix("Session ")?;
+    if is_dir { n } else { n.strip_suffix(".md")? }.parse().ok()
 }
 
+/// The newest session's number, whether it's a Session N.md file or a Session N/ folder.
 fn latest_session(dir: &Path) -> io::Result<u32> {
     let sessions = dir.join("Sessions");
     fs::create_dir_all(&sessions)?;
     Ok(fs::read_dir(sessions)?
-        .filter_map(|e| session_number(e.ok()?.file_name().to_str()?))
+        .filter_map(|e| {
+            let e = e.ok()?;
+            session_number(e.file_name().to_str()?, e.file_type().ok()?.is_dir())
+        })
         .max()
         .unwrap_or(0))
 }
@@ -150,33 +158,82 @@ fn session_path(dir: &Path, n: u32) -> PathBuf {
     dir.join("Sessions").join(format!("Session {n}.md"))
 }
 
-/// Starts the next session file, with Obsidian properties so sessions can be listed as a table.
-fn new_session(dir: &Path) -> io::Result<PathBuf> {
-    let n = latest_session(dir)? + 1;
-    let path = session_path(dir, n);
+/// A shared session: Session N/ holds one file per player, so synced copies never collide.
+fn session_folder(dir: &Path, n: u32) -> PathBuf {
+    dir.join("Sessions").join(format!("Session {n}"))
+}
+
+/// Where your quick notes for session `n` go: Session N.md, or in a shared campaign (`me` = your PC's name)
+/// your own file in its folder, Session N/<PC>.md.
+fn notes_file(dir: &Path, n: u32, me: Option<&str>) -> PathBuf {
+    match me {
+        Some(me) => session_folder(dir, n).join(format!("{me}.md")),
+        None => session_path(dir, n),
+    }
+}
+
+/// "Session 4" for Session 4.md, or for a player's file in Session 4/.
+fn session_name(path: &Path) -> String {
+    let folder = path.parent().filter(|d| d.file_name().and_then(|n| n.to_str()).and_then(|n| session_number(n, true)).is_some());
+    let name = folder.map_or_else(|| path.file_stem(), |d| d.file_name());
+    name.unwrap_or_default().to_string_lossy().into_owned()
+}
+
+/// Session `n`'s notes file (see notes_file), made when it isn't there yet with Obsidian properties, so sessions can
+/// be listed as a table. A player's file also names its author.
+fn start_file(dir: &Path, n: u32, me: Option<&str>) -> io::Result<PathBuf> {
+    let path = notes_file(dir, n, me);
+    fs::create_dir_all(path.parent().unwrap())?;
     let date = chrono::Local::now().format("%Y-%m-%d");
-    fs::write(&path, format!("---\nsession: {n}\ndate: {date}\n---\n# Session {n} - {date}\n\n"))?;
+    let author = me.map(|me| format!("author: \"[[{me}]]\"\n")).unwrap_or_default();
+    match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut f) => {
+            f.write_all(format!("---\nsession: {n}\ndate: {date}\n{author}---\n# Session {n} - {date}\n\n").as_bytes())?;
+            watch::wrote(&path);
+        }
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+        Err(_) => {}
+    }
     Ok(path)
 }
 
-/// The newest session file. Sessions only roll over via "New Session", never by date,
-/// so a game running past midnight stays in one file.
-fn current_session(dir: &Path) -> io::Result<PathBuf> {
+/// Whether anyone wrote in session folder `dir` in the last 12 hours: a session that's still going.
+fn going(dir: &Path, now: std::time::SystemTime) -> bool {
+    let mut times = fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()?.modified().ok());
+    times.any(|t| stale_hours(t, now).is_none())
+}
+
+/// Starts the next session and returns your notes file in it. In a shared campaign, a session a teammate started in
+/// the last 12 hours that you haven't written in yet is joined instead, so a party pressing New session together
+/// stays in one session.
+fn new_session(dir: &Path, me: Option<&str>) -> io::Result<PathBuf> {
+    let n = latest_session(dir)?;
+    let join = me.is_some() && n > 0 && !notes_file(dir, n, me).exists() && going(&session_folder(dir, n), std::time::SystemTime::now());
+    start_file(dir, if join { n } else { n + 1 }, me)
+}
+
+/// Your notes file in the newest session. Sessions only roll over via "New session", never by date, so a game running
+/// past midnight stays in one session. A shared campaign never writes to a Session N.md file: when the newest session
+/// is one (from before sharing), your notes start the next session, as a folder.
+fn current_session(dir: &Path, me: Option<&str>) -> io::Result<PathBuf> {
     match latest_session(dir)? {
-        0 => new_session(dir),
-        n => Ok(session_path(dir, n)),
+        0 => new_session(dir, me),
+        n if me.is_some() && !session_folder(dir, n).is_dir() => start_file(dir, n + 1, me),
+        n => start_file(dir, n, me),
     }
 }
 
 /// Appends one note as a single line; multi-line selections are collapsed so the
 /// one-note-per-line format survives. Returns the saved text (empty = nothing saved).
-fn append_note(dir: &Path, text: &str) -> io::Result<String> {
+fn append_note(dir: &Path, me: Option<&str>, text: &str) -> io::Result<String> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if !text.is_empty() {
         let _guard = WRITE_LOCK.lock().unwrap();
         let time = chrono::Local::now().format("%H:%M");
-        let mut file = fs::OpenOptions::new().append(true).open(current_session(dir)?)?;
+        let path = current_session(dir, me)?;
+        let mut file = fs::OpenOptions::new().append(true).open(&path)?;
         writeln!(file, "- {time} {text}")?;
+        watch::wrote(&path);
     }
     Ok(text)
 }
@@ -211,13 +268,14 @@ fn replace_last_note(content: &str, old: &str, new: &str) -> Option<String> {
 /// ↑ in the quick box: rewrites the last note in place if it still reads `old`. If another note arrived since,
 /// the text is appended as a new note instead, so nothing is lost. Returns whether it was fixed in place;
 /// empty text keeps the note as it was.
-fn fix_last_note(dir: &Path, old: &str, text: &str) -> io::Result<bool> {
+fn fix_last_note(dir: &Path, me: Option<&str>, old: &str, text: &str) -> io::Result<bool> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         return Ok(true);
     }
     let _guard = WRITE_LOCK.lock().unwrap();
-    let path = current_session(dir)?;
+    let path = current_session(dir, me)?;
+    watch::wrote(&path);
     if let Some(fixed) = replace_last_note(&fs::read_to_string(&path)?, old, &text) {
         fs::write(&path, fixed)?;
         return Ok(true);
@@ -241,12 +299,13 @@ struct StaleSession {
     idle_hours: u64,
 }
 
-/// The newest session when its file hasn't changed in 12 hours. A fresh vault or a session with
-/// no notes yet has none (and no file gets created).
-fn stale_session(dir: &Path, now: std::time::SystemTime) -> io::Result<Option<StaleSession>> {
+/// The newest session when your notes file in it hasn't changed in 12 hours. A fresh vault, or a session you have
+/// no notes in yet, has none (and no file gets created).
+fn stale_session(dir: &Path, me: Option<&str>, now: std::time::SystemTime) -> io::Result<Option<StaleSession>> {
     let n = latest_session(dir)?;
-    let path = session_path(dir, n);
-    if n == 0 || !fs::read_to_string(&path)?.lines().any(|l| l.starts_with("- ")) {
+    let path = notes_file(dir, n, me);
+    let Ok(text) = fs::read_to_string(&path) else { return Ok(None) };
+    if n == 0 || !text.lines().any(|l| l.starts_with("- ")) {
         return Ok(None);
     }
     let modified = fs::metadata(path)?.modified()?;
@@ -369,6 +428,8 @@ struct Settings {
     /// Notes folder -> the name its backups go under, when you gave it one (see backup::backup_name).
     /// Kept after a campaign is removed, so adding the folder again carries on its backups.
     backup_names: BTreeMap<String, String>,
+    /// Notes folder -> how it's shared with your party; a campaign not in here is yours alone.
+    sharing: BTreeMap<String, Sharing>,
     theme: String,
     editor_font_size: u32,
     session_view: String,
@@ -398,6 +459,7 @@ impl Default for Settings {
             vault_path: String::new(),
             campaigns: Vec::new(),
             backup_names: BTreeMap::new(),
+            sharing: BTreeMap::new(),
             theme: "system".into(),
             editor_font_size: 15,
             session_view: "timeline".into(),
@@ -412,6 +474,26 @@ impl Default for Settings {
             new_session: String::new(),
             new_page: String::new(),
         }
+    }
+}
+
+/// A campaign folder the party shares (say through Google Drive): each player's quick notes go to a file of their own.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct Sharing {
+    shared: bool,
+    /// The PC you play in it ("PCs/Sibling 5.md"); its name names your files.
+    me: String,
+}
+
+const PICK_PC: &str = "Pick your character in Settings > General first";
+
+/// In a campaign shared with your party, your PC's name (the stem of `me`), which your notes files are named after;
+/// None in a campaign of your own. Shared but no character picked yet is an error, so no note lands in the wrong place.
+fn author(s: &Settings) -> Result<Option<String>, String> {
+    match s.sharing.get(&s.vault_path) {
+        Some(c) if c.shared => Path::new(&c.me).file_stem().map(|n| Some(n.to_string_lossy().into_owned())).ok_or_else(|| PICK_PC.into()),
+        _ => Ok(None),
     }
 }
 
@@ -503,6 +585,9 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     }
     s.backup_names = s.backup_names.into_iter().map(|(k, v)| (k, v.trim().to_string())).filter(|(_, v)| !v.is_empty()).collect();
     backup::check_campaigns(&s)?;
+    if let Some(c) = s.sharing.values().find(|c| !c.me.is_empty() && !(c.me.starts_with("PCs/") && vault_file(Path::new("/"), &c.me).is_ok())) {
+        return Err(format!("\"{}\" isn't a page in PCs/.", c.me));
+    }
     if !THEMES.contains(&s.theme.as_str()) {
         return Err(format!("Unknown theme \"{}\".", s.theme));
     }
@@ -631,7 +716,7 @@ fn open_external(target: impl AsRef<std::ffi::OsStr>) {
 fn open_notes(app: &AppHandle) {
     let dir = notes_dir(app);
     if obsidian::vault_root(&dir).is_some() {
-        match current_session(&dir) {
+        match note_target(app).and_then(|(dir, me)| current_session(&dir, me.as_deref()).map_err(|e| e.to_string())) {
             Ok(session) => obsidian::open(&session),
             Err(_) => open_external(&dir),
         }
@@ -687,13 +772,13 @@ fn capture_selection(app: &AppHandle) {
         Some(t) => ("Saved selection", t),
         None => ("Saved from clipboard", old),
     };
-    match append_note(&notes_dir(app), &text) {
+    match note_target(app).and_then(|(dir, me)| append_note(&dir, me.as_deref(), &text).map_err(|e| e.to_string())) {
         Ok(saved) if saved.is_empty() => notify(app, "Nothing to save", "No text selected or copied."),
         Ok(saved) => {
             emit_changed(app);
             notify_saved(app, title, &preview(&saved));
         }
-        Err(e) => notify(app, "Couldn't save note", &e.to_string()),
+        Err(e) => notify(app, "Couldn't save note", &e),
     }
 }
 
@@ -736,13 +821,13 @@ fn register_shortcuts(app: &AppHandle, s: &Settings) -> Vec<String> {
 
 /// The New Session hotkey and tray item: starts the next session file without opening a window.
 fn start_new_session(app: &AppHandle) {
-    match new_session(&notes_dir(app)) {
+    match note_target(app).and_then(|(dir, me)| new_session(&dir, me.as_deref()).map_err(|e| e.to_string())) {
         Ok(p) => {
             emit_changed(app);
             backup::request(false); // captures the session that just ended
-            notify_saved(app, "New session started", &p.file_stem().unwrap_or_default().to_string_lossy());
+            notify_saved(app, "New session started", &session_name(&p));
         }
-        Err(e) => notify(app, "Couldn't start session", &e.to_string()),
+        Err(e) => notify(app, "Couldn't start session", &e),
     }
 }
 
@@ -754,44 +839,57 @@ fn open_new_page(app: &AppHandle) {
 
 // ---------- commands for the windows ----------
 
+/// The open campaign's folder and, when it's shared with your party, your PC's name (see author).
+fn note_target(app: &AppHandle) -> Result<(PathBuf, Option<String>), String> {
+    let s = app.state::<Mutex<Settings>>();
+    let s = s.lock().unwrap();
+    Ok((PathBuf::from(&s.vault_path), author(&s)?))
+}
+
 /// From the quick box. Returns the session the note went into ("Session 3") for the box to show.
 #[tauri::command]
 fn save_note(app: AppHandle, text: String, start_new: Option<bool>) -> Result<String, String> {
-    let dir = notes_dir(&app);
-    let fresh = if start_new == Some(true) { new_session(&dir).map(|_| backup::request(false)) } else { Ok(()) };
-    match fresh.and_then(|_| append_note(&dir, &text)).and_then(|_| current_session(&dir)) {
+    let saved = note_target(&app).and_then(|(dir, me)| {
+        let me = me.as_deref();
+        let fresh = if start_new == Some(true) { new_session(&dir, me).map(|_| backup::request(false)) } else { Ok(()) };
+        fresh.and_then(|_| append_note(&dir, me, &text)).and_then(|_| current_session(&dir, me)).map_err(|e| e.to_string())
+    });
+    match saved {
         Ok(path) => {
             emit_changed(&app);
-            Ok(path.file_stem().unwrap_or_default().to_string_lossy().into_owned())
+            Ok(session_name(&path))
         }
         Err(e) => {
-            notify(&app, "Couldn't save note", &e.to_string());
-            Err(e.to_string())
+            notify(&app, "Couldn't save note", &e);
+            Err(e)
         }
     }
 }
 
-/// The current session's last note, without its "- HH:MM ", for ↑ in the quick box.
+/// Your last note in the current session, without its "- HH:MM ", for ↑ in the quick box.
 #[tauri::command]
 fn last_note(app: AppHandle) -> Option<String> {
-    let dir = notes_dir(&app);
+    let (dir, me) = note_target(&app).ok()?;
     let n = latest_session(&dir).ok().filter(|&n| n > 0)?;
-    last_note_line(&fs::read_to_string(session_path(&dir, n)).ok()?).map(|(_, _, text)| text.to_owned())
+    last_note_line(&fs::read_to_string(notes_file(&dir, n, me.as_deref())).ok()?).map(|(_, _, text)| text.to_owned())
 }
 
 /// From the quick box after ↑: fixes the last note. Returns what the box shows.
 #[tauri::command]
 fn fix_note(app: AppHandle, old: String, text: String) -> Result<String, String> {
-    let dir = notes_dir(&app);
-    match fix_last_note(&dir, &old, &text).and_then(|fixed| Ok((fixed, current_session(&dir)?))) {
+    let fixed = note_target(&app).and_then(|(dir, me)| {
+        let me = me.as_deref();
+        fix_last_note(&dir, me, &old, &text).and_then(|fixed| Ok((fixed, current_session(&dir, me)?))).map_err(|e| e.to_string())
+    });
+    match fixed {
         Ok((fixed, path)) => {
             emit_changed(&app);
-            let session = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let session = session_name(&path);
             Ok(if fixed { format!("Fixed in {session}") } else { format!("Saved to {session} as a new note (the last one changed)") })
         }
         Err(e) => {
-            notify(&app, "Couldn't save note", &e.to_string());
-            Err(e.to_string())
+            notify(&app, "Couldn't save note", &e);
+            Err(e)
         }
     }
 }
@@ -891,7 +989,8 @@ fn read_vault(app: AppHandle) -> Result<Vault, String> {
     walk(&root, &root, &mut vault).map_err(|e| e.to_string())?;
     let n = latest_session(&root).map_err(|e| e.to_string())?;
     if n > 0 {
-        vault.current_session = rel_path(&root, &session_path(&root, n));
+        let folder = session_folder(&root, n);
+        vault.current_session = rel_path(&root, &if folder.is_dir() { folder } else { session_path(&root, n) });
     }
     vault.has_obsidian = obsidian::vault_root(&root).is_some();
     vault.obsidian_installed = obsidian::installed();
@@ -938,6 +1037,7 @@ fn save_file(app: AppHandle, path: String, content: String, base: String) -> Res
     let disk = fs::read_to_string(&file).unwrap_or_else(|_| base.clone()); // deleted elsewhere: recreate
     let merged = merge_save(&disk, &base, &content).ok_or("conflict")?;
     fs::write(&file, &merged).map_err(|e| e.to_string())?;
+    watch::wrote(&file);
     backup::mark_changed();
     Ok(merged)
 }
@@ -962,6 +1062,11 @@ fn delete_file(app: AppHandle, path: String) -> Result<(), String> {
         #[cfg(not(target_os = "macos"))]
         let trash = trash::TrashContext::default();
         trash.delete(&file).map_err(|e| format!("Couldn't move {path} to the Trash: {e}"))?;
+        watch::wrote(&file);
+        // The last file of a shared session (undoing New session): the empty folder goes too, so it isn't the newest session.
+        if let Some(dir) = file.parent().filter(|d| d.file_name().and_then(|n| n.to_str()).and_then(|n| session_number(n, true)).is_some()) {
+            let _ = fs::remove_dir(dir); // only goes when empty
+        }
     }
     emit_changed(&app);
     Ok(())
@@ -979,6 +1084,7 @@ fn create_file(app: AppHandle, path: String, content: String) -> Result<(), Stri
         _ => e.to_string(),
     })?;
     f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    watch::wrote(&file);
     backup::mark_changed();
     Ok(())
 }
@@ -987,8 +1093,11 @@ fn create_file(app: AppHandle, path: String, content: String) -> Result<(), Stri
 /// finds the same file on a case-insensitive disk, so it goes through a temporary name.
 fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let (src, dst) = (vault_file(root, from)?, vault_file(root, to)?);
-    // Hotkey notes find the current session by its "Session N" name, so sessions keep theirs.
-    let session = |rel: &str| rel.strip_prefix("Sessions/").and_then(session_number).is_some();
+    // Hotkey notes find the current session by its "Session N" name, so sessions keep theirs, and players' files their PC's.
+    let session = |rel: &str| {
+        let r = rel.strip_prefix("Sessions/").unwrap_or_default();
+        r.split_once('/').map_or(session_number(r, false), |(folder, _)| session_number(folder, true)).is_some()
+    };
     if session(from) || session(to) {
         return Err("Sessions keep their \"Session N\" names, so hotkey notes find the current one.".into());
     }
@@ -1010,6 +1119,8 @@ fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
     } else {
         fs::rename(&src, &dst)
     };
+    watch::wrote(&src);
+    watch::wrote(&dst);
     renamed.map_err(|e| format!("Couldn't rename {from}: {e}"))
 }
 
@@ -1037,23 +1148,43 @@ fn save_image(app: AppHandle, path: String, data: String) -> Result<(), String> 
         _ => e.to_string(),
     })?;
     f.write_all(&bytes).map_err(|e| e.to_string())?;
+    watch::wrote(&file);
     backup::mark_changed();
     Ok(())
 }
 
+/// Starts the next session (see new_session) and returns your notes file in it.
 #[tauri::command]
 fn start_session(app: AppHandle) -> Result<String, String> {
-    let root = notes_dir(&app);
-    let path = new_session(&root).map_err(|e| e.to_string())?;
+    let (root, me) = note_target(&app)?;
+    let path = new_session(&root, me.as_deref()).map_err(|e| e.to_string())?;
     emit_changed(&app);
     backup::request(false); // captures the session that just ended
     Ok(rel_path(&root, &path))
 }
 
-/// For the quick box: offers "Start Session N?" when the current session has gone quiet.
+/// For the quick box: offers "Start Session N?" when your notes in the current session have gone quiet.
 #[tauri::command]
 fn session_status(app: AppHandle) -> Option<StaleSession> {
-    stale_session(&notes_dir(&app), std::time::SystemTime::now()).ok().flatten()
+    let (dir, me) = note_target(&app).ok()?;
+    stale_session(&dir, me.as_deref(), std::time::SystemTime::now()).ok().flatten()
+}
+
+/// The PC pages of a campaign ("PCs/Sibling 5.md"), open or not, for picking the one you play in Settings.
+#[tauri::command]
+fn campaign_pcs(app: AppHandle, path: String) -> Result<Vec<String>, String> {
+    if !app.state::<Mutex<Settings>>().lock().unwrap().campaigns.contains(&path) {
+        return Err(format!("{path} isn't one of your campaigns."));
+    }
+    Ok(pc_pages(Path::new(&path)))
+}
+
+fn pc_pages(root: &Path) -> Vec<String> {
+    let mut vault = Vault::default();
+    let _ = walk(root, &root.join("PCs"), &mut vault); // no PCs/ yet: none
+    let mut pcs: Vec<String> = vault.notes.into_iter().map(|n| n.path).collect();
+    pcs.sort_by_cached_key(|p| p.to_lowercase());
+    pcs
 }
 
 /// Opens a page in Obsidian. Outside a vault it can't, so the window shows how to add the notes folder;
@@ -1082,11 +1213,6 @@ fn open_url(url: String) -> Result<(), String> {
     }
     open_external(parsed.as_str());
     Ok(())
-}
-
-#[tauri::command]
-fn copy_html(app: AppHandle, html: String, text: String) -> Result<(), String> {
-    app.clipboard().write_html(html, Some(text)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1365,9 +1491,9 @@ pub fn run() {
             rename_file,
             start_session,
             session_status,
+            campaign_pcs,
             open_in_obsidian,
             open_url,
-            copy_html,
             get_settings,
             save_settings,
             open_settings,
@@ -1423,6 +1549,7 @@ pub fn run() {
             refresh_login_item(handle);
             backup::start(handle.clone());
             updater::start(handle.clone());
+            watch::start(handle.clone());
             for keys in register_shortcuts(handle, &settings) {
                 notify(handle, "Shortcut unavailable", &format!("{keys} couldn't be registered. Change it in Settings."));
             }
@@ -1486,8 +1613,8 @@ mod tests {
         assert!(!dir.join("Templates/NPC.md").exists(), "deleted template must stay deleted");
 
         // First note creates Session 1 (with properties); multi-line text becomes one line.
-        assert_eq!(append_note(&dir, "  @Mirela\n the  innkeeper ").unwrap(), "@Mirela the innkeeper");
-        assert_eq!(append_note(&dir, " \n ").unwrap(), "");
+        assert_eq!(append_note(&dir, None, "  @Mirela\n the  innkeeper ").unwrap(), "@Mirela the innkeeper");
+        assert_eq!(append_note(&dir, None, " \n ").unwrap(), "");
         let s1 = fs::read_to_string(dir.join("Sessions/Session 1.md")).unwrap();
         assert!(s1.starts_with("---\nsession: 1\ndate: "));
         assert!(s1.contains("\n# Session 1 - "));
@@ -1496,8 +1623,8 @@ mod tests {
 
         // New session: notes go to the newest file; other files are ignored. Session 10 sorts after 9.
         fs::write(dir.join("Sessions/Ideas.md"), "x").unwrap();
-        new_session(&dir).unwrap();
-        append_note(&dir, "#potion").unwrap();
+        new_session(&dir, None).unwrap();
+        append_note(&dir, None, "#potion").unwrap();
         assert!(fs::read_to_string(session_path(&dir, 2)).unwrap().contains("#potion"));
         assert!(!fs::read_to_string(session_path(&dir, 1)).unwrap().contains("#potion"));
         fs::write(session_path(&dir, 9), "").unwrap();
@@ -1540,12 +1667,12 @@ mod tests {
         let dir = temp_dir("fix-last");
         fs::create_dir_all(dir.join("Sessions")).unwrap();
         fs::write(session_path(&dir, 1), "# Session 1\n\n- 19:58 Mirela the innkeper\n").unwrap();
-        assert!(fix_last_note(&dir, "Mirela the innkeper", "  Mirela the\n innkeeper ").unwrap());
+        assert!(fix_last_note(&dir, None, "Mirela the innkeper", "  Mirela the\n innkeeper ").unwrap());
         assert_eq!(fs::read_to_string(session_path(&dir, 1)).unwrap(), "# Session 1\n\n- 19:58 Mirela the innkeeper\n");
-        assert!(fix_last_note(&dir, "Mirela the innkeeper", "  ").unwrap());
+        assert!(fix_last_note(&dir, None, "Mirela the innkeeper", "  ").unwrap());
         assert_eq!(fs::read_to_string(session_path(&dir, 1)).unwrap(), "# Session 1\n\n- 19:58 Mirela the innkeeper\n");
-        append_note(&dir, "#potion").unwrap();
-        assert!(!fix_last_note(&dir, "Mirela the innkeeper", "Mirela the elf").unwrap());
+        append_note(&dir, None, "#potion").unwrap();
+        assert!(!fix_last_note(&dir, None, "Mirela the innkeeper", "Mirela the elf").unwrap());
         let notes: Vec<String> = fs::read_to_string(session_path(&dir, 1)).unwrap().lines().filter_map(|l| Some(note_line(l)?.1.to_owned())).collect();
         assert_eq!(notes, ["Mirela the innkeeper", "#potion", "Mirela the elf"]);
         fs::remove_dir_all(&dir).unwrap();
@@ -1562,15 +1689,116 @@ mod tests {
         // A fresh vault gets no prompt and no session file; an old session offers the next one.
         let dir = temp_dir("stale");
         let far = std::time::SystemTime::now() + Duration::from_secs(1000 * 3600);
-        assert!(stale_session(&dir, far).unwrap().is_none());
+        assert!(stale_session(&dir, None, far).unwrap().is_none());
         assert_eq!(latest_session(&dir).unwrap(), 0);
-        append_note(&dir, "the party rests").unwrap();
-        assert!(stale_session(&dir, std::time::SystemTime::now()).unwrap().is_none());
+        append_note(&dir, None, "the party rests").unwrap();
+        assert!(stale_session(&dir, None, std::time::SystemTime::now()).unwrap().is_none());
         let later = std::time::SystemTime::now() + Duration::from_secs(13 * 3600 + 60);
-        let s = stale_session(&dir, later).unwrap().unwrap();
+        let s = stale_session(&dir, None, later).unwrap().unwrap();
         assert_eq!((s.next, s.idle_hours), (2, 13));
-        new_session(&dir).unwrap();
-        assert!(stale_session(&dir, far).unwrap().is_none(), "a session without notes isn't stale");
+        new_session(&dir, None).unwrap();
+        assert!(stale_session(&dir, None, far).unwrap().is_none(), "a session without notes isn't stale");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shared_sessions_write_one_file_per_player() {
+        let dir = temp_dir("shared");
+        let me = Some("Sibling 5");
+        // Numbering reads Session N.md files and Session N/ folders alike, and the newest wins whichever form it has.
+        fs::create_dir_all(session_folder(&dir, 3)).unwrap();
+        fs::create_dir_all(dir.join("Sessions/Session 4 (1)")).unwrap(); // a sync conflict's copy isn't a session
+        fs::write(dir.join("Sessions/Session 9"), "").unwrap(); // nor is a file without .md
+        fs::write(session_path(&dir, 2), "").unwrap();
+        assert_eq!(latest_session(&dir).unwrap(), 3);
+        fs::write(session_path(&dir, 4), "").unwrap();
+        assert_eq!(latest_session(&dir).unwrap(), 4);
+        fs::remove_file(session_path(&dir, 4)).unwrap();
+
+        // Your notes go to your own file in the newest folder, made with its properties on the first one.
+        assert_eq!(append_note(&dir, me, " the  party\n rests ").unwrap(), "the party rests");
+        let mine = session_folder(&dir, 3).join("Sibling 5.md");
+        let text = fs::read_to_string(&mine).unwrap();
+        assert!(text.starts_with("---\nsession: 3\ndate: ") && text.contains("\nauthor: \"[[Sibling 5]]\"\n---\n# Session 3 - "), "{text}");
+        assert!(text.ends_with(" the party rests\n"), "{text}");
+        assert_eq!(text.lines().filter(|l| l.starts_with("- ")).count(), 1);
+        assert_eq!((session_name(&mine), session_name(&session_path(&dir, 2))), ("Session 3".into(), "Session 2".into()));
+
+        // ↑ fixes your own last note, even with a teammate's newer one; their file is never touched.
+        let theirs = session_folder(&dir, 3).join("Mirela.md");
+        fs::write(&theirs, "# Session 3\n- 23:59 the party rests\n").unwrap();
+        assert!(fix_last_note(&dir, me, "the party rests", "the party sleeps").unwrap());
+        assert!(fs::read_to_string(&mine).unwrap().ends_with(" the party sleeps\n"));
+        assert_eq!(fs::read_to_string(&theirs).unwrap(), "# Session 3\n- 23:59 the party rests\n");
+
+        // The stale prompt looks at your own file only.
+        let later = std::time::SystemTime::now() + Duration::from_secs(13 * 3600);
+        assert_eq!(stale_session(&dir, me, later).unwrap().map(|s| s.next), Some(4));
+        assert!(stale_session(&dir, Some("Vex"), later).unwrap().is_none(), "no notes of yours in it yet");
+
+        // New session makes the next folder with your file. A teammate who hasn't written in it yet joins it, rather than
+        // starting another; one who has starts the next. A session quiet for 12 hours is over, so nobody joins that.
+        assert_eq!(new_session(&dir, me).unwrap(), session_folder(&dir, 4).join("Sibling 5.md"));
+        assert_eq!(new_session(&dir, Some("Mirela")).unwrap(), session_folder(&dir, 4).join("Mirela.md"));
+        assert_eq!(new_session(&dir, Some("Mirela")).unwrap(), session_folder(&dir, 5).join("Mirela.md"));
+        let old = std::time::SystemTime::now() - Duration::from_secs(13 * 3600);
+        fs::File::options().write(true).open(session_folder(&dir, 5).join("Mirela.md")).unwrap().set_modified(old).unwrap();
+        assert_eq!(new_session(&dir, Some("Vex")).unwrap(), session_folder(&dir, 6).join("Vex.md"));
+        assert!(fs::read_to_string(session_folder(&dir, 6).join("Vex.md")).unwrap().contains("session: 6\n"));
+
+        // Shared never appends to a Session N.md from before sharing: the next session starts as a folder.
+        let solo = temp_dir("shared-from-solo");
+        append_note(&solo, None, "before").unwrap();
+        append_note(&solo, me, "after").unwrap();
+        assert!(!fs::read_to_string(session_path(&solo, 1)).unwrap().contains("after"));
+        assert!(fs::read_to_string(session_folder(&solo, 2).join("Sibling 5.md")).unwrap().ends_with(" after\n"));
+        for d in [dir, solo] {
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn shared_campaigns_need_a_character() {
+        let sharing = |shared: bool, me: &str| [("/v".to_string(), Sharing { shared, me: me.into() })].into();
+        let s = |sharing| Settings { vault_path: "/v".into(), sharing, ..Settings::default() };
+        assert_eq!(author(&s(sharing(true, ""))), Err(PICK_PC.to_string()));
+        assert_eq!(author(&s(sharing(true, "PCs/Sibling 5.md"))), Ok(Some("Sibling 5".into())));
+        assert_eq!(author(&s(sharing(false, ""))), Ok(None), "solo: as before");
+        assert_eq!(author(&s(BTreeMap::new())), Ok(None));
+        let other = Settings { vault_path: "/w".into(), ..s(sharing(true, "")) };
+        assert_eq!(author(&other), Ok(None), "only the open campaign counts");
+
+        // The PC pages of any campaign, open or not, for picking yours.
+        let dir = temp_dir("pcs");
+        assert!(pc_pages(&dir).is_empty());
+        fs::create_dir_all(dir.join("PCs/Retired")).unwrap();
+        fs::write(dir.join("PCs/Sibling 5.md"), "").unwrap();
+        fs::write(dir.join("PCs/Retired/arn.md"), "").unwrap();
+        fs::write(dir.join("PCs/portrait.png"), "").unwrap();
+        assert_eq!(pc_pages(&dir), ["PCs/Retired/arn.md", "PCs/Sibling 5.md"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn outside_changes_are_noticed_but_the_apps_own_are_not() {
+        use watch::{changed_by_others, stamps};
+        let dir = temp_dir("watch");
+        fs::create_dir_all(dir.join("Sessions/Session 1")).unwrap();
+        fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        let (mine, theirs) = (dir.join("Sessions/Session 1/Sibling 5.md"), dir.join("Sessions/Session 1/Mirela.md"));
+        fs::write(&mine, "a").unwrap();
+        let before = stamps(&dir);
+        assert!(!changed_by_others(&before, &stamps(&dir), &[]));
+        fs::write(dir.join(".obsidian/workspace.json"), "{}").unwrap();
+        assert!(!changed_by_others(&before, &stamps(&dir), &[]), "hidden files don't count");
+        fs::write(&mine, "ab").unwrap();
+        assert!(!changed_by_others(&before, &stamps(&dir), std::slice::from_ref(&mine)));
+        assert!(changed_by_others(&before, &stamps(&dir), &[]));
+        fs::write(&theirs, "x").unwrap();
+        assert!(changed_by_others(&before, &stamps(&dir), std::slice::from_ref(&mine)), "a teammate's new file");
+        let now = stamps(&dir);
+        fs::remove_file(&theirs).unwrap();
+        assert!(changed_by_others(&now, &stamps(&dir), &[]), "a file removed");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1687,6 +1915,11 @@ mod tests {
         fs::write(&config, r#"{"vaultPath":"/b/Side","campaigns":["/old/Lore","/b/Side"],"mainCampaign":"/old/Lore"}"#).unwrap();
         let s = load_settings(&config, &vault).unwrap();
         assert_eq!((s.campaigns.len(), s.vault_path.as_str()), (2, "/b/Side"));
+        assert!(s.sharing.is_empty(), "files from before sharing: every campaign is yours alone");
+        fs::write(&config, r#"{"sharing":{"/b/Side":{"shared":true,"me":"PCs/Arn.md"},"/old/Lore":{"shared":true}}}"#).unwrap();
+        let s = load_settings(&config, &vault).unwrap();
+        assert_eq!(s.sharing["/b/Side"], Sharing { shared: true, me: "PCs/Arn.md".into() });
+        assert_eq!(s.sharing["/old/Lore"].me, "");
 
         // Tome and Dungeon from 0.3.0 become Light and Dark; anything else is left for validate to judge.
         for (old, new) in [("tome", "light"), ("dungeon", "dark"), ("purple", "purple")] {
@@ -1784,6 +2017,14 @@ mod tests {
         assert_eq!(validate(swapped.clone()).unwrap(), swapped);
         let kept = Settings { backup_names: names(&[("/gone/Side", "Side")]), ..ok.clone() };
         assert_eq!(validate(kept.clone()).unwrap(), kept);
+        // The PC you play in a shared campaign is a page in its PCs/ folder, or none yet.
+        let playing = |me: &str| Settings { sharing: [(tmp.clone(), Sharing { shared: true, me: me.into() })].into(), ..ok.clone() };
+        for me in ["", "PCs/Sibling 5.md", "PCs/Retired/Arn.md"] {
+            assert_eq!(validate(playing(me)).unwrap(), playing(me));
+        }
+        for me in ["NPCs/Vex.md", "PCs/../secret.md", "PCs/Arn.txt", "/PCs/Arn.md", "PCs"] {
+            assert!(validate(playing(me)).is_err(), "{me} should be refused");
+        }
         for s in bad {
             assert!(validate(s.clone()).is_err(), "{s:?} should be refused");
         }

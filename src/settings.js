@@ -182,9 +182,36 @@ const folderName = (path) => path.split(/[\\/]/).filter(Boolean).pop() || path;
 /** A campaign's name: the one given here, else its folder's name. */
 const campaignName = (path) => current.backupNames?.[path] || folderName(path);
 
+const pcs = new Map(); // campaign folder -> its PC pages (campaign_pcs), refreshed on each redraw
+
+/** Fills a campaign row's "I play" list with its PC pages, `me` chosen (kept even when its page isn't there). */
+function fillPcs(select, path, me) {
+  const options = [...new Set([...(pcs.get(path) ?? []), ...(me ? [me] : [])])];
+  select.replaceChildren(new Option("Choose…", ""), ...options.map((p) => new Option(p.replace(/^PCs\//, "").replace(/\.md$/i, ""), p)));
+  select.value = me;
+}
+
+/** The "Shared with my party" switch and the "I play" list of a campaign row. */
+function renderSharing(row, s, path) {
+  const sharing = s.sharing?.[path] ?? { shared: false, me: "" };
+  const shared = row.querySelector(".campaign-shared"), select = row.querySelector(".campaign-me");
+  shared.checked = sharing.shared;
+  row.querySelector(".campaign-me-label").hidden = !sharing.shared;
+  fillPcs(select, path, sharing.me);
+  invoke("campaign_pcs", { path }).then((list) => {
+    pcs.set(path, list);
+    if (select.isConnected && document.activeElement !== select) fillPcs(select, path, select.value);
+  }).catch(() => {});
+  const change = (next) => save({ sharing: { ...current.sharing, [path]: { ...(current.sharing?.[path] ?? { shared: false, me: "" }), ...next } } });
+  shared.addEventListener("change", () => change({ shared: shared.checked }));
+  select.addEventListener("change", () => change({ me: select.value }));
+}
+
 function renderCampaigns(s) {
-  // Redrawn on every settings change: a name being typed keeps its text and focus.
+  // Redrawn on every settings change: a name being typed keeps its text and focus, a switch or list just used its focus.
   const typing = document.activeElement?.classList.contains("campaign-backup-name") ? document.activeElement : null;
+  const used = ["campaign-shared", "campaign-me"].find((c) => document.activeElement?.classList.contains(c));
+  const usedPath = used && document.activeElement.closest(".campaign")?.querySelector(".campaign-path").textContent;
   for (const row of document.querySelectorAll(".campaign")) row.remove();
   for (const path of s.campaigns) {
     const row = $("campaign-row").content.firstElementChild.cloneNode(true);
@@ -201,8 +228,10 @@ function renderCampaigns(s) {
     const remove = row.querySelector(".campaign-remove");
     remove.disabled = active; // switch to another campaign first
     remove.addEventListener("click", () => save({ campaigns: current.campaigns.filter((c) => c !== path) }));
+    renderSharing(row, s, path);
     $("campaign-add").before(row);
     if (typing?.dataset.path === path) backupName.focus();
+    if (usedPath === path) row.querySelector(`.${used}`).focus();
   }
 }
 
@@ -313,8 +342,8 @@ $("gh-sign-in").addEventListener("click", async () => {
   }
   $("gh-code").textContent = code.userCode;
   $("gh-open").onclick = () => invoke("open_url", { url: code.verificationUri });
-  $("gh-copy").onclick = () => invoke("copy_html", { html: code.userCode, text: code.userCode })
-    .then(() => { $("gh-copy").textContent = "Copied"; });
+  $("gh-copy").onclick = () => navigator.clipboard.writeText(code.userCode)
+    .then(() => { $("gh-copy").textContent = "Copied"; }, (err) => { error.textContent = `Copy failed: ${err}`; });
   $("gh-copy").textContent = "Copy code";
   signingIn = true;
   showGithub();

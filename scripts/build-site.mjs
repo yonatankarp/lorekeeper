@@ -100,7 +100,7 @@ ${[["@", "npc", "NPC"], ["#", "loot", "Loot"], ["!", "quest", "Quest"], ["?", "m
   .join("\n")}
 </ul>`,
   ],
-  ["session", "Sessions as a timeline", `<p>Every note keeps its time, so a session reads like the tale it was. <strong>Copy for D&amp;D Beyond</strong> turns it into a tidy recap for the party's shared journal.</p>`],
+  ["session", "Sessions as a timeline", `<p>Every note keeps its time, so a session reads like the tale it was. The Journal groups it into a recap: who you met, what you found, the quests and mysteries. Share the campaign folder through Google Drive and every player's notes show up together.</p>`],
   ["location", "The campaign vault", `<p>NPCs, PCs, places, items, factions, quests and lore, joined by <code>[[links]]</code> with backlinks on every page. It's all plain Markdown, so Obsidian opens it as a vault.</p>`],
   ["loot", "Backups, your way", `<p>To a folder, Dropbox, Google Drive or a private GitHub repository, straight from your computer to your own account. No servers, no accounts, <a href="PRIVACY.html">no analytics</a>.</p>`],
   ["home", "Tome or Dungeon", `<p>Aged parchment and red rubrics by day, torchlit stone and candle gold by night, set in the 5e book fonts. It follows your system, or pick one.</p>`],
@@ -117,7 +117,7 @@ const home = `<section class="hero wrap" aria-labelledby="title">
   <h1 class="title" id="title">Lorekeeper</h1>
   <hr class="fleuron">
   <p class="pitch">Session notes for D&amp;D players</p>
-  <p class="lede">Jot things down mid-game without leaving Discord, keep a vault of NPCs, places and quests, and paste a tidy recap into your D&amp;D Beyond journal.</p>
+  <p class="lede">Jot things down mid-game without leaving Discord, keep a vault of NPCs, places and quests, and share the journal with your party.</p>
   <div class="downloads" id="download">
 ${DOWNLOADS.map(([os, file]) => `    <a class="seal" href="${RELEASES}">Download for ${os}<small>${file}</small></a>`).join("\n")}
   </div>

@@ -109,6 +109,76 @@ export const openQuests = (notes) =>
 export const sessionPaths = (notes) =>
   notes.map((n) => n.path).filter((p) => p.startsWith("Sessions/")).sort((a, b) => naturally(baseName(b), baseName(a)));
 
+// ---------- shared sessions: Sessions/Session N/ holds one file per player (lib.rs start_file) ----------
+
+const SESSION_FOLDER = /^Sessions\/Session \d+$/i;
+const SESSION_PART = /^(Sessions\/Session \d+)(?:\.md|\/[^/]+\.md)$/i;
+
+/** Whether `path` is a shared session's folder ("Sessions/Session 4"). */
+export const isSessionFolder = (path) => SESSION_FOLDER.test(path);
+
+/** A player's file's author: "Sessions/Session 4/Sibling 5.md" is Sibling 5's; "" for any other path. */
+export const authorOf = (path) => (/^Sessions\/Session \d+\/[^/]+\.md$/i.test(path) ? baseName(path) : "");
+
+/**
+ * The pages the app shows for the notes on disk (`files`, [{ path, content }]) and the vault's `folders`. A shared session's
+ * folder is one page, "Sessions/Session 4", made of its players' files (plus a Session 4.md written next to it); a sync
+ * conflict's copy among them is left out (see syncConflicts). Everything else is its own page, the same object.
+ * A session page: { path, parts, content }, parts being the files and content their text in one (frontmatter from the
+ * first, then each body), so links, backlinks, search and the sessions list work on it like on any page.
+ */
+export function pages(files, folders = []) {
+  const copies = new Set(syncConflicts(files.map((f) => f.path)).map((c) => c.path));
+  const ids = new Set(folders.filter(isSessionFolder));
+  for (const f of files) {
+    const id = f.path.match(SESSION_PART)?.[1];
+    if (id && f.path !== `${id}.md`) ids.add(id);
+  }
+  const partOf = (f) => {
+    const id = f.path.match(SESSION_PART)?.[1];
+    return id && ids.has(id) ? id : null;
+  };
+  const out = files.filter((f) => !partOf(f));
+  for (const id of ids) {
+    const parts = files.filter((f) => partOf(f) === id && !copies.has(f.path)).sort((a, b) => naturally(a.path, b.path)); // Session 4.md first
+    out.push({
+      path: id,
+      parts,
+      get content() {
+        const date = parts.map((p) => splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "date")?.[1]).find(Boolean);
+        const head = `---\nsession: ${id.replace(/^.* /, "")}\n${date ? `date: ${date}\n` : ""}---\n`;
+        return head + parts.map((p) => splitFrontmatter(p.content).body).join("\n");
+      },
+    });
+  }
+  return out;
+}
+
+/** "PCs/Sibling 5.md", the PC page named `name` (any case, any folder in PCs/), or null. */
+export const pcPath = (name, paths) => paths.find((p) => p.startsWith("PCs/") && baseName(p).toLowerCase() === name.toLowerCase()) ?? null;
+
+/**
+ * Copies a sync app made when two computers changed a file at once: [{ path, of }] with `of` the original's path, or "" when
+ * the name doesn't say. Dropbox: "Vex (Mirela's conflicted copy 2026-10-06).md"; Syncthing: "Vex.sync-conflict-...md";
+ * "(Conflict ...)" or "[Conflict]" in a name; Google Drive for desktop and others: "Vex (1).md" next to "Vex.md" (1 or 2
+ * digits, so a D&D Beyond import's "Arn (12345678).md" isn't one). Works on files and folders alike.
+ */
+export function syncConflicts(paths) {
+  const all = new Set(paths);
+  const out = [];
+  for (const path of paths) {
+    const name = path.split("/").pop();
+    const dir = path.slice(0, path.length - name.length);
+    const numbered = name.match(/^(.+) \(\d{1,2}\)(\.[^.]+)?$/);
+    if (numbered && all.has(dir + numbered[1] + (numbered[2] ?? ""))) out.push({ path, of: dir + numbered[1] + (numbered[2] ?? "") });
+    else if (/conflicted copy|[([][^)\]]*\bconflict|\.sync-conflict-/i.test(name)) {
+      const of = dir + name.replace(/ ?(\([^)]*conflict[^)]*\)|\[[^\]]*conflict[^\]]*\]|\.sync-conflict-[^.]*)/i, "");
+      out.push({ path, of: all.has(of) ? of : "" });
+    }
+  }
+  return out.sort((a, b) => naturally(a.path, b.path));
+}
+
 /** A property's value, by case-insensitive key, unquoted; "" when missing. */
 const prop = (props, key) => (props.find(([k]) => k.toLowerCase() === key)?.[1] ?? "").replace(/^["']|["']$/g, "").trim();
 

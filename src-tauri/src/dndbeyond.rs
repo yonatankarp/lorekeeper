@@ -449,6 +449,7 @@ pub async fn dndbeyond_portrait(app: AppHandle, url: String, stem: String) -> Re
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut f) => {
                     std::io::Write::write_all(&mut f, &bytes).map_err(|e| e.to_string())?;
+                    crate::watch::wrote(&path);
                     crate::backup::mark_changed();
                     return Ok(rel);
                 }

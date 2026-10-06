@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { insertLine, linkify, parse, removeLine, sessions, timeline, toHtml, toText } from "./notes.js";
+import { insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, timeline, toHtml } from "./notes.js";
+import { pages } from "./vault.js";
 
 const md = `---
 session: 14
@@ -36,7 +37,7 @@ test("groups notes by prefix, keeps hand-written lines, and escapes HTML", () =>
   assert.deepEqual(session.groups.npc, ["[[Mirela]] the innkeeper, shifty"]); // bare "@" dropped
   assert.deepEqual(session.groups.quote, [`"You'll regret this" - Baron`]);
 
-  // D&D Beyond export: links become plain labels.
+  // The Journal recap: links become plain labels by default.
   const html = toHtml(session);
   assert.ok(html.startsWith("<h2>Session 14 - 2026-10-04</h2><h3>What happened</h3>"));
   assert.ok(html.includes("<li>Met the Baron at the gate</li>"));
@@ -51,10 +52,6 @@ test("groups notes by prefix, keeps hand-written lines, and escapes HTML", () =>
   const linked = toHtml(session, (target, label) => `<a data-target="${target}">${label}</a>`);
   assert.ok(linked.includes('<li><a data-target="Mirela">Mirela</a> the innkeeper, shifty</li>'));
   assert.ok(linked.includes('<a data-target="Baron Vex">the Baron</a>'));
-
-  const text = toText(session);
-  assert.ok(text.includes("Loot\n• +2 healing potions & 40gp"));
-  assert.ok(text.includes("• Mirela the innkeeper, shifty"));
   assert.equal(toHtml(parse("# Empty\n")), "<h2>Empty</h2>");
 });
 
@@ -110,4 +107,43 @@ test("sessions newest first, with title, date and note count", () => {
     { path: "Sessions/Session 10.md", title: "Session 10", date: "", count: 0 },
     { path: "Sessions/Session 2.md", title: "Session 2 at town", date: "2026-10-04", count: 2 },
   ]);
+});
+
+const shared = [
+  { path: "Sessions/Session 4/Sibling 5.md", content: playerFile("Sessions/Session 4", "Sibling 5", "2026-10-06") + "- 20:05 @[[Mirela]] lies\n- 23:50 #Gold\n- 00:10 Slept\n" },
+  { path: "Sessions/Session 4/Arn.md", content: playerFile("Sessions/Session 4", "Arn", "2026-10-06") + "- 20:05 Arrived\nThe rain stopped.\n- 21:00 ![[map.png]]\n" },
+  { path: "Sessions/Session 4.md", content: "# Session 4\n- 20:00 Before sharing\n" },
+];
+const session4 = () => pages(shared).find((p) => p.path === "Sessions/Session 4");
+
+test("a shared session's players' notes merge into one timeline, by time then author", () => {
+  const items = mergeTimelines(session4().parts);
+  assert.deepEqual(items.map((n) => [n.time, n.author, n.text]), [
+    ["20:00", "", "Before sharing"], // written before the folder: no author
+    ["20:05", "Arn", "Arrived"],
+    ["", "Arn", "The rain stopped."], // a line without a time stays after the note before it
+    ["20:05", "Sibling 5", "[[Mirela]] lies"],
+    ["21:00", "Arn", "![[map.png]]"],
+    ["23:50", "Sibling 5", "Gold"],
+    ["00:10", "Sibling 5", "Slept"], // past midnight
+  ]);
+  // Each note knows its file and line, for deleting your own.
+  const lies = items.find((n) => n.text.endsWith("lies"));
+  assert.equal(lies.path, "Sessions/Session 4/Sibling 5.md");
+  assert.equal(shared[0].content.split("\n")[lies.line], "- 20:05 @[[Mirela]] lies");
+  assert.deepEqual(mergeTimelines([]), []);
+});
+
+test("the Journal of a shared session names each note's author", () => {
+  const { title, groups } = parseMerged(session4().parts, ["PCs/Sibling 5.md"]);
+  assert.equal(title, "Session 4");
+  assert.deepEqual(groups.npc, ["[[Mirela]] lies ([[PCs/Sibling 5|Sibling 5]])"]);
+  assert.deepEqual(groups.event.slice(0, 3), ["Before sharing", "Arrived ([[Arn|Arn]])", "The rain stopped. ([[Arn|Arn]])"]);
+  assert.ok(groups.event.includes("![[map.png]]"), "an image alone gets no author");
+  assert.ok(toHtml({ title: "", groups }).includes("<li>Mirela lies (Sibling 5)</li>"));
+});
+
+test("the sessions list counts a shared session's notes from every player", () => {
+  assert.deepEqual(sessions(pages(shared)), [{ path: "Sessions/Session 4", title: "Session 4", date: "2026-10-06", count: 7 }]);
+  assert.equal(playerFile("Sessions/Session 12", "Arn", "2026-10-06"), '---\nsession: 12\ndate: 2026-10-06\nauthor: "[[Arn]]"\n---\n# Session 12 - 2026-10-06\n\n');
 });

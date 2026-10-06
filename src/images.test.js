@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { freeName, imageLabel, isImage, pastedName, resolveImage, safeName } from "./images.js";
-import { linkify, parse, toHtml, toText } from "./notes.js";
+import { linkify, parse, toHtml } from "./notes.js";
 
 const images = ["map.png", "Attachments/map.png", "Maps/Old/map.png", "Attachments/Pasted image 20261005143012.png", "Handouts/Letter.JPG", "b/x.webp", "a/x.webp"];
 
@@ -54,11 +54,8 @@ test("embeds reach the link renderer marked as embeds", () => {
   assert.deepEqual(seen, [["map.png", "!", "300"], ["Mirela", "", undefined]]);
 });
 
-test("Copy for D&D Beyond leaves images out", () => {
-  const session = parse("# Session 3\n- 20:01 ![[map.png]]\n- 20:05 Found ![[letter.jpg|200]] on [[Mirela]]\n- 20:06 ![a map](Attachments/map%20two.png)\n- 20:07 #Gold");
-  const html = toHtml(session);
-  assert.equal(html, "<h2>Session 3</h2><h3>What happened</h3><ul><li>Found on Mirela</li></ul><h3>Loot</h3><ul><li>Gold</li></ul>");
-  assert.equal(toText(session), "Session 3\n\nWhat happened\n• Found on Mirela\n\nLoot\n• Gold");
-  // An embed of a page (not an image) is kept, as its name.
-  assert.ok(toText(parse("- ![[Mirela]] said hi")).endsWith("\n• Mirela said hi"));
+test("the Journal recap hands image embeds to the link renderer, so it can show them", () => {
+  const session = parse("# Session 3\n- 20:01 ![[map.png]]\n- 20:05 Found ![[letter.jpg|200]] on [[Mirela]]\n- 20:07 #Gold");
+  const html = toHtml(session, (target, label, m) => (m[1] ? `<img src="${target}">` : label));
+  assert.equal(html, '<h2>Session 3</h2><h3>What happened</h3><ul><li><img src="map.png"></li><li>Found <img src="letter.jpg"> on Mirela</li></ul><h3>Loot</h3><ul><li>Gold</li></ul>');
 });

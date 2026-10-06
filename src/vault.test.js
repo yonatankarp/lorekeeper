@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
+  authorOf, isSessionFolder, pages, pcPath, syncConflicts,
 } from "./vault.js";
 
 const notes = [
@@ -240,4 +241,63 @@ test("characterProps sets background, alignment and a portrait only when there i
   assert.match(out, /^---\ntype: pc\nplayer: Ofer\nportrait: "\[\[Attachments\/Demus\.jpg\]\]"\nrace: Human\nclass: Barbarian \(Berserker\)\nlevel: 1\nbackground: Folk Hero\nalignment: Chaotic Good\ndndbeyond: /);
   assert.match(out, /## Appearance\n\nTall\.\n\n## Personality\n\n\*\*Ideals:\*\* Family\.\n\n## Notes\n/);
   assert.match(characterProps(out, c, "Attachments/Demus 2.jpg"), /portrait: "\[\[Attachments\/Demus\.jpg\]\]"/, "an existing portrait stays");
+});
+
+test("a shared session's folder is one page, which links, backlinks, search and the tree treat like any page", () => {
+  const files = [
+    { path: "Sessions/Session 4/Sibling 5.md", content: '---\nsession: 4\ndate: 2026-10-06\nauthor: "[[Sibling 5]]"\n---\n# Session 4 - 2026-10-06\n\n- 20:05 @[[Mirela]] lies\n' },
+    { path: "Sessions/Session 4/Arn.md", content: "---\nsession: 4\n---\n# Session 4\n- 20:06 [[Mirela]] again, to [[Phandalin]]\n" },
+    { path: "Sessions/Session 4/Arn (1).md", content: "- 20:06 a sync conflict's copy" },
+    { path: "Sessions/Session 3.md", content: "# Session 3\n- 19:00 met [[Mirela]]" },
+    { path: "NPCs/Mirela.md", content: "# Mirela\nSee [[Session 4]]." },
+    { path: "Locations/Phandalin.md", content: "# Phandalin" },
+    { path: "PCs/Sibling 5.md", content: "# Sibling 5" },
+  ];
+  const all = pages(files, ["Sessions", "Sessions/Session 4", "Sessions/Session 6", "NPCs"]);
+  const paths = all.map((p) => p.path);
+  assert.deepEqual(paths.filter((p) => p.startsWith("Sessions/")).sort(), ["Sessions/Session 3.md", "Sessions/Session 4", "Sessions/Session 6"]);
+  const s4 = all.find((p) => p.path === "Sessions/Session 4");
+  assert.deepEqual(s4.parts.map((p) => p.path), ["Sessions/Session 4/Arn.md", "Sessions/Session 4/Sibling 5.md"], "no conflict copy");
+  assert.equal(s4.parts[0], files[1], "parts are the files themselves, so a saved file shows at once");
+  assert.ok(s4.content.startsWith("---\nsession: 4\ndate: 2026-10-06\n---\n"));
+  assert.ok(!s4.content.includes("author:"), "only notes in the text, not each file's properties");
+  assert.equal(all.find((p) => p.path === "Sessions/Session 6").parts.length, 0, "an empty folder is a session too");
+  assert.ok(all.includes(files[4]), "other pages are the same objects");
+
+  assert.equal(resolve("Session 4", paths), "Sessions/Session 4");
+  assert.equal(resolve("Sibling 5", paths), "PCs/Sibling 5.md");
+  assert.deepEqual(backlinks("NPCs/Mirela.md", all), [
+    { path: "Sessions/Session 3.md", lines: ["- 19:00 met [[Mirela]]"] },
+    { path: "Sessions/Session 4", lines: ["- 20:06 [[Mirela]] again, to [[Phandalin]]", "- 20:05 @[[Mirela]] lies"] }, // file by file
+  ]);
+  assert.deepEqual(backlinks("Sessions/Session 4", all).map((b) => b.path), ["NPCs/Mirela.md"]);
+  assert.deepEqual(backlinks("PCs/Sibling 5.md", all), [], "authorship isn't a mention");
+  assert.deepEqual(sessionPaths(all), ["Sessions/Session 6", "Sessions/Session 4", "Sessions/Session 3.md"]);
+  assert.deepEqual(recentlyMentioned(all), [{ path: "NPCs/Mirela.md", kind: "npc", count: 2 }, { path: "Locations/Phandalin.md", kind: "location", count: 1 }]);
+  assert.deepEqual(search("again", all).map((h) => h.path), ["Sessions/Session 4"]);
+  assert.deepEqual(buildTree(["Sessions"], paths).dirs.find((d) => d.name === "Sessions").files, ["Sessions/Session 6", "Sessions/Session 4", "Sessions/Session 3.md"]);
+
+  assert.equal(authorOf("Sessions/Session 4/Sibling 5.md"), "Sibling 5");
+  assert.equal(authorOf("Sessions/Session 4.md"), "");
+  assert.equal(authorOf("Sessions/Arc 1/Session 4.md"), "");
+  assert.ok(isSessionFolder("Sessions/Session 12") && !isSessionFolder("Sessions/Session 12 (1)") && !isSessionFolder("Sessions/Arc"));
+  assert.equal(pcPath("sibling 5", ["NPCs/Sibling 5.md", "PCs/Retired/Sibling 5.md"]), "PCs/Retired/Sibling 5.md");
+  assert.equal(pcPath("Vex", paths), null);
+});
+
+test("sync conflict copies are found by their names", () => {
+  const paths = [
+    "NPCs/Vex.md", "NPCs/Vex (1).md", "NPCs/Vex (Mirela's conflicted copy 2026-10-06).md", "NPCs/Vex.sync-conflict-20261006-201500-ABCDEFG.md",
+    "Quests/Border Conflict.md", "Quests/Border Conflict (2).md", "PCs/Arn.md", "PCs/Arn (12345678).md", "NPCs/Bob (1).md",
+    "Sessions/Session 5", "Sessions/Session 5 (1)", "Lore/Gods [Conflict].md", "Lore/Old (conflict 2026-10-06).md",
+  ];
+  assert.deepEqual(syncConflicts(paths), [
+    { path: "Lore/Gods [Conflict].md", of: "" },
+    { path: "Lore/Old (conflict 2026-10-06).md", of: "" },
+    { path: "NPCs/Vex (1).md", of: "NPCs/Vex.md" },
+    { path: "NPCs/Vex (Mirela's conflicted copy 2026-10-06).md", of: "NPCs/Vex.md" },
+    { path: "NPCs/Vex.sync-conflict-20261006-201500-ABCDEFG.md", of: "NPCs/Vex.md" },
+    { path: "Quests/Border Conflict (2).md", of: "Quests/Border Conflict.md" },
+    { path: "Sessions/Session 5 (1)", of: "Sessions/Session 5" },
+  ]);
 });

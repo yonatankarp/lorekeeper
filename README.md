@@ -1,6 +1,6 @@
 # Lorekeeper
 
-Session notes for D&D players. Jot things down during the game without leaving Discord, keep them in a vault of NPCs, places and quests, and paste a tidy recap into your D&D Beyond journal.
+Session notes for D&D players. Jot things down during the game without leaving Discord, keep them in a vault of NPCs, places and quests, and share the journal with your party.
 
 | Home, Light (Tome) | Session, Dark (Dungeon) |
 |---|---|
@@ -10,7 +10,8 @@ Session notes for D&D players. Jot things down during the game without leaving D
 
 - **Notes from anywhere:** `⌘⌥N` opens a one-line note box over any app; `⌘⇧S` saves the text you selected.
 - **Notes sort themselves:** start with `@` NPC, `#` loot, `!` quest, `?` mystery or `"` quote.
-- **Sessions as a timeline,** and **Copy for D&D Beyond** for the shared journal.
+- **Sessions as a timeline,** or as a journal grouped by kind.
+- **Play with your party:** share the campaign folder through Google Drive; each player's notes stay in a file of their own and every session shows them together.
 - **A campaign vault:** NPCs, PCs, places, items, factions, quests and lore with `[[links]]` and backlinks. Plain Markdown that Obsidian can open.
 - **Backups** to a folder (Google Drive, Dropbox, iCloud, USB) or to GitHub, and **automatic updates**.
 
@@ -21,7 +22,7 @@ Get the [latest release](https://github.com/yonatankarp/lorekeeper/releases/late
 ## How to use it
 
 1. During the game press `⌘⌥N` (Windows/Linux `Ctrl+Alt+N`), type `@Mirela, shifty innkeeper` and press Enter.
-2. After the game open Lorekeeper, pick the session, press **Copy for D&D Beyond** and paste into the journal.
+2. After the game open Lorekeeper and pick the session: every note with its time, or the Journal grouped by kind.
 
 Everything else is in the [user guide](docs/GUIDE.md).
 
