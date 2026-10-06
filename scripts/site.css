@@ -110,7 +110,12 @@ footer.band::after { top: 5px; }
 .hero hr { max-width: 440px; margin: 12px auto 16px; }
 .pitch { margin: 0 0 8px; color: var(--fg); font: clamp(25px, 4.4vw, 32px)/1.2 var(--font-display); letter-spacing: 0.03em; }
 .lede { max-width: 34em; margin: 0 auto 28px; font-size: 19.5px; }
-.downloads { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin: 0 0 18px; }
+.seals { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin: 0 0 18px; }
+/* Once the page knows your system (see build-site.mjs), its button stands alone and the others become links. */
+.seals.picked { flex-direction: column; align-items: center; gap: 10px; }
+.seals.picked > .seal { min-width: 300px; padding: 13px 36px 12px; font-size: 26px; }
+.also { margin: 0; color: var(--muted); font: 16px/1.5 var(--font-ui); }
+[id] { scroll-margin-top: 16px; }
 /* Wax seal: the primary actions, as in the app. */
 .seal {
   display: inline-flex;
@@ -176,6 +181,42 @@ figcaption { margin-top: 12px; color: var(--muted); font: italic 16px/1.5 var(--
 .kind-quest { --k: var(--kind-quest); }
 .kind-mystery { --k: var(--kind-mystery); }
 .kind-quote { --k: var(--kind-quote); }
+.section-lede { max-width: 34em; margin: -8px auto 22px; color: var(--muted); font: 16px/1.5 var(--font-ui); text-align: center; }
+.soon .card { border-style: dashed; box-shadow: none; background: transparent; }
+/* How it works: three numbered steps, the numbers in the drop-cap face. */
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 18px 28px; margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.steps li { position: relative; padding-left: 58px; counter-increment: step; }
+.steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: -6px;
+  width: 44px;
+  color: var(--initial);
+  font: 56px/1 var(--font-initial);
+  text-align: center;
+}
+.steps h3 { margin: 0 0 4px; font-size: 23px; line-height: 1.25; letter-spacing: 0.04em; }
+.steps p { margin: 0; font-size: 17px; line-height: 1.55; }
+/* Questions: each one opens in place. */
+.faq { max-width: 46rem; margin: 0 auto; border-top: 1px solid var(--line); }
+.faq details { border-bottom: 1px solid var(--line); }
+.faq summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 4px;
+  color: var(--accent-text);
+  font: 21px/1.3 var(--font-display);
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  list-style: none;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::before { content: "+"; flex: none; width: 1em; color: var(--muted); font: 22px/1 var(--font-ui); text-align: center; }
+.faq details[open] summary::before { content: "\2212"; }
+.faq summary:hover { color: var(--fg); }
+.faq details p { margin: 0 0 14px; padding-left: calc(1em + 16px); font-size: 17px; line-height: 1.55; }
 .closing { padding-bottom: 64px; text-align: center; }
 .closing p { margin: 12px auto 22px; max-width: 32em; }
 
@@ -194,6 +235,11 @@ figcaption { margin-top: 12px; color: var(--muted); font: italic 16px/1.5 var(--
 .prose pre { margin: 0 0 16px; padding: 14px 16px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-panel); }
 .prose pre code { padding: 0; background: none; overflow-wrap: normal; }
 .table-wrap { margin: 0 0 18px; overflow-x: auto; }
+/* Contents under a long page's title. */
+.toc { margin: 0 0 28px; padding: 12px 20px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-panel); box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--line); }
+.toc-title { margin: 0 0 6px; color: var(--accent-text); font: 22px/1.3 var(--font-display); letter-spacing: 0.04em; }
+.prose .toc ol { margin: 0; padding-left: 1.5em; columns: 2 14em; column-gap: 28px; font: 16px/1.5 var(--font-ui); }
+.prose .toc li { margin: 0 0 4px; break-inside: avoid; }
 .prose table { width: 100%; border-collapse: collapse; font-size: 17px; }
 .prose th { padding: 6px 12px; border-bottom: 2px solid var(--rule); color: var(--accent-text); font: 20px/1.3 var(--font-display); letter-spacing: 0.03em; text-align: left; }
 .prose td { padding: 7px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -204,9 +250,11 @@ figcaption { margin-top: 12px; color: var(--muted); font: italic 16px/1.5 var(--
   body { font-size: 17px; }
   .wrap, .plate { padding-left: 16px; padding-right: 16px; }
   .bar { justify-content: center; }
+  .bar .nav { gap: 0 14px; font-size: 17px; }
   .hero { padding-top: 36px; }
   .lede { font-size: 18px; }
-  .seal { width: 100%; max-width: 340px; }
+  .seal, .seals.picked > .seal { width: 100%; min-width: 0; max-width: 340px; }
+  .steps li { padding-left: 50px; }
   .prose { padding: 32px 16px 48px; }
   .prose h2 { font-size: 27px; }
 }

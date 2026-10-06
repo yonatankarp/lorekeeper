@@ -47,6 +47,9 @@ Sharing a campaign with your party is optional. A shared campaign syncs through 
 
 ## Other network requests
 
+- **Updates:** Lorekeeper checks GitHub for new versions once a day. Like any web request, GitHub sees your IP address. You can turn this off in Settings.
+- **Links you click** open in your browser.
+
 ## Removing access and data
 
 - Sign out of a backup in **Settings > Backups**, or of D&D Beyond in **Settings > General**. This deletes the stored token or session from your computer.
