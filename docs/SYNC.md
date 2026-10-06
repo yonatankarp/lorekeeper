@@ -38,6 +38,8 @@ Anyone with an unredeemed link can join once, so the owner shares it only with t
 - **File id:** `id = base32(BLAKE3-keyed(key, "lorekeeper file id v1" || path)[..16])`, where `path` is the file's path inside the campaign folder with `/` separators (e.g. `Sessions/Session 4/Sibling 5.md`) as UTF-8. Stable per path, unguessable without the key.
 - **Blob:** `XChaCha20-Poly1305(key, random 24-byte nonce)` over the JSON `{"path": "...", "content": "<base64>", "modified": <unix ms>}` (fields in that order, `content` in standard base64 with padding); stored as `nonce || ciphertext || 16-byte tag`, and sent as standard base64 with padding. The AEAD's associated data is the room string followed by the id string (their 26 ASCII characters each), so a blob can't be moved to another file or room.
 - **Content hash** for change detection, computed by clients only: BLAKE3 of the plain bytes, lowercase hex.
+- **Opening a blob** (`open`) also checks the path inside, since every party member holds the key and can seal anything: it must be relative and stay in the campaign folder (no empty, `.` or `..` components, no leading `/`, no `\`, NUL or drive prefix like `C:`), and the blob's file id must be the one derived from it. A blob that fails either check is treated like one that doesn't decrypt.
+- **What the key doesn't protect:** the server can't check blobs, so anyone holding a token (a member, or someone who stole a token without the key) can overwrite a file with garbage or delete it (a tombstone carries no blob). They can't read or forge content. Clients should treat a blob that doesn't open as a conflict, not as new content.
 
 `sync-protocol` has known-answer tests for the file id and the blob layout; changing either breaks every synced campaign.
 
@@ -45,7 +47,7 @@ Anyone with an unredeemed link can join once, so the owner shares it only with t
 
 `GET /v1/rooms/{room}/live` upgrades to a WebSocket. It is the one way clients read and write room contents: catch-up, live changes, writes and presence all go over it. The connection stays open; when it drops, the client reconnects and says `hello` with the last `seq` it has.
 
-**Auth** on the upgrade request, owner or member token: `Authorization: Bearer <token>` (preferred). Clients that can't set headers on an upgrade (browsers) can instead offer the subprotocols `lorekeeper, token.<token>` (the server answers with `lorekeeper` and never echoes the token) or add `?token=<token>` (last resort: URLs end up in logs). A wrong, revoked or missing token, or an unknown room, gets `401` before the upgrade.
+**Auth** on the upgrade request, owner or member token: `Authorization: Bearer <token>` (preferred). Clients that can't set headers on an upgrade (browsers) can instead offer the subprotocols `lorekeeper, token.<token>` (the server answers with `lorekeeper` and never echoes the token). A token in the URL (`?token=`) is never read, since URLs end up in proxy logs. A wrong, revoked or missing token, or an unknown room, gets `401` before the upgrade.
 
 **Messages:** JSON text frames (types in `sync-protocol`: `ClientMessage`, `ServerMessage`). `seq` is one increasing counter per room; every successful write gets the next value.
 
@@ -62,7 +64,7 @@ Server to client:
 
 | Message | |
 |---|---|
-| `{"type":"changes","seq":S,"changes":[{"id","seq","blob" or null}],"more":bool}` | Replay batch after `hello` (`seq` = the room's latest). At most 500 changes and about one blob limit of data per batch (always at least one change); the last batch has `more: false`. Each file appears once, at its latest version. |
+| `{"type":"changes","seq":S,"changes":[{"id","seq","blob" or null}],"more":bool}` | Replay batch after `hello` (`seq` = the room's latest). At most 500 changes and 4 MiB of blobs per batch (always at least one change); the last batch has `more: false`. Each file appears once, at its latest version. |
 | `{"type":"change","id":"...","seq":S,"blob":"..." or null}` | A write by another connection, sent to every connected socket of the room, including the writer's other devices, but not to the socket that wrote it (it got an `ack`). |
 | `{"type":"ack","req":R,"seq":S}` | The write is stored as `seq` S. |
 | `{"type":"conflict","req":R,"seq":S,"blob":"..." or null}` | The file changed since `base`: its current version (null when deleted), for the client to resolve. |
@@ -73,7 +75,7 @@ Server to client:
 
 **Error codes:** `bad_message`, `hello_first`, `hello_twice`, `member_too_long`, `bad_id`, `bad_blob` (not base64, or shorter than nonce and tag), `too_large`, `room_full`, `too_many_files`, `rate_limited`, `internal`.
 
-**Keeping it open:** the server sends a WebSocket ping every 30 seconds (Cloudflare drops connections idle for about 100 seconds) and closes a socket it hasn't heard from (any frame, pongs included) in 75 seconds. It closes sockets with code `4001` when their member is removed and, when it gets the chance, `1012` when the server shuts down; clients reconnect after `1012` or a dropped connection, and after `4001` tell the player they were removed. Frames are limited to the blob limit in base64 plus 64 KiB; a bigger frame closes the socket.
+**Keeping it open:** the server sends a WebSocket ping every 30 seconds (Cloudflare drops connections idle for about 100 seconds) and closes a socket it hasn't heard from (any frame, pongs included) in 75 seconds. It closes sockets with code `4001` when their member is removed (at once, even in the middle of a replay or a send) and, when it gets the chance, `1012` when the server shuts down; clients reconnect after `1012` or a dropped connection, and after `4001` tell the player they were removed. Frames are limited to the blob limit in base64 plus 64 KiB; a bigger frame closes the socket. More than 600 client messages in a minute on one socket close it with `1008`. A socket that doesn't take a frame within 5 minutes (a reader that stopped reading) is dropped.
 
 ## HTTP API (v1)
 
@@ -81,22 +83,26 @@ Plain HTTP covers room creation, invites and members, health, the join page and 
 
 | Method and path | Auth | Answer |
 |---|---|---|
-| `POST /v1/rooms` | creation key, when the server has one | `201 {"room","owner_token"}`. With `LOREKEEPER_SYNC_CREATE_KEY` set, needs the header `X-Lorekeeper-Create-Key: <key>`, else `403 {"error":"create_key_required"}` (the app then asks for it). Rate limited per client IP. |
+| `POST /v1/rooms` | creation key | `201 {"room","owner_token"}`. Needs the header `X-Lorekeeper-Create-Key: <key>` (the server's `LOREKEEPER_SYNC_CREATE_KEY`), else `403 {"error":"create_key_required"}` (the app then asks for it). Rate limited per client IP. |
 | `POST /v1/rooms/{room}/invites` | owner | `201 {"invite","expires"}`; `413 too_many_members` at 32 members plus pending invites. |
 | `GET /v1/rooms/{room}/invites` | owner | `200 [{"invite","expires"}]`, pending invites only. |
 | `DELETE /v1/rooms/{room}/invites/{invite}` | owner | `204`; `404 invite_not_found` when it isn't pending. |
 | `POST /v1/rooms/{room}/invites/{invite}/redeem` | none | Body `{"member":"<display id>"}`. `201 {"token"}`, a new member token; uses up the invite. `404 invite_not_found` (unknown or revoked invite, or unknown room), `410 invite_used`, `410 invite_expired`. Rate limited per client IP. |
 | `GET /v1/rooms/{room}/members` | owner | `200 [{"member_id","member","role","created","last_seen"}]`; `last_seen` (null until then) is bumped when a socket connects, `member` by `hello`. |
 | `DELETE /v1/rooms/{room}/members/{member_id}` | owner | `204`; the token stops working at once and the member's sockets close. `400 cannot_remove_owner`, `404 not_found`. |
-| `GET /v1/rooms/{room}/changes?since=N` | owner or member | `200 {"seq","changes","more"}`, the same page as a replay batch, without waiting. For scripts, debugging and tests; the app uses the socket. |
+| `GET /v1/rooms/{room}/changes?since=N` | owner or member | `200 {"seq","changes","more"}`, the same page as a replay batch, without waiting. For scripts, debugging and tests; the app uses the socket. Shares the per-member read budget with socket upgrades. |
 | `GET /v1/rooms/{room}/live` | owner or member | WebSocket, see above. |
-| `GET /join/{room}/{invite}` | none | The explanation page. |
+| `GET /join/{room}/{invite}` | none | The explanation page (static: it shows neither the room nor the invite, loads nothing, and is served with a `default-src 'none'` CSP that also forbids framing). |
 | `GET /healthz` | none | `200 ok` (for the container healthcheck) |
 | `GET /` | none | redirect to `https://yonatankarp.com/lorekeeper/` |
 
 ## Limits
 
-Configurable by environment; defaults: blob 30 MiB (the decoded `nonce || ciphertext`; in base64 on the wire about 40 MiB, so frames are allowed the blob limit in base64 plus 64 KiB), room total 1 GiB of blobs, 20,000 files per room (tombstones don't count), 60 writes per minute per room, 32 connections per room, room creation 5 per hour per IP, invite redemption 20 per hour per IP, 32 members plus pending invites per room. A room over a lowered limit can still shrink. Over a limit: `413` or `429` with `{"error": "..."}` over HTTP (`too_many_connections` on the upgrade), or an `error` frame on the socket.
+Configurable by environment; defaults: blob 30 MiB (the decoded `nonce || ciphertext`; in base64 on the wire about 40 MiB, so frames are allowed the blob limit in base64 plus 64 KiB), room total 1 GiB of blobs, 20,000 files per room (tombstones don't count, but a new file is refused once the room holds twice that many files and tombstones together), 60 writes per minute per room, 32 connections per room and 64 on the whole server, room creation 5 per hour per IP, invite redemption 20 per hour per IP, 32 members plus pending invites per room. A room over a lowered limit can still shrink. Over a limit: `413` or `429` with `{"error": "..."}` over HTTP (`too_many_connections` on the upgrade), or an `error` frame on the socket.
+
+Fixed, not configurable: 60 socket upgrades plus `GET /changes` per member per minute (each can read the whole room), 600 messages per socket per minute, 4 MiB of blobs per page of changes. Per-IP limits count an IPv6 client as its /64, and each limit tracks at most 10,000 clients at once (past that, new clients get `429` until a window ends). There is no per-IP connection cap: a socket needs a token, so the per-room and server-wide caps bound what one party can hold.
+
+**Memory:** a socket sending a page holds it about three times (the blobs, their base64, the JSON frame), and one receiving a `put` holds the frame about three times too. A page is at most 4 MiB of blobs unless a single blob is bigger, so the worst case is about 3 x the blob limit per busy socket: around 100 MB at the defaults, for example when one 30 MiB file fans out to every player at once. Size the container's memory for the largest files your party shares times the sockets that receive them at once, or lower `LOREKEEPER_SYNC_MAX_BLOB`.
 
 The server logs no blobs, tokens, keys, invites, display ids or file ids: only its start, its shutdown and database errors.
 
@@ -107,10 +113,10 @@ The server logs no blobs, tokens, keys, invites, display ids or file ids: only i
 | `LOREKEEPER_SYNC_DB` | `/data/sync.db` | SQLite file (WAL mode; its `-wal` and `-shm` files live next to it) |
 | `LOREKEEPER_SYNC_ADDR` | `0.0.0.0:8080` | listen address |
 | `LOREKEEPER_SYNC_PUBLIC_URL` | `https://lorekeeper.yonatankarp.com` | shown on the join page |
-| `LOREKEEPER_SYNC_TRUST_PROXY` | `cloudflare` | `cloudflare`: read the client IP from `CF-Connecting-IP` (behind cloudflared); `none`: use the connection's address |
-| `LOREKEEPER_SYNC_CREATE_KEY` | unset | When set, `POST /v1/rooms` needs it in `X-Lorekeeper-Create-Key`. At least 32 characters (the server refuses to start otherwise), used exactly as given (`/`, `+`, `=` are fine); empty means unset. Never logged. |
+| `LOREKEEPER_SYNC_TRUST_PROXY` | `none` | `none`: rate limits use the connection's address; `cloudflare`: read the client IP from `CF-Connecting-IP`. Only use `cloudflare` when nothing but cloudflared can reach the port (for example listening on `127.0.0.1` in cloudflared's network namespace): anyone who reaches it directly can send the header and dodge the per-IP limits. |
+| `LOREKEEPER_SYNC_CREATE_KEY` | required | `POST /v1/rooms` needs it in `X-Lorekeeper-Create-Key`. The server refuses to start without one, or with one under 32 characters. Used exactly as given (`/`, `+`, `=` are fine). Never logged. To run an open server, publish the key. |
 | `LOREKEEPER_SYNC_INVITE_DAYS` | `7` | invite lifetime |
-| limit overrides | | `LOREKEEPER_SYNC_MAX_BLOB`, `..._MAX_ROOM_BYTES` (bytes), `..._MAX_FILES`, `..._WRITES_PER_MINUTE`, `..._MAX_CONNECTIONS` (per room), `..._ROOMS_PER_HOUR`, `..._REDEEMS_PER_HOUR` |
+| limit overrides | | `LOREKEEPER_SYNC_MAX_BLOB`, `..._MAX_ROOM_BYTES` (bytes), `..._MAX_FILES`, `..._WRITES_PER_MINUTE`, `..._MAX_CONNECTIONS` (per room), `..._MAX_CONNECTIONS_TOTAL` (server-wide), `..._ROOMS_PER_HOUR`, `..._REDEEMS_PER_HOUR` |
 
 Container: listens on 8080, data in the `/data` volume, runs as UID and GID 10001 (no home directory or passwd entry needed), writes nothing outside `/data` (so `read_only: true` works), healthcheck `lorekeeper-sync --healthcheck` (GETs `/healthz` on the port from `LOREKEEPER_SYNC_ADDR`, exit 0 or 1; the image has no shell or curl). Image: `ghcr.io/yonatankarp/lorekeeper-sync` (linux/amd64), tags `sha-<short commit>` and `latest` from main, built by `.github/workflows/sync-server.yml` when `sync-server/` or `sync-protocol/` change.
 
@@ -129,7 +135,8 @@ docker run -d --name lorekeeper-sync --restart unless-stopped \
 ```
 
 - Put it behind HTTPS (a reverse proxy, or a Cloudflare tunnel with `LOREKEEPER_SYNC_TRUST_PROXY=cloudflare`), and make sure the proxy passes WebSocket upgrades. Invite links only accept `https://` for anything but localhost.
-- **Set `LOREKEEPER_SYNC_CREATE_KEY` for a private server.** The app is public, so without it anyone who knows the address can create rooms on your server (rate limited, but still your disk). The owner enters the key once when creating a shared campaign; players joining with an invite never need it.
+- **`LOREKEEPER_SYNC_CREATE_KEY` is required.** The app is public, so without it anyone who knows the address could create rooms on your server and fill your disk. The owner enters the key once when creating a shared campaign; players joining with an invite never need it.
+- Exposed directly (no proxy), the server has no header-read timeout, so slow clients can hold connections open; a reverse proxy or a Cloudflare tunnel in front takes care of that.
 - With a bind mount instead of a named volume, make the directory writable by UID 10001 (`chown 10001:10001 /srv/lorekeeper-sync`).
 - Back up the volume; `sync.db` with its `-wal` file is the whole state. It holds only encrypted data, but losing it means every player uploads again.
 - In Lorekeeper, set the server address to your URL before creating the shared campaign.

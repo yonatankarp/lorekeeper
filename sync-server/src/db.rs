@@ -46,7 +46,9 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     // WAL and SHM files live next to the database; temp tables stay in memory, so /data is the
     // only place the server writes.
     c.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0))?;
-    c.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;")?;
+    // journal_size_limit: the WAL shrinks back after a checkpoint instead of keeping the size of
+    // the biggest write it ever held.
+    c.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY; PRAGMA journal_size_limit = 67108864;")?;
     c.execute_batch(SCHEMA)?;
     Ok(c)
 }
@@ -164,7 +166,10 @@ pub fn seats(c: &Connection, room: &str) -> rusqlite::Result<u64> {
     )
 }
 
+/// Adds an invite, dropping the room's expired ones (used ones stay until they expire, so a second
+/// redeem still learns `invite_used`).
 pub fn create_invite(c: &Connection, room: &str, invite: &str, expires: i64) -> rusqlite::Result<()> {
+    c.execute("DELETE FROM invites WHERE room = ?1 AND expires <= ?2", params![room, now_ms()])?;
     c.execute(
         "INSERT INTO invites (invite, room, created, expires) VALUES (?1, ?2, ?3, ?4)",
         params![invite, room, now_ms(), expires],
@@ -213,9 +218,17 @@ pub fn redeem(
         Some((_, Some(_))) => Redeemed::Used,
         Some((expires, None)) if expires <= now => Redeemed::Expired,
         Some(_) => {
-            tx.execute("UPDATE invites SET used = ?3 WHERE room = ?1 AND invite = ?2", params![room, invite, now])?;
-            insert_token(&tx, room, hash, member_id, Role::Member, member, now)?;
-            Redeemed::Yes
+            // Conditional, so the invite is used once even if two redeems ever overlap.
+            let n = tx.execute(
+                "UPDATE invites SET used = ?3 WHERE room = ?1 AND invite = ?2 AND used IS NULL",
+                params![room, invite, now],
+            )?;
+            if n == 1 {
+                insert_token(&tx, room, hash, member_id, Role::Member, member, now)?;
+                Redeemed::Yes
+            } else {
+                Redeemed::Used
+            }
         }
     };
     tx.commit()?;
@@ -250,6 +263,7 @@ pub fn write(
             Ok((r.get(0)?, r.get(1)?))
         })
         .optional()?;
+    let new_id = current.is_none();
     let (cur_seq, cur_blob) = current.unwrap_or((0, None));
     if base != cur_seq && !(base == 0 && cur_blob.is_none()) {
         return Ok(Written::Conflict(cur_seq, cur_blob));
@@ -269,6 +283,14 @@ pub fn write(
     }
     if new_files > files && new_files > limits.max_files {
         return Ok(Written::TooManyFiles);
+    }
+    // Tombstones don't count as files but are rows forever; a new id may add at most as many
+    // tombstones again as there can be files.
+    if new_id {
+        let rows: u64 = tx.query_row("SELECT COUNT(*) FROM files WHERE room = ?1", [room], |r| r.get(0))?;
+        if rows >= limits.max_files.saturating_mul(2) {
+            return Ok(Written::TooManyFiles);
+        }
     }
     let seq: u64 = tx.query_row(
         "UPDATE rooms SET seq = seq + 1, bytes = ?2, files = ?3 WHERE room = ?1 RETURNING seq",

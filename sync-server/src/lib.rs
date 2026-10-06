@@ -21,6 +21,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use rusqlite::Connection;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use sync_protocol::{
     decode_blob, decode_secret, encode_blob, encode_secret, is_id, random_id, random_secret, token_hash, Change,
@@ -36,13 +37,22 @@ const MIB: u64 = 1024 * 1024;
 const MAX_SEATS: u64 = 32;
 /// Longest opaque display id accepted.
 const MAX_MEMBER_LEN: usize = 512;
+/// Blob bytes per page of changes (always at least one change). It bounds memory per socket: a
+/// page is held as base64 and again as its JSON frame while it's sent.
+const PAGE_BYTES: usize = 4 * MIB as usize;
+/// Socket upgrades plus `GET /changes` per member per minute; each can read the whole room.
+const READS_PER_MINUTE: u32 = 60;
+/// Most clients a rate limit tracks at once; past it (after dropping stale ones) new clients are
+/// refused until a window ends, so a flood of addresses can't grow the map without bound.
+const MAX_TRACKED: usize = 10_000;
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub db_path: PathBuf,
     pub addr: SocketAddr,
     pub public_url: String,
-    /// Read the client IP from `CF-Connecting-IP`.
+    /// Read the client IP from `CF-Connecting-IP`. Only safe when nothing but cloudflared can
+    /// reach the server: anyone else can send the header.
     pub trust_cloudflare: bool,
     pub max_blob: usize,
     pub max_room_bytes: u64,
@@ -50,9 +60,13 @@ pub struct Config {
     pub writes_per_minute: u32,
     pub rooms_per_hour: u32,
     pub redeems_per_hour: u32,
+    /// Live sockets per room.
     pub max_connections: usize,
+    /// Live sockets on the whole server.
+    pub max_connections_total: usize,
     pub invite_days: u32,
-    /// When set, `POST /v1/rooms` needs it in `X-Lorekeeper-Create-Key`.
+    /// `POST /v1/rooms` needs it in `X-Lorekeeper-Create-Key`; `None` refuses every creation.
+    /// `from_env` refuses to start without one.
     pub create_key: Option<String>,
 }
 
@@ -62,7 +76,7 @@ impl Default for Config {
             db_path: "/data/sync.db".into(),
             addr: ([0, 0, 0, 0], 8080).into(),
             public_url: "https://lorekeeper.yonatankarp.com".into(),
-            trust_cloudflare: true,
+            trust_cloudflare: false,
             max_blob: (30 * MIB) as usize,
             max_room_bytes: 1024 * MIB,
             max_files: 20_000,
@@ -70,6 +84,7 @@ impl Default for Config {
             rooms_per_hour: 5,
             redeems_per_hour: 20,
             max_connections: 32,
+            max_connections_total: 64,
             invite_days: 7,
             create_key: None,
         }
@@ -90,16 +105,17 @@ impl Config {
             }
         }
         let d = Config::default();
-        let trust = var("LOREKEEPER_SYNC_TRUST_PROXY").unwrap_or_else(|| "cloudflare".into());
+        let trust = var("LOREKEEPER_SYNC_TRUST_PROXY").unwrap_or_default();
         let trust_cloudflare = match trust.trim() {
             "cloudflare" => true,
             "none" | "" => false,
             _ => return Err("LOREKEEPER_SYNC_TRUST_PROXY must be cloudflare or none".into()),
         };
         // Opaque: used exactly as given (it may contain / + =), only an empty value means unset.
+        // Required: the app is public, so an open server is anyone's disk.
         let create_key = var("LOREKEEPER_SYNC_CREATE_KEY").filter(|k| !k.is_empty());
-        if create_key.as_ref().is_some_and(|k| k.chars().count() < 32) {
-            return Err("LOREKEEPER_SYNC_CREATE_KEY must be at least 32 characters".into());
+        if create_key.as_ref().is_none_or(|k| k.chars().count() < 32) {
+            return Err("LOREKEEPER_SYNC_CREATE_KEY must be set, at least 32 characters".into());
         }
         Ok(Config {
             db_path: var("LOREKEEPER_SYNC_DB").map_or(d.db_path, PathBuf::from),
@@ -113,6 +129,7 @@ impl Config {
             rooms_per_hour: num(&var, "LOREKEEPER_SYNC_ROOMS_PER_HOUR", d.rooms_per_hour)?,
             redeems_per_hour: num(&var, "LOREKEEPER_SYNC_REDEEMS_PER_HOUR", d.redeems_per_hour)?,
             max_connections: num(&var, "LOREKEEPER_SYNC_MAX_CONNECTIONS", d.max_connections)?,
+            max_connections_total: num(&var, "LOREKEEPER_SYNC_MAX_CONNECTIONS_TOTAL", d.max_connections_total)?,
             invite_days: num(&var, "LOREKEEPER_SYNC_INVITE_DAYS", d.invite_days)?,
             create_key,
         })
@@ -151,6 +168,7 @@ pub(crate) struct Inner {
     db: Mutex<Connection>,
     hubs: Mutex<live::Hubs>,
     writes: Windows<String>,
+    reads: Windows<String>,
     creates: Windows<IpAddr>,
     redeems: Windows<IpAddr>,
     next_conn: AtomicU64,
@@ -173,6 +191,7 @@ impl AppState {
             db: Mutex::new(conn),
             hubs: Mutex::default(),
             writes: Mutex::default(),
+            reads: Mutex::default(),
             creates: Mutex::default(),
             redeems: Mutex::default(),
             next_conn: AtomicU64::new(1),
@@ -206,8 +225,11 @@ impl AppState {
 fn allow<K: Hash + Eq>(windows: &Windows<K>, key: K, limit: u32, window: Duration) -> bool {
     let mut map = lock(windows);
     let now = Instant::now();
-    if map.len() > 10_000 {
+    if map.len() >= MAX_TRACKED && !map.contains_key(&key) {
         map.retain(|_, (start, _)| now.duration_since(*start) < window);
+        if map.len() >= MAX_TRACKED {
+            return false;
+        }
     }
     let entry = map.entry(key).or_insert((now, 0));
     if now.duration_since(entry.0) >= window {
@@ -220,13 +242,21 @@ fn allow<K: Hash + Eq>(windows: &Windows<K>, key: K, limit: u32, window: Duratio
     true
 }
 
+/// The client, for per-IP rate limits. An IPv6 client is its /64: one host usually has the whole
+/// prefix and can pick a new address per request.
 fn client_ip(state: &AppState, headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
-    if state.0.config.trust_cloudflare {
-        if let Some(ip) = headers.get("cf-connecting-ip").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok()) {
-            return ip;
-        }
+    let header = || headers.get("cf-connecting-ip")?.to_str().ok()?.trim().parse().ok();
+    let ip = state.0.config.trust_cloudflare.then(header).flatten().unwrap_or(peer.ip()).to_canonical();
+    match ip {
+        IpAddr::V6(v6) => IpAddr::V6((u128::from(v6) & u128::MAX << 64).into()),
+        v4 => v4,
     }
-    peer.ip()
+}
+
+/// A member's budget of socket upgrades and `GET /changes`.
+fn allow_read(state: &AppState, caller: &Caller) -> Result<(), ApiError> {
+    let ok = allow(&state.0.reads, caller.member_id.clone(), READS_PER_MINUTE, Duration::from_secs(60));
+    ok.then_some(()).ok_or(ApiError::RATE_LIMITED)
 }
 
 /// Who is calling: an owner or member token of the room.
@@ -342,8 +372,9 @@ pub(crate) async fn write(
 
 /// One page of changes after `since` (see [`db::changes`]).
 pub(crate) async fn changes_page(state: &AppState, room: &str, since: u64) -> Result<ChangesResponse, ApiError> {
-    let (r, max) = (room.to_string(), state.0.config.max_blob);
-    let (seq, rows, more) = state.db(move |c| db::changes(c, &r, since, max)).await?;
+    // SQLite integers stop at i64::MAX; no seq is ever above it.
+    let (r, since) = (room.to_string(), since.min(i64::MAX as u64));
+    let (seq, rows, more) = state.db(move |c| db::changes(c, &r, since, PAGE_BYTES)).await?;
     let changes = rows
         .into_iter()
         .map(|(id, seq, blob)| Change { id, seq, blob: blob.map(|b| encode_blob(&b)) })
@@ -378,11 +409,12 @@ async fn create_room(
     if !allow(&state.0.creates, ip, cfg.rooms_per_hour, Duration::from_secs(3600)) {
         return Err(ApiError::RATE_LIMITED);
     }
-    if let Some(key) = &cfg.create_key {
-        let given = headers.get(CREATE_KEY_HEADER).map_or(&b""[..], |v| v.as_bytes());
-        if !bool::from(given.ct_eq(key.as_bytes())) {
-            return Err(ApiError(StatusCode::FORBIDDEN, "create_key_required"));
-        }
+    // Digests, so the compare takes the same time whatever the given key's length.
+    let given = headers.get(CREATE_KEY_HEADER).map(|v| Sha256::digest(v.as_bytes()));
+    let wanted = cfg.create_key.as_ref().map(|k| Sha256::digest(k.as_bytes()));
+    let ok = given.zip(wanted).is_some_and(|(g, w)| bool::from(g.as_slice().ct_eq(w.as_slice())));
+    if !ok {
+        return Err(ApiError(StatusCode::FORBIDDEN, "create_key_required"));
     }
     let (room, token, owner_id) = (random_id(), random_secret(), random_id());
     let (r, hash) = (room.clone(), token_hash(&token));
@@ -402,6 +434,7 @@ async fn changes(
     query: Result<Query<Since>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<ChangesResponse>, ApiError> {
     let Query(Since { since }) = query.map_err(|_| ApiError(StatusCode::BAD_REQUEST, "bad_request"))?;
+    allow_read(&state, &caller)?;
     Ok(Json(changes_page(&state, &caller.room, since).await?))
 }
 
@@ -500,9 +533,15 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// What a browser shows for an invite link. It never touches the invite.
-async fn join_page(State(state): State<AppState>) -> Html<String> {
-    Html(JOIN_PAGE.replace("{server}", &escape(&state.0.config.public_url)))
+/// What a browser shows for an invite link. It never touches the invite, and the page loads
+/// nothing, runs nothing and can't be framed.
+async fn join_page(State(state): State<AppState>) -> impl IntoResponse {
+    let headers = [
+        (header::CONTENT_SECURITY_POLICY, "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::REFERRER_POLICY, "no-referrer"),
+    ];
+    (headers, Html(JOIN_PAGE.replace("{server}", &escape(&state.0.config.public_url))))
 }
 
 const JOIN_PAGE: &str = r#"<!doctype html>
@@ -534,3 +573,23 @@ const JOIN_PAGE: &str = r#"<!doctype html>
 </body>
 </html>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_map_stays_bounded() {
+        let windows: Windows<u32> = Mutex::default();
+        let hour = Duration::from_secs(3600);
+        for k in 0..MAX_TRACKED as u32 {
+            assert!(allow(&windows, k, 2, hour));
+        }
+        assert!(!allow(&windows, u32::MAX, 2, hour), "a new client past the cap is refused");
+        assert!(allow(&windows, 7, 2, hour), "known clients keep their budget");
+        assert!(!allow(&windows, 7, 2, hour));
+        assert_eq!(lock(&windows).len(), MAX_TRACKED);
+        // Once windows end, stale clients make room.
+        assert!(allow(&windows, u32::MAX, 2, Duration::ZERO));
+    }
+}

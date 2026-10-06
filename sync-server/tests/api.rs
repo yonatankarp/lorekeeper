@@ -235,26 +235,36 @@ async fn creation_key_gates_room_creation_only() {
     let mut ws = s.ws(&room, &member).await;
     ws.hello(0, "m").await;
 
-    // Without a configured key, creation is open (but still rate limited).
-    let open = start(|_| {}).await;
-    assert_eq!(open.http("POST", "/v1/rooms", None, &[], None).await.0, StatusCode::CREATED);
+    // Without a configured key, creation is closed, whatever the header says.
+    let closed = start(|_| {}).await;
+    assert_eq!(closed.http("POST", "/v1/rooms", None, &[], None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(closed.http("POST", "/v1/rooms", None, &[("x-lorekeeper-create-key", "")], None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(closed.http("POST", "/v1/rooms", None, &[("x-lorekeeper-create-key", CREATE_KEY)], None).await.0, StatusCode::FORBIDDEN);
 }
 
 #[test]
 fn config_from_env_vars() {
     let vars = |pairs: &'static [(&'static str, &'static str)]| move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string());
-    let c = Config::from_vars(vars(&[])).unwrap();
-    assert_eq!(c.create_key, None);
-    assert!(c.trust_cloudflare);
-    assert_eq!(c.addr, SocketAddr::from(([0, 0, 0, 0], 8080)));
-    let c = Config::from_vars(vars(&[("LOREKEEPER_SYNC_CREATE_KEY", CREATE_KEY), ("LOREKEEPER_SYNC_TRUST_PROXY", "none"), ("LOREKEEPER_SYNC_MAX_FILES", "7")])).unwrap();
-    assert_eq!(c.create_key.as_deref(), Some(CREATE_KEY), "used verbatim, / + = included");
-    assert!(!c.trust_cloudflare);
-    assert_eq!(c.max_files, 7);
-    assert_eq!(Config::from_vars(vars(&[("LOREKEEPER_SYNC_CREATE_KEY", "")])).unwrap().create_key, None);
+    // The server refuses to start without a creation key.
+    assert!(Config::from_vars(vars(&[])).is_err());
+    assert!(Config::from_vars(vars(&[("LOREKEEPER_SYNC_CREATE_KEY", "")])).is_err());
     assert!(Config::from_vars(vars(&[("LOREKEEPER_SYNC_CREATE_KEY", "short")])).is_err());
-    assert!(Config::from_vars(vars(&[("LOREKEEPER_SYNC_TRUST_PROXY", "nginx")])).is_err());
-    assert!(Config::from_vars(vars(&[("LOREKEEPER_SYNC_MAX_BLOB", "lots")])).is_err());
+    let c = Config::from_vars(vars(&[("LOREKEEPER_SYNC_CREATE_KEY", CREATE_KEY)])).unwrap();
+    assert_eq!(c.create_key.as_deref(), Some(CREATE_KEY), "used verbatim, / + = included");
+    assert!(!c.trust_cloudflare, "CF-Connecting-IP is only trusted when asked for");
+    assert_eq!(c.addr, SocketAddr::from(([0, 0, 0, 0], 8080)));
+    assert_eq!((c.max_connections, c.max_connections_total), (32, 64));
+    let c = Config::from_vars(vars(&[
+        ("LOREKEEPER_SYNC_CREATE_KEY", CREATE_KEY),
+        ("LOREKEEPER_SYNC_TRUST_PROXY", "cloudflare"),
+        ("LOREKEEPER_SYNC_MAX_FILES", "7"),
+        ("LOREKEEPER_SYNC_MAX_CONNECTIONS_TOTAL", "9"),
+    ]))
+    .unwrap();
+    assert!(c.trust_cloudflare);
+    assert_eq!((c.max_files, c.max_connections_total), (7, 9));
+    assert!(Config::from_vars(vars(&[("LOREKEEPER_SYNC_CREATE_KEY", CREATE_KEY), ("LOREKEEPER_SYNC_TRUST_PROXY", "nginx")])).is_err());
+    assert!(Config::from_vars(vars(&[("LOREKEEPER_SYNC_CREATE_KEY", CREATE_KEY), ("LOREKEEPER_SYNC_MAX_BLOB", "lots")])).is_err());
 }
 
 #[tokio::test]
@@ -281,7 +291,7 @@ async fn auth_failures_all_look_the_same() {
 }
 
 #[tokio::test]
-async fn live_token_from_subprotocol_or_query() {
+async fn live_token_from_subprotocol_never_the_url() {
     let s = start(open_config).await;
     let (room, owner) = s.room().await;
     let mut req = format!("ws://{}/v1/rooms/{room}/live", s.addr).into_client_request().unwrap();
@@ -291,10 +301,9 @@ async fn live_token_from_subprotocol_or_query() {
     let mut ws = Ws { ws, room: room.clone() };
     ws.hello(0, "a").await;
 
+    // Tokens in URLs end up in proxy logs, so the query string isn't read.
     let req = format!("ws://{}/v1/rooms/{room}/live?token={owner}", s.addr).into_client_request().unwrap();
-    let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    let mut ws = Ws { ws, room };
-    ws.hello(0, "b").await;
+    assert!(matches!(tokio_tungstenite::connect_async(req).await, Err(tungstenite::Error::Http(res)) if res.status() == StatusCode::UNAUTHORIZED));
 }
 
 #[tokio::test]
@@ -548,16 +557,25 @@ async fn write_rate_limit_per_room() {
 #[tokio::test]
 async fn room_creation_and_redeem_rate_limits_per_ip() {
     let s = start(|c| {
+        open_config(c);
         c.rooms_per_hour = 2;
         c.redeems_per_hour = 2;
+        c.trust_cloudflare = true;
     })
     .await;
     let srv = &s;
-    let create = |ip: &'static str| async move { srv.http("POST", "/v1/rooms", None, &[("cf-connecting-ip", ip)], None).await.0 };
+    let create = |ip: &'static str| async move {
+        srv.http("POST", "/v1/rooms", None, &[("cf-connecting-ip", ip), ("x-lorekeeper-create-key", CREATE_KEY)], None).await.0
+    };
     assert_eq!(create("203.0.113.1").await, StatusCode::CREATED);
     assert_eq!(create("203.0.113.1").await, StatusCode::CREATED);
     assert_eq!(create("203.0.113.1").await, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(create("203.0.113.2").await, StatusCode::CREATED, "CF-Connecting-IP is the client");
+    // An IPv6 client is its /64: hopping addresses inside it doesn't buy more.
+    assert_eq!(create("2001:db8:1:2::1").await, StatusCode::CREATED);
+    assert_eq!(create("2001:db8:1:2:ffff::9").await, StatusCode::CREATED);
+    assert_eq!(create("2001:db8:1:2:abcd::1").await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(create("2001:db8:1:3::1").await, StatusCode::CREATED);
 
     let redeem = |ip: &'static str| async move {
         srv.http("POST", &format!("/v1/rooms/{}/invites/{}/redeem", random_id(), random_id()), None, &[("cf-connecting-ip", ip)], Some(json!({ "member": "x" }))).await.0
@@ -567,13 +585,18 @@ async fn room_creation_and_redeem_rate_limits_per_ip() {
     assert_eq!(redeem("203.0.113.9").await, StatusCode::TOO_MANY_REQUESTS);
 
     // Without a trusted proxy the header is ignored: everything comes from the peer address.
+    // That's the default.
     let direct = start(|c| {
+        open_config(c);
         c.rooms_per_hour = 1;
-        c.trust_cloudflare = false;
     })
     .await;
-    assert_eq!(direct.http("POST", "/v1/rooms", None, &[("cf-connecting-ip", "203.0.113.1")], None).await.0, StatusCode::CREATED);
-    assert_eq!(direct.http("POST", "/v1/rooms", None, &[("cf-connecting-ip", "203.0.113.2")], None).await.0, StatusCode::TOO_MANY_REQUESTS);
+    let direct = &direct;
+    let create = |ip: &'static str| async move {
+        direct.http("POST", "/v1/rooms", None, &[("cf-connecting-ip", ip), ("x-lorekeeper-create-key", CREATE_KEY)], None).await.0
+    };
+    assert_eq!(create("203.0.113.1").await, StatusCode::CREATED);
+    assert_eq!(create("203.0.113.2").await, StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
@@ -581,7 +604,7 @@ async fn changes_come_in_pages() {
     let s = start(|c| {
         open_config(c);
         c.writes_per_minute = 10_000;
-        c.max_blob = 100_000;
+        c.max_blob = 8 * 1024 * 1024;
     })
     .await;
     let (room, owner) = s.room().await;
@@ -603,9 +626,9 @@ async fn changes_come_in_pages() {
     assert_eq!((p.seq, p.changes.len(), p.more), (502, 500, true));
     let p = page(500).await;
     assert_eq!((p.changes.len(), p.more), (2, false));
-    // Pages also stop at about one blob limit of data (always at least one change).
+    // Pages also stop at 4 MiB of blobs (always at least one change), whatever the blob limit.
     for i in 0..3u64 {
-        assert!(matches!(a.put(1000 + i, &format!("big{i}.md"), 0, &"y".repeat(40_000)).await, ServerMessage::Ack { .. }));
+        assert!(matches!(a.put(1000 + i, &format!("big{i}.md"), 0, &"y".repeat(2_400_000)).await, ServerMessage::Ack { .. }));
     }
     let p = page(502).await;
     assert_eq!((p.changes.len(), p.more), (1, true));
@@ -614,6 +637,9 @@ async fn changes_come_in_pages() {
     let (replay, _) = b.hello(0, "b").await;
     assert_eq!(replay.len(), 505);
     assert_eq!(s.http("GET", &format!("/v1/rooms/{room}/changes?since=x"), Some(&owner), &[], None).await.0, StatusCode::BAD_REQUEST);
+    // A since past what SQLite can hold is just "nothing new", not a database error.
+    let p = page(u64::MAX).await;
+    assert_eq!((p.seq, p.changes.len(), p.more), (505, 0, false));
 }
 
 #[tokio::test]
@@ -624,4 +650,159 @@ async fn shutdown_closes_sockets() {
     a.hello(0, "a").await;
     s.state.shut_down();
     assert_eq!(a.next().await, None);
+}
+
+#[tokio::test]
+async fn connections_are_capped_server_wide() {
+    let s = start(|c| {
+        open_config(c);
+        c.max_connections_total = 2;
+    })
+    .await;
+    let (room, owner) = s.room().await;
+    let (room2, owner2) = s.room().await;
+    let a = s.ws(&room, &owner).await;
+    let _b = s.ws(&room2, &owner2).await;
+    assert_eq!(s.ws_status(&room2, Some(&owner2)).await, StatusCode::TOO_MANY_REQUESTS, "another room, same server");
+    drop(a);
+    // The slot frees once the server sees the socket go.
+    let mut status = StatusCode::TOO_MANY_REQUESTS;
+    for _ in 0..50 {
+        status = s.ws_status(&room2, Some(&owner2)).await;
+        if status == StatusCode::SWITCHING_PROTOCOLS {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, StatusCode::SWITCHING_PROTOCOLS);
+}
+
+/// A member who stops reading while the server sends to them still gets cut off when removed:
+/// removal interrupts the stuck send, closes the socket and frees its slot.
+#[tokio::test]
+async fn removal_interrupts_a_stalled_reader() {
+    let s = start(|c| {
+        open_config(c);
+        c.max_connections = 2;
+        c.writes_per_minute = 10_000;
+        c.max_blob = 4 * 1024 * 1024;
+    })
+    .await;
+    let (room, owner) = s.room().await;
+    let member = s.member(&room, &owner, "m").await;
+    let mut m = s.ws(&room, &member).await;
+    m.hello(0, "m").await;
+    let mut a = s.ws(&room, &owner).await;
+    assert_eq!(a.hello(0, "a").await.1.len(), 2);
+    // m never reads again: about 40 MiB of changes fill the socket buffers and the server's send
+    // to m blocks.
+    for i in 0..10u64 {
+        assert!(matches!(a.put(i + 1, &format!("{i}.md"), 0, &"z".repeat(3_000_000)).await, ServerMessage::Ack { .. }));
+    }
+    let (_, list) = s.http("GET", &format!("/v1/rooms/{room}/members"), Some(&owner), &[], None).await;
+    let member_id = list[1]["member_id"].as_str().unwrap().to_string();
+    assert_eq!(s.http("DELETE", &format!("/v1/rooms/{room}/members/{member_id}"), Some(&owner), &[], None).await.0, StatusCode::NO_CONTENT);
+    let mut status = StatusCode::TOO_MANY_REQUESTS;
+    for _ in 0..50 {
+        status = s.ws_status(&room, Some(&owner)).await;
+        if status == StatusCode::SWITCHING_PROTOCOLS {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, StatusCode::SWITCHING_PROTOCOLS, "the removed member's slot is free");
+    drop(m);
+}
+
+#[tokio::test]
+async fn concurrent_redeems_of_one_invite_admit_one() {
+    let s = start(open_config).await;
+    let (room, owner) = s.room().await;
+    let (_, body) = s.http("POST", &format!("/v1/rooms/{room}/invites"), Some(&owner), &[], None).await;
+    let invite = body["invite"].as_str().unwrap().to_string();
+    let tries = (0..8).map(|i| {
+        let (s, room, invite) = (&s, room.clone(), invite.clone());
+        async move { s.redeem(&room, &invite, &format!("p{i}")).await.0 }
+    });
+    let results = futures_util::future::join_all(tries).await;
+    assert_eq!(results.iter().filter(|st| **st == StatusCode::CREATED).count(), 1, "{results:?}");
+    assert!(results.iter().all(|st| *st == StatusCode::CREATED || *st == StatusCode::GONE), "{results:?}");
+    let (_, list) = s.http("GET", &format!("/v1/rooms/{room}/members"), Some(&owner), &[], None).await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn reads_are_rate_limited_per_member() {
+    let s = start(open_config).await;
+    let (room, owner) = s.room().await;
+    let member = s.member(&room, &owner, "m").await;
+    let changes = format!("/v1/rooms/{room}/changes");
+    let _a = s.ws(&room, &member).await;
+    for _ in 0..59 {
+        assert_eq!(s.http("GET", &changes, Some(&member), &[], None).await.0, StatusCode::OK);
+    }
+    let limited = (StatusCode::TOO_MANY_REQUESTS, json!({ "error": "rate_limited" }));
+    assert_eq!(s.http("GET", &changes, Some(&member), &[], None).await, limited);
+    assert_eq!(s.ws_status(&room, Some(&member)).await, StatusCode::TOO_MANY_REQUESTS, "upgrades share the budget");
+    assert_eq!(s.http("GET", &changes, Some(&owner), &[], None).await.0, StatusCode::OK, "per member");
+}
+
+#[tokio::test]
+async fn socket_message_flood_closes_the_socket() {
+    let s = start(|c| {
+        open_config(c);
+        c.max_connections = 1;
+    })
+    .await;
+    let (room, owner) = s.room().await;
+    let mut a = s.ws(&room, &owner).await;
+    for _ in 0..700 {
+        if a.ws.send(Message::text(r#"{"type":"ping"}"#)).await.is_err() {
+            break;
+        }
+    }
+    // Pongs up to the limit, then the server hangs up. (The client may not see the close: the
+    // server drops the socket with the rest of the flood unread.)
+    let mut pongs = 0;
+    while let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_secs(2), a.ws.next()).await {
+        if msg.is_text() {
+            pongs += 1;
+        }
+    }
+    assert!(pongs <= 600, "{pongs}");
+    assert_eq!(s.ws_status(&room, Some(&owner)).await, StatusCode::SWITCHING_PROTOCOLS, "the flooder's slot is free");
+}
+
+#[tokio::test]
+async fn tombstones_are_capped_per_room() {
+    let s = start(|c| {
+        open_config(c);
+        c.max_files = 2;
+    })
+    .await;
+    let (room, owner) = s.room().await;
+    let mut a = s.ws(&room, &owner).await;
+    a.hello(0, "a").await;
+    // Put and delete four new files: four tombstones, no live files.
+    for i in 0..4u64 {
+        assert!(matches!(a.put(i * 2, &format!("{i}.md"), 0, "x").await, ServerMessage::Ack { .. }));
+        let seq = i * 2 + 1;
+        assert!(matches!(a.delete(i * 2 + 1, &format!("{i}.md"), seq).await, ServerMessage::Ack { .. }));
+    }
+    assert_eq!(a.put(9, "new.md", 0, "x").await, ServerMessage::Error { req: Some(9), error: "too_many_files".into() });
+    // A deleted file can still come back over its own tombstone.
+    assert!(matches!(a.put(10, "0.md", 0, "back").await, ServerMessage::Ack { .. }));
+}
+
+#[tokio::test]
+async fn join_page_is_locked_down() {
+    let s = start(open_config).await;
+    let app = router(s.state.clone());
+    let uri = format!("/join/{}/{}", random_id(), random_id());
+    let res = app.oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let csp = res.headers()["content-security-policy"].to_str().unwrap();
+    assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"), "{csp}");
+    assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    assert!(!res.headers().contains_key("access-control-allow-origin"), "no CORS anywhere");
 }
