@@ -1,6 +1,54 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authorLink, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, privateNote, removeLine, sessions, timeline, toHtml } from "./notes.js";
+import { authorLink, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, privateNote, removeLine, splitPrivate, sessions, timeline, toHtml } from "./notes.js";
+
+test("~ lines typed into a shared page leave it for your private notes", () => {
+  const md = [
+    "---", "status: ~open", "---", "# Session 1",
+    "- 20:14 ~@[[Lorelei]] has a secret deal with [[Halia Thornton]]",
+    "~ the gem is fake",
+    "- ~untimed bullet",
+    "20:15 ~timed, no bullet",
+    "  * 21:00 ~nested",
+    "- 20:16 we meet Halia ~ who lies",
+    "~~struck out~~",
+    "```", "~ in code stays", "```",
+    "~~~", "~ in a tilde fence too", "~~~",
+    "~",
+    "- 20:17 ~\r",
+  ].join("\n");
+  const out = splitPrivate(md);
+  assert.deepEqual(out.private, [
+    "- 20:14 @[[Lorelei]] has a secret deal with [[Halia Thornton]]",
+    "the gem is fake",
+    "- untimed bullet",
+    "20:15 timed, no bullet",
+    "* 21:00 nested",
+  ]);
+  assert.equal(out.taken.length, 5);
+  assert.equal(out.shared, [
+    "---", "status: ~open", "---", "# Session 1",
+    "- 20:16 we meet Halia ~ who lies", "~~struck out~~",
+    "```", "~ in code stays", "```", "~~~", "~ in a tilde fence too", "~~~", "~", "- 20:17 ~\r",
+  ].join("\n"), "frontmatter, mid-line ~, strikethrough, code and an empty ~ stay");
+  assert.deepEqual(splitPrivate("# Halia\nNothing private."), { shared: "# Halia\nNothing private.", private: [], taken: [] });
+  // Windows line breaks: the line still goes, without its \r.
+  assert.deepEqual(splitPrivate("a\r\n~secret\r\nb").private, ["secret"]);
+  assert.equal(splitPrivate("a\r\n~secret\r\nb").shared, "a\r\nb");
+  // A line goes with its line break, so a last line typed after the file's final newline leaves that newline.
+  assert.equal(splitPrivate("we meet Halia\n~she lies").shared, "we meet Halia\n");
+  assert.equal(splitPrivate("~she lies\nwe meet Halia\n").shared, "we meet Halia\n");
+});
+
+test("a ~ line typed on a page links that page, so it shows in its Private notes", () => {
+  const paths = ["NPCs/Halia Thornton.md", "NPCs/Lorelei.md", "Locations/Phandalin.md", "Archive/Lorelei.md", "Old/Phandalin/Lorelei.md"];
+  const on = (page, line) => splitPrivate(line, page, paths).private[0];
+  assert.equal(on("NPCs/Halia Thornton.md", "~ She had a secret deal with [[Lorelei]]"), "@[[Halia Thornton]] She had a secret deal with [[Lorelei]]");
+  assert.equal(on("Locations/Phandalin.md", "- 20:14 ~the mine is cursed"), "- 20:14 [[Phandalin]] the mine is cursed");
+  assert.equal(on("NPCs/Halia Thornton.md", "~[[Halia Thornton|she]] lies"), "[[Halia Thornton|she]] lies", "already linked");
+  // A name another page has at a shorter path gets its folder, so the link finds this one.
+  assert.equal(on("Old/Phandalin/Lorelei.md", "~old news"), "[[Old/Phandalin/Lorelei]] old news");
+});
 
 test("a quick note starting with ~ is private, and keeps its prefix for filing", () => {
   assert.deepEqual(privateNote("~@Halia lies"), { private: true, text: "@Halia lies" });

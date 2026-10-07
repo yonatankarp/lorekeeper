@@ -1,7 +1,7 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
-import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
+import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, splitPrivate, stripLinks, timeline, toHtml } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
@@ -36,6 +36,7 @@ let base = ""; // file content the editor started from, for conflict-safe saves
 let editing = false;
 let saveTimer = null;
 let saving = null; // in-flight save promise
+let held = false; // unsaved while the cursor is still on a ~ line, or after its move failed (see save): the editor keeps it
 let inConflict = false;
 const closedFolders = new Set();
 const KINDS = { npc: "NPC", loot: "Loot", quest: "Quest", mystery: "Mystery", quote: "Quote" }; // a note's badge; symbols: NOTE_PREFIXES
@@ -74,7 +75,7 @@ const myPrivateFile = (path) => (me() ? `Private/${path}/${baseName(me())}.md` :
 const isSession = (path) => path?.startsWith("Sessions/");
 const alive = (path) => path === null || !!note(path); // Home, or a page still in the vault
 const modal = () => !!document.querySelector("dialog[open]");
-const dirty = () => saveTimer !== null || saving !== null;
+const dirty = () => saveTimer !== null || saving !== null || held;
 const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD
 
 /** The Markdown editor, created the first time it's needed. */
@@ -535,6 +536,7 @@ function render() {
 /** Shows a page (null: Home), saving pending edits first. A new visit goes into history; `to` is Back / Forward's index. */
 async function open(path, { edit = false, to } = {}) {
   await flush();
+  if (held) return; // ~ lines that couldn't be moved stay in the editor; save says why
   if (to === undefined) nav.visit(path);
   else nav.go(to);
   current = path;
@@ -571,18 +573,52 @@ function scheduleSave() {
   }, 600);
 }
 
+/** Saves pending typing now, a ~ line still being typed included (see save). */
 async function flush() {
-  if (saveTimer) {
+  await saving;
+  if (saveTimer || held) {
     clearTimeout(saveTimer);
     saveTimer = null;
-    saving = save().finally(() => (saving = null));
+    saving = save(true).finally(() => (saving = null));
   }
   await saving;
 }
 
-async function save() {
+/** The session number of shared session file `path` ("Sessions/Session 4/Sibling 5.md" or "Sessions/Session 4.md"), else null. */
+const sessionNumber = (path) => Number(path.match(/^Sessions\/Session (\d+)(?:\.md$|\/)/i)?.[1]) || null;
+
+/**
+ * The `~` lines in the editor's text for shared file `path` (splitPrivate), in a shared campaign once you picked a
+ * character; null otherwise, and in your private files, where a `~` stays as typed (as in a campaign of your own).
+ */
+const privateLines = (path, content) =>
+  me() && !isPrivate(path) ? splitPrivate(content, sessionNumber(path) ? "" : current, paths()) : null;
+
+/**
+ * Saves the editor's text. Lines typed with a ~ go to your private notes first, then leave the editor: a shared file
+ * never gets them, even briefly. While the cursor is still on one, nothing is saved (`held`, so a pause mid-line never
+ * sends half of it and leaves the rest to be typed into the shared page), until the cursor leaves it or `final`
+ * (flush: Done, another page, quitting).
+ */
+async function save(final = false) {
   const path = editPath();
-  const content = ed().getValue();
+  let content = ed().getValue();
+  held = !final && !!privateLines(path, ed().cursorLine())?.private.length;
+  if (held) return;
+  let moved = 0;
+  for (let split; (split = privateLines(path, content))?.private.length; content = ed().getValue()) {
+    try {
+      await invoke("save_private_lines", { session: sessionNumber(path), lines: split.private });
+    } catch (err) {
+      held = true; // nothing is saved, and the editor stays open with it (open, Done)
+      return say(`Not saved: couldn't move your ~ notes to your private notes: ${err}`);
+    }
+    moved += split.private.length;
+    // Typing during the write stays; the loop then checks it for ~ lines too.
+    const now = ed().getValue(), left = now.split("\n");
+    for (const line of now === content ? [] : split.taken) if (left.includes(line)) left.splice(left.indexOf(line), 1);
+    ed().setValue(now === content ? split.shared : left.join("\n"));
+  }
   try {
     const written = await invoke("save_file", { path, content, base });
     base = written;
@@ -591,7 +627,7 @@ async function save() {
     if (path.startsWith("Quests/")) renderTree(); // a changed status moves the check mark
     // Notes added by the hotkeys while editing were kept on disk; show them in the editor too.
     if (written !== content && written.startsWith(content) && path === editPath()) ed().append(written.slice(content.length));
-    say("Saved");
+    say(moved ? `Moved ${moved} note${moved === 1 ? "" : "s"} to your private notes (${ownLabel()})` : "Saved");
   } catch (err) {
     if (err === "conflict") {
       inConflict = true;
@@ -1015,6 +1051,7 @@ $("toggle").addEventListener("click", async () => {
   if (current && isDmCopy(current)) return; // read-only
   if (editing) {
     await flush();
+    if (held) return; // see open
     editing = false;
   } else {
     if (!(await ownFile())) return;

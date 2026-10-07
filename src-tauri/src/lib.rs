@@ -313,6 +313,32 @@ fn append_note(dir: &Path, me: Option<&str>, text: &str) -> io::Result<(String, 
     Ok((text, Some(path)))
 }
 
+/// Lines typed with a `~` into a shared page in the window (splitPrivate in notes.js), appended as they come to your
+/// private file for session `n` (made like any session file), or for the current session (see private_session) when
+/// it's another page. Written before the window saves the shared page without them, so they never reach a shared file.
+fn append_private(dir: &Path, me: &str, n: Option<u32>, lines: &[String]) -> io::Result<PathBuf> {
+    let _guard = WRITE_LOCK.lock().unwrap();
+    let path = match n {
+        Some(n) => start_file(&dir.join(PRIVATE_FOLDER), n, Some(me))?,
+        None => private_session(dir, me)?,
+    };
+    let old = fs::read_to_string(&path)?;
+    let lines: Vec<String> = lines.iter().map(|l| l.replace(['\r', '\n'], " ")).collect(); // one note per line
+    let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+    write!(file, "{}{}\n", if old.is_empty() || old.ends_with('\n') { "" } else { "\n" }, lines.join("\n"))?;
+    watch::wrote(&path);
+    Ok(path)
+}
+
+/// From the window's editor: see append_private. Needs a shared campaign with your character picked.
+#[tauri::command]
+fn save_private_lines(app: AppHandle, session: Option<u32>, lines: Vec<String>) -> Result<(), String> {
+    let (dir, me) = note_target(&app)?;
+    append_private(&dir, &me.ok_or(PICK_PC)?, session, &lines).map_err(|e| e.to_string())?;
+    emit_changed(&app);
+    Ok(())
+}
+
 /// The time and text of a quick-note line, "- HH:MM text".
 fn note_line(line: &str) -> Option<(&str, &str)> {
     let rest = line.strip_prefix("- ")?;
@@ -1994,6 +2020,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             save_note,
+            save_private_lines,
             last_note,
             fix_note,
             dismiss,
@@ -2402,6 +2429,13 @@ mod tests {
         let shared_text = fs::read_to_string(&shared).unwrap();
         assert!(shared_text.ends_with(" we meet Halia\n") && !shared_text.contains('~') && !shared_text.contains("lies"), "{shared_text}");
         assert!(fs::read_to_string(dir.join("Private/Sessions/Session 1/Sibling 5.md")).unwrap().ends_with(" we meet Halia, who lies\n"));
+        // ~ lines typed into a shared page in the window: into that session's private file, else the current one.
+        let lines = ["- 20:14 @[[Lorelei]] has a deal".to_string(), "no time\nor two lines".to_string()];
+        assert_eq!(append_private(&dir, "Sibling 5", Some(3), &lines).unwrap(), dir.join("Private/Sessions/Session 3/Sibling 5.md"));
+        let text = fs::read_to_string(dir.join("Private/Sessions/Session 3/Sibling 5.md")).unwrap();
+        assert!(text.starts_with("---\nsession: 3\n") && text.contains("author: \"[[Sibling 5]]\"") && text.ends_with("\n\n- 20:14 @[[Lorelei]] has a deal\nno time or two lines\n"), "{text}");
+        assert_eq!(append_private(&dir, "Sibling 5", None, &["[[Halia]] x".into()]).unwrap(), dir.join("Private/Sessions/Session 1/Sibling 5.md"));
+        assert!(fs::read_to_string(dir.join("Private/Sessions/Session 1/Sibling 5.md")).unwrap().ends_with(" who lies\n[[Halia]] x\n"));
         // New session: the private file follows the shared session's number.
         new_session(&dir, me).unwrap();
         assert_eq!(append_note(&dir, me, "~later").unwrap().1.unwrap(), dir.join("Private/Sessions/Session 2/Sibling 5.md"));
