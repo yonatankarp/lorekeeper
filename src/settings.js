@@ -3,6 +3,7 @@ import { joinText, onlineChanged, onlineText, roleText, syncText } from "./sync-
 import { DM, mayPlayDm, myPc, privateLabel } from "./vault.js";
 import { confirmClick } from "./confirm.js";
 import { readable } from "./cheatsheet.js";
+import { icon } from "./icons.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen, emitTo } = window.__TAURI__.event;
@@ -113,7 +114,10 @@ document.addEventListener("keydown", (e) => {
 }, true);
 
 for (const button of document.querySelectorAll("[data-clear]")) {
-  button.addEventListener("click", () => save({ [button.dataset.clear]: "" }));
+  button.addEventListener("click", () => {
+    button.previousElementSibling.focus(); // Change: this button hides once the shortcut is off
+    save({ [button.dataset.clear]: "" });
+  });
 }
 
 // Reset to defaults: the defaults come from Rust (Settings::default) and save like any other change.
@@ -135,7 +139,7 @@ function render(s) {
   for (const key of SHORTCUTS) {
     if (recording?.dataset.record !== key) $(`${key}-keys`).textContent = s[key] ? readable(s[key], isMac) : "Not set";
   }
-  for (const button of document.querySelectorAll("[data-clear]")) button.disabled = !s[button.dataset.clear];
+  for (const button of document.querySelectorAll("[data-clear]")) button.hidden = !s[button.dataset.clear];
   $("shortcuts-reset").disabled = !defaults || SHORTCUTS.every((k) => s[k] === defaults[k]);
   renderCampaigns(s);
   renderParty();
@@ -897,6 +901,13 @@ $("check-updates").addEventListener("click", () => invoke("check_for_updates"));
 
 const fileManager = isMac ? "Finder" : navigator.userAgent.includes("Windows") ? "Explorer" : "your file manager";
 for (const el of document.querySelectorAll(".file-manager")) el.textContent = fileManager;
+$("folder-open").innerHTML = icon("folder");
+$("folder-open").title = `Show in ${fileManager}`;
+$("folder-open").setAttribute("aria-label", `Show in ${fileManager}`);
+$("invite-copy").innerHTML = icon("copy");
+$("gh-open-repo").innerHTML = icon("external");
+for (const b of document.querySelectorAll("[data-record]")) b.insertAdjacentHTML("afterbegin", icon("edit"));
+for (const b of document.querySelectorAll("[data-clear]")) b.insertAdjacentHTML("afterbegin", icon("close"));
 for (const el of document.querySelectorAll(".primary-key")) el.textContent = isMac ? "⌘" : "Ctrl";
 
 // ---------- backups ----------
@@ -977,8 +988,9 @@ $("gh-sign-in").addEventListener("click", async () => {
   $("gh-code").textContent = code.userCode;
   $("gh-open").onclick = () => invoke("open_url", { url: code.verificationUri });
   $("gh-copy").onclick = () => navigator.clipboard.writeText(code.userCode)
-    .then(() => { $("gh-copy").textContent = "Copied"; }, (err) => { error.textContent = `Copy failed: ${err}`; });
-  $("gh-copy").textContent = "Copy code";
+    .then(() => { $("gh-copy").innerHTML = icon("done"); $("gh-copy").title = "Copied"; }, (err) => { error.textContent = `Copy failed: ${err}`; });
+  $("gh-copy").innerHTML = icon("copy");
+  $("gh-copy").title = "Copy code";
   signingIn = true;
   showGithub();
   $("gh-copy").focus();
@@ -1027,7 +1039,9 @@ for (const [p, c] of Object.entries(CLOUDS)) {
   cloudEl(p, "cloud-sign-in").addEventListener("click", () => cloudSignIn(p));
   cloudEl(p, "cloud-again").addEventListener("click", () => cloudSignIn(p));
   cloudEl(p, "cloud-restore").addEventListener("click", () => openRestore(p, c.name));
-  cloudEl(p, "cloud-open").textContent = `Open in ${c.name}`;
+  cloudEl(p, "cloud-open").innerHTML = icon("external");
+  cloudEl(p, "cloud-open").title = `Open in ${c.name}`;
+  cloudEl(p, "cloud-open").setAttribute("aria-label", `Open in ${c.name}`);
   cloudEl(p, "cloud-open").addEventListener("click", () => invoke("open_backup", { source: p }).catch((err) => { cloudEl(p, "cloud-error").textContent = String(err); }));
   cloudEl(p, "cloud-cancel").addEventListener("click", () => {
     cloudSigningIn = null; // set first, so the sign-in's "cancelled" error isn't shown

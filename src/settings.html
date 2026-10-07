@@ -128,9 +128,7 @@
           </div>
           <div class="actions">
             <kbd id="quickNote-keys"></kbd>
-            <button type="button" class="ghost" data-record="quickNote" aria-describedby="quickNote-keys">
-              Change<span class="sr-only"> Quick note shortcut</span>
-            </button>
+            <button type="button" class="ghost icon-button" data-record="quickNote" aria-describedby="quickNote-keys" title="Change"><span class="sr-only">Change Quick note shortcut</span></button>
           </div>
           <p class="error" id="quickNote-error" role="alert"></p>
         </div>
@@ -141,9 +139,7 @@
           </div>
           <div class="actions">
             <kbd id="capture-keys"></kbd>
-            <button type="button" class="ghost" data-record="capture" aria-describedby="capture-keys">
-              Change<span class="sr-only"> Save selection shortcut</span>
-            </button>
+            <button type="button" class="ghost icon-button" data-record="capture" aria-describedby="capture-keys" title="Change"><span class="sr-only">Change Save selection shortcut</span></button>
           </div>
           <p class="error" id="capture-error" role="alert"></p>
         </div>
@@ -154,12 +150,8 @@
           </div>
           <div class="actions">
             <kbd id="newSession-keys"></kbd>
-            <button type="button" class="ghost" data-record="newSession" aria-describedby="newSession-keys">
-              Change<span class="sr-only"> New session shortcut</span>
-            </button>
-            <button type="button" class="ghost" data-clear="newSession">
-              Turn off<span class="sr-only"> New session shortcut</span>
-            </button>
+            <button type="button" class="ghost icon-button" data-record="newSession" aria-describedby="newSession-keys" title="Change"><span class="sr-only">Change New session shortcut</span></button>
+            <button type="button" class="ghost icon-button" data-clear="newSession" title="Turn off"><span class="sr-only">Turn off New session shortcut</span></button>
           </div>
           <p class="error" id="newSession-error" role="alert"></p>
         </div>
@@ -170,12 +162,8 @@
           </div>
           <div class="actions">
             <kbd id="newPage-keys"></kbd>
-            <button type="button" class="ghost" data-record="newPage" aria-describedby="newPage-keys">
-              Change<span class="sr-only"> New page shortcut</span>
-            </button>
-            <button type="button" class="ghost" data-clear="newPage">
-              Turn off<span class="sr-only"> New page shortcut</span>
-            </button>
+            <button type="button" class="ghost icon-button" data-record="newPage" aria-describedby="newPage-keys" title="Change"><span class="sr-only">Change New page shortcut</span></button>
+            <button type="button" class="ghost icon-button" data-clear="newPage" title="Turn off"><span class="sr-only">Turn off New page shortcut</span></button>
           </div>
           <p class="error" id="newPage-error" role="alert"></p>
         </div>
@@ -187,7 +175,7 @@
         </div>
       </div>
       <p class="hint"><button type="button" class="ghost" id="cheat-sheet">Show cheat sheet</button> Every note symbol, link and shortcut in one place.</p>
-      <p class="hint">Click Change, then press the new keys (Esc cancels). Save selection must use <span class="primary-key">⌘</span>. New session and New page are off until you set them; <span class="mac-only">⌃⌥⌘S and ⌃⌥⌘P</span><span class="other-only">Ctrl+Alt+Shift+S and Ctrl+Alt+Shift+P</span> are usually free.</p>
+      <p class="hint">Click the pencil, then press the new keys (Esc cancels). Save selection must use <span class="primary-key">⌘</span>. New session and New page are off until you set them; <span class="mac-only">⌃⌥⌘S and ⌃⌥⌘P</span><span class="other-only">Ctrl+Alt+Shift+S and Ctrl+Alt+Shift+P</span> are usually free.</p>
     </section>
 
     <section class="panel" role="tabpanel" id="panel-appearance" aria-labelledby="tab-appearance" hidden>
@@ -251,7 +239,7 @@
           <p class="backup-status" id="folder-status" role="status"></p>
           <div class="actions">
             <button type="button" class="ghost" id="folder-restore">Restore…</button>
-            <button type="button" class="ghost" id="folder-open">Show in <span class="file-manager">Finder</span></button>
+            <button type="button" class="ghost icon-button" id="folder-open"></button>
           </div>
           <p class="error" id="folder-run-error" role="alert"></p>
         </div>
@@ -283,7 +271,7 @@
             <div class="actions">
               <button type="button" class="ghost cloud-again" hidden>Sign in again</button>
               <button type="button" class="ghost cloud-restore">Restore…<span class="sr-only cloud-sr"></span></button>
-              <button type="button" class="ghost cloud-open"></button>
+              <button type="button" class="ghost icon-button cloud-open"></button>
               <button type="button" class="ghost cloud-sign-out">Sign out<span class="sr-only cloud-sr"></span></button>
             </div>
             <p class="backup-status cloud-status" role="status"></p>
@@ -307,7 +295,7 @@
             <p class="gh-code" id="gh-code"></p>
           </div>
           <div class="actions">
-            <button type="button" class="ghost" id="gh-copy">Copy code</button>
+            <button type="button" class="ghost icon-button" id="gh-copy" aria-label="Copy code" title="Copy code"></button>
             <button type="button" class="ghost" id="gh-open">Open github.com</button>
             <button type="button" class="ghost" id="gh-cancel">Cancel</button>
           </div>
@@ -320,7 +308,7 @@
           </div>
           <div class="actions">
             <button type="button" class="ghost" id="gh-restore">Restore…</button>
-            <button type="button" class="ghost" id="gh-open-repo">Open on GitHub</button>
+            <button type="button" class="ghost icon-button" id="gh-open-repo" aria-label="Open on GitHub" title="Open on GitHub"></button>
             <button type="button" class="ghost" id="gh-sign-out">Sign out</button>
           </div>
           <p class="backup-status" id="github-status" role="status"></p>
@@ -401,7 +389,7 @@
         <div id="invite-links" hidden>
           <textarea id="invite-text" readonly rows="2" spellcheck="false" aria-label="Invite link"></textarea>
           <div class="dialog-actions">
-            <button type="button" class="ghost" id="invite-copy">Copy</button>
+            <button type="button" class="ghost icon-button" id="invite-copy" aria-label="Copy invite link" title="Copy invite link"></button>
           </div>
           <p class="hint" id="invite-hint">The link lets one player join, once, within 7 days. Send it to them privately: it holds the campaign's key. Make a new one for each player.</p>
         </div>

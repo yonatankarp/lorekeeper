@@ -10,34 +10,31 @@
   </head>
   <body>
     <aside id="sidebar">
-      <input id="search" type="search" placeholder="Search notes  ⌘K" aria-label="Search notes" autocomplete="off" />
+      <input id="search" type="search" placeholder="Search notes" data-shortcut="CmdOrCtrl+K" aria-label="Search notes" autocomplete="off" />
       <button id="campaign" class="ghost" aria-haspopup="menu" title="Switch campaign"></button>
-      <button id="home" class="file" data-home title="Home (⌘⇧H)">Home</button>
+      <button id="home" class="file" data-home title="Home" data-shortcut="CmdOrCtrl+Shift+H">Home</button>
       <nav id="tree" aria-label="Vault"></nav>
       <nav id="results" aria-label="Search results" hidden></nav>
       <p id="result-count" class="sr-only" aria-live="polite"></p>
       <footer class="side-foot">
         <p id="sync-line" class="sync-line" role="status" hidden></p>
-        <button id="new-page" class="ghost" title="New page (⌘N)">+ New page</button>
-        <button id="new-session" class="ghost" title="Start the next session file">+ Session</button>
+        <button id="new-page" class="ghost" title="New page" data-shortcut="CmdOrCtrl+N">New page</button>
+        <button id="new-session" class="ghost" title="Start the next session file">Session</button>
         <p id="move-error" class="move-error" role="alert"></p>
       </footer>
     </aside>
 
     <main>
       <header id="bar">
-        <button id="back" class="ghost icon-button" aria-label="Back" title="Back (⌘[)" disabled></button>
-        <button id="forward" class="ghost icon-button" aria-label="Forward" title="Forward (⌘])" disabled></button>
+        <button id="back" class="ghost icon-button" aria-label="Back" title="Back" data-shortcut="CmdOrCtrl+[" disabled></button>
+        <button id="forward" class="ghost icon-button" aria-label="Forward" title="Forward" data-shortcut="CmdOrCtrl+]" disabled></button>
         <nav id="crumbs" aria-label="Breadcrumb"></nav>
         <span id="status" role="status"></span>
-        <button id="toggle" class="ghost" title="Edit / preview (⌘E)">Edit</button>
-        <button id="obsidian" class="ghost" title="Open this page in Obsidian">Obsidian</button>
-        <button id="privacy" class="ghost" hidden></button>
-        <button id="rename" class="ghost" title="Rename this page (F2)" disabled hidden>Rename</button>
-        <button id="move" class="ghost" title="Move this page to another folder (or drag it onto a folder in the sidebar)" disabled hidden>Move</button>
-        <button id="delete" class="ghost icon-button" aria-label="Move page to the Trash" title="Move to the Trash (⌘⌫)" disabled hidden></button>
+        <button id="privacy" class="ghost icon-button" hidden></button>
+        <button id="toggle" class="ghost icon-button"></button>
+        <button id="delete" class="ghost icon-button" aria-label="Move page to the Trash" title="Move to the Trash" data-shortcut="CmdOrCtrl+Backspace" disabled hidden></button>
       </header>
-      <div id="notice" role="status" hidden><span id="notice-text"></span> <button id="notice-ok" class="ghost">OK</button></div>
+      <div id="notice" role="status" hidden><span id="notice-text"></span> <button id="notice-ok" class="ghost icon-button" aria-label="Dismiss" title="Dismiss"></button></div>
       <!-- A campaign kept in the Lorekeeper folder itself, from before each campaign had a folder (app.js, move_campaign). -->
       <form id="move-offer" class="move-offer" aria-labelledby="move-offer-text" novalidate hidden>
         <p id="move-offer-text">Your campaign's notes are loose in the Lorekeeper folder. Move them into a folder of their own, next to your other campaigns? Templates stay where they are, and backups carry on under the same name.</p>
@@ -60,7 +57,7 @@
           <h2 id="connections-title">Connections</h2>
           <div class="graph-box">
             <canvas class="graph" role="img"></canvas>
-            <button type="button" class="ghost graph-fit" title="Fit the whole map (or double-click it)" disabled>Fit</button>
+            <button type="button" class="ghost icon-button graph-fit" aria-label="Fit" title="Fit the whole map (or double-click it)" disabled></button>
           </div>
         </section>
         <section id="backlinks" aria-label="Linked from"></section>
@@ -133,25 +130,6 @@
         <div class="dialog-actions">
           <button type="button" id="rename-cancel" class="ghost">Cancel</button>
           <button id="rename-confirm" value="rename" class="seal">Rename</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="obsidian-dialog" aria-labelledby="obsidian-title">
-      <form method="dialog">
-        <h2 id="obsidian-title">Open your notes in Obsidian</h2>
-        <ol class="steps">
-          <li>In Obsidian, open the vault switcher (bottom-left) and choose “Open folder as vault”.</li>
-          <li>Pick this folder:
-            <span class="path-row"><code id="obsidian-path"></code>
-              <button type="button" id="obsidian-copy" class="ghost">Copy path</button></span>
-            <span id="obsidian-copied" class="copied" role="status"></span></li>
-          <li>After that, this button opens your notes directly.</li>
-        </ol>
-        <p class="tip">Already have a vault for this campaign? Choose a folder inside it in Settings &gt; General &gt; Notes folder.</p>
-        <div class="dialog-actions">
-          <button type="button" id="obsidian-launch" class="ghost">Open Obsidian</button>
-          <button value="done">Done</button>
         </div>
       </form>
     </dialog>
