@@ -4,7 +4,7 @@ import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
-  pcPath, questStatus, recentlyMentioned, renameLinks, moveProblem, movedPath, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
+  pcPath, questStatus, recentlyMentioned, renameLinks, moveProblem, movedPath, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -1082,7 +1082,7 @@ function openRenameDialog(path, move = false) {
   $("rename-confirm").textContent = move ? "Move" : "Rename";
   $("rename-name").value = baseName(path);
   // Only sessions go in Sessions/ (a page already there can stay).
-  const folders = ["", ...vault.folders].filter((f) => f === dirOf(path) || !/^sessions(\/|$)/i.test(f));
+  const folders = ["", ...[...vault.folders].sort(naturally)].filter((f) => f === dirOf(path) || !/^sessions(\/|$)/i.test(f));
   $("rename-folder").replaceChildren(...folders.map((f) => new Option(f || "Top level", f, false, f === dirOf(path))));
   $("rename-error").textContent = "";
   $("rename-dialog").showModal();
