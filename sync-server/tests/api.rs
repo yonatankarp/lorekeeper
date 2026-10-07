@@ -876,9 +876,18 @@ async fn join_page_is_locked_down() {
     for never in ["fetch", "XMLHttpRequest", "sendBeacon", "console", "Storage", "cookie", "open(", "http", "src", "innerHTML", "postMessage"] {
         assert!(!script.contains(never), "{never}");
     }
+    // It never opens the app by itself (a browser without Lorekeeper 0.7+ would show an error on arrival): it only
+    // fills in the button, and the player clicks it.
+    assert!(script.contains("open.href = url;") && script.contains("open.hidden = false;"));
+    for never in ["location.replace", "location.assign", "location.href", "location =", "location=", "replace(", "assign(", "click(", "setTimeout", "dispatchEvent"] {
+        assert!(!script.contains(never), "navigates by itself: {never}");
+    }
     // The fallbacks: the button the script fills, the download page, and pasting by hand.
     assert!(page.contains("id=\"open\"") && page.contains("Open in Lorekeeper"));
-    assert!(page.contains("<a href=\"https://yonatankarp.com/lorekeeper/\" rel=\"noreferrer\">Download Lorekeeper</a>"));
+    assert!(page.contains("Click <b>Open in Lorekeeper</b>. Your browser may ask to open Lorekeeper."));
+    assert!(page.contains("Needs Lorekeeper 0.7 or later. Don't have it, or have an older version? <a href=\"https://yonatankarp.com/lorekeeper/\" rel=\"noreferrer\">Download Lorekeeper</a>, then open this link again."));
+    assert!(page.contains("Keep it within your party."));
+    assert!(!page.contains("http-equiv"), "no meta refresh");
     assert!(page.contains("Join a shared campaign") && page.contains("the part after <b>#</b>"));
 }
 

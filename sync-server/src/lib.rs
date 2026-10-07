@@ -759,8 +759,9 @@ fn escape(s: &str) -> String {
 }
 
 /// What a browser shows for an invite link. It never touches the invite, loads nothing and can't be framed. Its one
-/// script (allowed by its hash, nothing else runs) hands the link to the app as `lorekeeper://join?link=<the link>`,
-/// so the browser asks "Open Lorekeeper?". The key in the fragment goes only there: no request, no log, no storage.
+/// script (allowed by its hash, nothing else runs) puts `lorekeeper://join?link=<the link>` on the **Open in
+/// Lorekeeper** button; the app opens only when the player clicks it, so a browser without Lorekeeper 0.7+ shows no
+/// error on arrival. The key in the fragment goes only there: no request, no log, no storage.
 async fn join_page(State(state): State<AppState>) -> impl IntoResponse {
     let headers = [
         (header::CONTENT_SECURITY_POLICY, JOIN_CSP.as_str()),
@@ -777,7 +778,8 @@ static JOIN_CSP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!("default-src 'none'; script-src 'sha256-{hash}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 });
 
-/// Runs only for a well-formed link: the path the server routed here and a 32-byte key after #.
+/// Runs only for a well-formed link: the path the server routed here and a 32-byte key after #. It only fills in and
+/// shows the button; it never navigates.
 const JOIN_SCRIPT: &str = r#"(function () {
   var path = location.pathname, key = location.hash;
   if (!/^\/join\/[a-z2-7]{26}\/[a-z2-7]{26}$/.test(path) || !/^#[A-Za-z0-9_-]{43}$/.test(key)) return;
@@ -785,7 +787,6 @@ const JOIN_SCRIPT: &str = r#"(function () {
   var open = document.getElementById("open");
   open.href = url;
   open.hidden = false;
-  location.replace(url);
 })();"#;
 
 const JOIN_PAGE: &str = r#"<!doctype html>
@@ -814,8 +815,8 @@ const JOIN_PAGE: &str = r#"<!doctype html>
 <main>
   <h1>You've been invited to a shared campaign</h1>
   <p><a id="open" class="open" hidden>Open in Lorekeeper</a></p>
-  <p>Your browser may ask to open Lorekeeper. Lorekeeper then shows the invite, and joins only when you click <b>Join</b>.</p>
-  <p>Don't have it yet? <a href="https://yonatankarp.com/lorekeeper/" rel="noreferrer">Download Lorekeeper</a>, then open this link again.</p>
+  <p>Click <b>Open in Lorekeeper</b>. Your browser may ask to open Lorekeeper. Lorekeeper then shows the invite, and joins only when you click <b>Join</b>.</p>
+  <p>Needs Lorekeeper 0.7 or later. Don't have it, or have an older version? <a href="https://yonatankarp.com/lorekeeper/" rel="noreferrer">Download Lorekeeper</a>, then open this link again.</p>
   <p>Or open the invite in Lorekeeper yourself: <b>Settings &gt; General &gt; Join a shared campaign</b>, then paste the whole link, including the part after <b>#</b>.</p>
   <p>The link holds the campaign's key. Keep it within your party.</p>
   <small>Lorekeeper sync server at {server}. It stores only encrypted notes it can't read.</small>
