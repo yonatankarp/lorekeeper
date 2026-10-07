@@ -140,7 +140,7 @@ test("renaming a page rewrites the links to it, and only those", async () => {
 });
 
 test("moving a page keeps plain links, updates path links, and never takes over another page's links", async () => {
-  const { moveProblem, movedPath, renameLinks } = await import("./vault.js");
+  const { keepsPlace, moveProblem, movedPath, renameLinks } = await import("./vault.js");
   const paths = ["NPCs/Vex.md", "Archive/Old/Vex.md", "Lore/Gods.md", "Sessions/Session 3.md", "Sessions/Prep.md"];
   const move = (md, from, folder) => renameLinks(md, from, movedPath(from, folder), paths);
   assert.equal(move("[[Gods]] [[Lore/Gods|gods]] ![[Gods]]", "Lore/Gods.md", "Archive"), "[[Gods]] [[Archive/Gods|gods]] ![[Gods]]");
@@ -157,7 +157,9 @@ test("moving a page keeps plain links, updates path links, and never takes over 
   assert.match(moveProblem("Lore/Gods.md", "Sessions", paths), /Only sessions/);
   for (const session of ["Sessions/Session 3.md", "Sessions/Session 4", "Sessions/Session 4/Sibling 5.md"]) {
     assert.match(moveProblem(session, "Lore", paths), /Session N/, session);
+    assert.ok(keepsPlace(session), session);
   }
+  assert.ok(!keepsPlace("Sessions/Prep.md"));
 });
 
 test("shownProps leaves out the type and empty values, names labels, and links page names", () => {

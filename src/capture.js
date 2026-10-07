@@ -101,6 +101,9 @@ input.addEventListener("keydown", (e) => {
     if (input.value.trim()) save((e.metaKey || e.ctrlKey) && document.body.classList.contains("stale")); else dismiss();
   }
 });
+// The webview's own menu (Reload, Back, Print, Inspect…) is for web pages: only text fields keep it, for Cut, Copy,
+// Paste and spelling (as in app.js).
+document.addEventListener("contextmenu", (e) => e.target.closest?.("textarea, input:not([type=checkbox], [type=radio])") || e.preventDefault());
 // The macOS menu bar is app-wide, and its Undo / Redo items act on the main window: undo typing here instead,
 // and keep the keys from reaching that menu (a handled keydown stops its accelerator).
 document.addEventListener("keydown", (e) => {
