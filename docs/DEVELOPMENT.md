@@ -20,7 +20,7 @@ pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":fal
 ## CI and releases
 
 - `.github/workflows/ci.yml` runs `pnpm test` on pushes to `main` and on pull requests.
-- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release: universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
+- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release, building one platform at a time (about 3x slower, but parallel builds made two drafts and dropped platforms from `latest.json`): universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
 - `.github/workflows/sync-server.yml` tests `sync-protocol/` and `sync-server/` when they change, and on `main` publishes the server image to `ghcr.io/yonatankarp/lorekeeper-sync`.
 
 ## Sync server
@@ -66,7 +66,7 @@ To release:
 1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
 2. Update `RELEASE_NOTES.md`. The update dialog shows its first ~400 characters, so keep "What's new" first.
 3. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. In the draft, check that `latest.json` lists `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64` and `linux-x86_64` (re-run a job if one is missing), then publish. Installed apps only see published releases.
+4. Check there's exactly one draft for the tag, holding the `.dmg`, `.app.tar.gz`, `-setup.exe` and `.AppImage` (each with its `.sig`), and that its `latest.json` lists `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64` and `linux-x86_64` (re-run a job if one is missing), then publish. Installed apps only see published releases.
 
 ## Update signing key
 
