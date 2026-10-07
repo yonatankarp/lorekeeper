@@ -230,7 +230,7 @@ listen("sync-status", ({ payload }) => {
   const row = rowFor(payload.path);
   if (row && current) showSyncStatus(row, payload.path);
   if (partyPath === payload.path) renderParty();
-  if (partyPath === payload.path && joinedOrLeft) refreshPlayers();
+  if (partyPath === payload.path && joinedOrLeft) refreshSoon();
   if (joinPath === payload.path) showJoin();
 });
 
@@ -277,11 +277,18 @@ function openParty(path, note = "") {
   $("invite-manage").checked = false;
   showInviteRole();
   if (sh.room && manages(sh) && !sh.removed) loadPlayers();
-  // A player who joins shows in presence (sync-status, above), but nothing reaches an owner who isn't the DM when
-  // someone leaves (they go offline first, then leave) or another manager invites: re-read every few seconds while open.
-  clearInterval(partyTimer);
-  partyTimer = setInterval(refreshPlayers, 5000);
 }
+
+// No event says a member left or another manager invited. Presence changes (sync-status, above) re-read the lists,
+// once more 3 seconds later (Leave stops syncing first, then the server forgets the member), and so does coming back
+// to this window. No polling: each read takes the campaign's key from the keychain.
+function refreshSoon() {
+  refreshPlayers();
+  clearTimeout(partyTimer);
+  partyTimer = setTimeout(refreshPlayers, 3000);
+}
+window.addEventListener("focus", () => { if (partyPath) refreshPlayers(); });
+document.addEventListener("visibilitychange", () => { if (partyPath && !document.hidden) refreshPlayers(); });
 
 /** Re-reads Pending invites and Players while they show, unless you're using them (an armed Remove, a role list). */
 function refreshPlayers() {
@@ -561,7 +568,7 @@ function undoShare() {
 $("players-dialog").addEventListener("close", () => {
   undoShare();
   clearLinks();
-  clearInterval(partyTimer);
+  clearTimeout(partyTimer);
   partyPath = null;
 });
 
