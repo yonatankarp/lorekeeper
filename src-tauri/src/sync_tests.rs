@@ -393,8 +393,11 @@ async fn two_players_sync_through_the_server() {
     })
     .await;
 
-    // The member goes offline; both edit the same page. The owner's edit lands first.
+    // The member goes offline; both edit the same page. The owner's edit lands first. A stopped engine shows nobody
+    // online (Leave and Stop sharing stop it this way).
+    let rec = member.rec.clone();
     member.stop().await;
+    assert!(rec.presence.lock().unwrap().is_empty(), "{:?}", rec.presence.lock().unwrap());
     owner.write("NPCs/Vex.md", "# Vex\nowner version\n");
     until("the owner's edit is stored", || owner.synced_hash(&room.key, "NPCs/Vex.md") == Some(content_hash(b"# Vex\nowner version\n"))).await;
     fs::write(member_dir.join("NPCs/Vex.md"), "# Vex\nmember version\n").unwrap();
