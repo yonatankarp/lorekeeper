@@ -286,7 +286,7 @@ function openParty(path, note = "") {
 /** Re-reads Pending invites and Players while they show, unless you're using them (an armed Remove, a role list). */
 function refreshPlayers() {
   if ($("party-invites").hidden || [$("invite-list"), $("player-list")].some((l) => l.contains(document.activeElement))) return;
-  loadPlayers();
+  loadPlayers(true);
 }
 
 function renderParty() {
@@ -461,11 +461,16 @@ const ROLE_CHOICES = [["player", "Player"], ["dm", "DM"], ["dm-manage", "DM who 
 
 const lastSeen = (ms) => (ms ? `last seen ${when(new Date(ms).toISOString())}` : "hasn't connected yet");
 
-async function loadPlayers() {
-  const path = partyPath;
+let playersRead = 0; // the latest loadPlayers: an older one that answers later doesn't draw over it
+
+/** Shows Pending invites and Players. `quiet` (a refresh nobody asked for) keeps the lists shown when it fails, and
+ * says nothing. */
+async function loadPlayers(quiet = false) {
+  const path = partyPath, read = ++playersRead;
   const [invites, players] = await Promise.allSettled([invoke("sync_invites", { path }), invoke("sync_members", { path })]);
-  if (partyPath !== path) return;
+  if (partyPath !== path || read !== playersRead) return;
   const failed = [invites, players].find((r) => r.status === "rejected");
+  if (failed && quiet) return;
   if (failed) $("players-error").textContent = String(failed.reason);
   const item = (text, button, action) => {
     const li = document.createElement("li");
