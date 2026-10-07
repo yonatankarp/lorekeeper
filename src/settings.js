@@ -116,6 +116,15 @@ for (const button of document.querySelectorAll("[data-clear]")) {
   button.addEventListener("click", () => save({ [button.dataset.clear]: "" }));
 }
 
+// Reset to defaults: the defaults come from Rust (Settings::default) and save like any other change.
+const SHORTCUTS = ["quickNote", "capture", "newSession", "newPage"];
+let defaults = null;
+invoke("default_settings").then((d) => {
+  defaults = Object.fromEntries(SHORTCUTS.map((k) => [k, d[k]]));
+  if (current) render(current); // settings may not have loaded yet; their render reads `defaults`
+});
+$("shortcuts-reset").addEventListener("click", () => save(defaults, "shortcuts-reset"));
+
 // ---------- load, show and save ----------
 
 function render(s) {
@@ -123,10 +132,11 @@ function render(s) {
   if (!current && s.syncServer) $("advanced").open = true; // once: a server you set yourself is worth seeing
   current = s;
   applyTheme(s.theme);
-  for (const key of ["quickNote", "capture", "newSession", "newPage"]) {
+  for (const key of SHORTCUTS) {
     if (recording?.dataset.record !== key) $(`${key}-keys`).textContent = s[key] ? readable(s[key], isMac) : "Not set";
   }
   for (const button of document.querySelectorAll("[data-clear]")) button.disabled = !s[button.dataset.clear];
+  $("shortcuts-reset").disabled = !defaults || SHORTCUTS.every((k) => s[k] === defaults[k]);
   renderCampaigns(s);
   renderParty();
   for (const el of document.querySelectorAll("[data-setting]")) {
@@ -147,8 +157,8 @@ function render(s) {
 }
 
 // One save at a time, each applied on top of the last result, so quick changes don't undo each other.
-function save(changes) {
-  const error = $(`${Object.keys(changes)[0]}-error`);
+function save(changes, errorFor = Object.keys(changes)[0]) {
+  const error = $(`${errorFor}-error`);
   error.textContent = "";
   saves = saves.then(async () => {
     try {
