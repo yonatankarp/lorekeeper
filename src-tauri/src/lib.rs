@@ -325,7 +325,7 @@ fn append_private(dir: &Path, me: &str, n: Option<u32>, lines: &[String]) -> io:
     let old = fs::read_to_string(&path)?;
     let lines: Vec<String> = lines.iter().map(|l| l.replace(['\r', '\n'], " ")).collect(); // one note per line
     let mut file = fs::OpenOptions::new().append(true).open(&path)?;
-    write!(file, "{}{}\n", if old.is_empty() || old.ends_with('\n') { "" } else { "\n" }, lines.join("\n"))?;
+    writeln!(file, "{}{}", if old.is_empty() || old.ends_with('\n') { "" } else { "\n" }, lines.join("\n"))?;
     watch::wrote(&path);
     Ok(path)
 }
