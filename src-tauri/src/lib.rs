@@ -1131,8 +1131,8 @@ fn create_file(app: AppHandle, path: String, content: String) -> Result<(), Stri
     Ok(())
 }
 
-/// Renames a note; never overwrites another one. A case-only rename ("mirela.md" to "Mirela.md")
-/// finds the same file on a case-insensitive disk, so it goes through a temporary name.
+/// Renames or moves a note (a move is a rename into another folder); never overwrites another one. A case-only rename
+/// ("mirela.md" to "Mirela.md") finds the same file on a case-insensitive disk, so it goes through a temporary name.
 fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let (src, dst) = (vault_file(root, from)?, vault_file(root, to)?);
     // Hotkey notes find the current session by its "Session N" name, so sessions keep theirs, and players' files their PC's.
@@ -1141,7 +1141,14 @@ fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
         r.split_once('/').map_or(session_number(r, false), |(folder, _)| session_number(folder, true)).is_some()
     };
     if session(from) || session(to) {
-        return Err("Sessions keep their \"Session N\" names, so hotkey notes find the current one.".into());
+        return Err("Sessions keep their \"Session N\" names in Sessions/, so hotkey notes find the current one.".into());
+    }
+    // Templates/ may be the Lorekeeper folder's, not the campaign's, and never syncs (any case), so a shared page moved
+    // there would look deleted to the party. (Moving pages into Sessions/ is refused in the window, not here: undoing a
+    // move out of Sessions/ moves the page back in.)
+    let templates = |rel: &str| rel.to_lowercase().starts_with("templates/");
+    if templates(from) || templates(to) {
+        return Err("Templates stay in Templates/.".into());
     }
     let _guard = WRITE_LOCK.lock().unwrap();
     if !src.is_file() {
@@ -2194,6 +2201,32 @@ mod tests {
         assert!(names().contains(&"Mirela.md".to_string()) && !names().contains(&"mirela.md".to_string()));
         rename_note(&dir, "NPCs/Mirela.md", "NPCs/Mira.md").unwrap();
         assert_eq!(fs::read_to_string(dir.join("NPCs/Mira.md")).unwrap(), "m");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn moving_is_renaming_into_another_folder() {
+        let dir = temp_dir("move");
+        for (rel, text) in [("NPCs/Vex.md", "npc"), ("Lore/Vex.md", "lore"), ("NPCs/Mira.md", "m"), ("Sessions/Prep.md", "p")] {
+            fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+            fs::write(dir.join(rel), text).unwrap();
+        }
+        fs::create_dir_all(dir.join("Templates")).unwrap();
+        assert!(rename_note(&dir, "NPCs/Vex.md", "Lore/Vex.md").unwrap_err().contains("already exists"));
+        assert_eq!(fs::read_to_string(dir.join("Lore/Vex.md")).unwrap(), "lore");
+        for (from, to) in [
+            ("NPCs/Mira.md", "Sessions/Session 4/Mira.md"), ("NPCs/Mira.md", "Templates/Mira.md"),
+            ("NPCs/Mira.md", "templates/Mira.md"), ("Templates/NPC.md", "NPCs/NPC.md"), ("Sessions/Session 3.md", "Lore/Session 3.md"),
+            ("NPCs/Mira.md", "../Mira.md"),
+        ] {
+            assert!(rename_note(&dir, from, to).is_err(), "{from} -> {to} should be refused");
+        }
+        rename_note(&dir, "NPCs/Mira.md", "Lore/Mira.md").unwrap();
+        assert!(!dir.join("NPCs/Mira.md").exists());
+        assert_eq!(fs::read_to_string(dir.join("Lore/Mira.md")).unwrap(), "m");
+        rename_note(&dir, "Sessions/Prep.md", "Prep.md").unwrap(); // a page that isn't a session can leave Sessions/
+        assert_eq!(fs::read_to_string(dir.join("Prep.md")).unwrap(), "p");
+        rename_note(&dir, "Prep.md", "Sessions/Prep.md").unwrap(); // and undo moves it back
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -359,6 +359,10 @@ kbd {
 /* A shared campaign's sync status and who's online. */
 .sync-line { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .sync-line[hidden] { display: none; }
+.move-error { flex-basis: 100%; margin: 0; color: var(--accent-text); font-size: 13px; overflow-wrap: anywhere; }
+/* Dragging a page onto a folder (or the tree's top level): where it would go, dashed where it can't. */
+#tree .drop-target, #tree.drop-target { outline: 2px solid var(--accent-text); outline-offset: -2px; border-radius: 4px; background: var(--accent-soft); }
+#tree .drop-refused, #tree.drop-refused { outline: 2px dashed var(--muted); outline-offset: -2px; border-radius: 4px; }
 
 /* ---------- main ---------- */
 main { display: flex; flex-direction: column; min-width: 0; height: 100vh; background: var(--surface-page); }
