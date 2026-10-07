@@ -218,7 +218,7 @@ export function pages(files, folders = []) {
       parts,
       private: secret,
       get content() {
-        const date = parts.map((p) => splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "date")?.[1]).find(Boolean);
+        const date = sessionDate(this);
         const head = `---\nsession: ${id.replace(/^.* /, "")}\n${date ? `date: ${date}\n` : ""}---\n`;
         return head + parts.map((p) => splitFrontmatter(p.content).body).join("\n");
       },
@@ -226,6 +226,29 @@ export function pages(files, folders = []) {
   }
   return out;
 }
+
+/** A shared session's date: the `date` property of its first file that has one (its Session 4.md first), or "". */
+export const sessionDate = (page) =>
+  (page?.parts ?? []).map((p) => splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "date")?.[1]).find(Boolean) ?? "";
+
+/**
+ * The files Edit can change on shared session `page` (from pages()) for `me` (your PC's name, "" for none), the one it
+ * opens first: [{ id, path }], each there yet or not. "session" is its Session 4.md from before sharing, "mine" your
+ * Session 4/<PC>.md, and "private" (when `privateNotes`: a shared campaign) your Private/Sessions/Session 4/<PC>.md.
+ * Without a character, just its first file. More than one: Edit shows the switch (Session notes | My notes | Private notes).
+ */
+export function editChoices(page, me, privateNotes = false) {
+  const old = page.parts.find((p) => p.path === `${page.path}.md`);
+  if (!me) return [{ id: "session", path: old?.path ?? page.parts[0]?.path ?? page.path }];
+  return [
+    ...(old ? [{ id: "session", path: old.path }] : []),
+    { id: "mine", path: `${page.path}/${me}.md` },
+    ...(privateNotes ? [{ id: "private", path: `Private/${page.path}/${me}.md` }] : []),
+  ];
+}
+
+/** The file Edit changes among `choices` (editChoices): the one with id `choice`, else the first. */
+export const editTarget = (choices, choice) => (choices.find((c) => c.id === choice) ?? choices[0]).path;
 
 /**
  * The files Delete trashes on shared session `page` (from pages()) when it's all yours (`me`, your PC's name): your file

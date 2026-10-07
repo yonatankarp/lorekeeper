@@ -5,7 +5,7 @@ import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMe
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  DM, dmCopyOf, isDmCopy, isPrivate, moveTarget, myPc, ownSessionFiles, privateLabel, privateMentions, shownAt, sidebarTree, startView, unprivate,
+  DM, dmCopyOf, editChoices, editTarget, isDmCopy, isPrivate, moveTarget, myPc, ownSessionFiles, privateLabel, privateMentions, sessionDate, shownAt, sidebarTree, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -34,6 +34,7 @@ const nav = navHistory(); // pages visited, for Back / Forward
 const undos = undoStack(); // the app's own undoable actions (deleting, creating); text edits use the editor's history
 let base = ""; // file content the editor started from, for conflict-safe saves
 let editing = false;
+let editChoice = null; // Edit on a shared session: which file (editChoices: "session", "mine", "private"); null is the first
 let saveTimer = null;
 let saving = null; // in-flight save promise
 let held = false; // unsaved while the cursor is still on a ~ line, or after its move failed (see save): the editor keeps it
@@ -56,14 +57,16 @@ const me = () => {
 };
 /** Your own file in shared session `path` ("Sessions/Session 4/Sibling 5.md"), there yet or not; null for other pages. */
 const myFile = (path) => (note(path)?.parts && me() ? `${path}/${baseName(me())}.md` : null);
-/** The file Edit changes: in a shared session your own (see myFile), or its first when you haven't picked a character. */
-const editPath = (path = current) => (note(path)?.parts ? myFile(path) ?? note(path).parts[0]?.path ?? path : path);
+/** The file Edit changes: in a shared session the one picked in its switch (see editChoices), else the page. */
+const editPath = (path = current) => (note(path)?.parts ? editTarget(choicesFor(path), path === current ? editChoice : null) : path);
 /** A file Obsidian can open for a page: in a shared session yours, or its first. */
 const obsidianPath = (path) => (note(editPath(path)) ? editPath(path) : note(path)?.parts?.[0]?.path ?? path);
 /** A session's notes in order: every player's, with authors, for a shared one, and the private ones you may read. */
 const sessionItems = (n) => (n.parts ? mergeTimelines([...n.parts, ...(n.private ?? [])]) : timeline(n.content));
 /** The open campaign's sharing settings, and who reads your private notes in it (see privateLabel). */
 const sharing = () => settings.sharing?.[settings.vaultPath];
+/** What Edit can change on shared session `path`: Session notes, My notes, Private notes (see editChoices). */
+const choicesFor = (path) => editChoices(note(path), baseName(me()), !!privateLabel(sharing()));
 const ownLabel = () => privateLabel(sharing()) || "Private";
 /** A player's name for their private notes a DM reads (sync.rs writes the names); never HTML. */
 const playerName = (id) => vault.dmPlayers?.[id] || "A player";
@@ -508,6 +511,16 @@ function render() {
   $("toggle").textContent = editing ? "Done" : "Edit";
   $("editor").hidden = !editing || !n;
   $("editor-hint").hidden = !editing || !n || !isSession(current);
+  // Session notes | My notes | Private notes, when a shared session has more than one file you can edit.
+  const choices = editing && n?.parts ? choicesFor(current) : [];
+  $("edit-switch").hidden = choices.length < 2;
+  if (choices.length > 1) {
+    const picked = editTarget(choices, editChoice);
+    const label = { session: "Session notes", mine: "My notes", private: `<span class="lock" aria-hidden="true">${icon("lock")}</span>Private notes` };
+    $("edit-switch").innerHTML = `<div class="view-switch" role="group" aria-label="Notes to edit">${choices
+      .map((c) => `<button type="button" data-choice="${c.id}" aria-pressed="${c.path === picked}">${label[c.id]}</button>`).join("")}</div>${
+      isPrivate(picked) ? `<span class="private-label">${escape(ownLabel())}</span>` : ""}`;
+  }
   $("view").hidden = editing && !!n;
 
   $("new-page").disabled = $("new-session").disabled = !settings.vaultPath;
@@ -548,6 +561,7 @@ async function open(path, { edit = false, to } = {}) {
   if (to === undefined) nav.visit(path);
   else nav.go(to);
   current = path;
+  editChoice = null;
   base = note(editPath())?.content ?? "";
   editing = edit;
   inConflict = false;
@@ -1049,7 +1063,7 @@ async function ownFile() {
     say("Pick your character in Settings > General first");
     return false;
   }
-  await invoke("create_file", { path, content: playerFile(current, baseName(me()), today()) })
+  await invoke("create_file", { path, content: playerFile(current, baseName(me()), sessionDate(note(current)) || today()) })
     .catch((err) => String(err).endsWith("already exists.") || say(`Couldn't edit: ${err}`));
   await refresh();
   return !!note(path);
@@ -1062,14 +1076,30 @@ $("toggle").addEventListener("click", async () => {
     if (held) return; // see open
     editing = false;
   } else {
+    editChoice = null;
     if (!(await ownFile())) return;
-    if (note(current)?.parts) say(`Editing your own notes in ${baseName(current)}`);
+    if (editPath() === myFile(current)) say(`Editing your own notes in ${baseName(current)}`);
     editing = true;
     base = note(editPath())?.content ?? "";
     ed().setValue(base, { reset: true });
   }
   render();
   if (editing) ed().focus();
+});
+
+/** Session notes | My notes | Private notes, while editing a shared session: saves, then edits the picked file (made on first pick). */
+$("edit-switch").addEventListener("click", async (e) => {
+  const choice = e.target.closest("button")?.dataset.choice;
+  if (!choice || editTarget(choicesFor(current), choice) === editPath()) return;
+  await flush();
+  if (inConflict) return say("Keep your version or load theirs first.");
+  const was = editChoice;
+  editChoice = choice;
+  if (!(await ownFile())) editChoice = was;
+  base = note(editPath())?.content ?? "";
+  ed().setValue(base, { reset: true });
+  render();
+  ed().focus();
 });
 
 // ---------- deleting, and undoing it ----------
