@@ -1,16 +1,14 @@
-What's new in 0.7.0:
-- Play with your party: Share with party… sends invite links, and every session shows everyone's notes in one timeline, end-to-end encrypted
-- Private notes: start a note with ~ or use the Private folder
-- Import player characters from D&D Beyond, portraits included
-- A cheat sheet: Help > Cheat Sheet (⌘/ or Ctrl+/)
-- Connections: Home maps your NPCs, PCs, places and factions
+What's new in 0.7.1:
+- Private notes show on the pages they link: write ~@[[Lorelei]] … and it appears under Private notes at the bottom of her page, for you only (and the DM, if the owner allows it), never on the map
+- A line starting with ~ typed into a shared page moves to your private notes when it saves
+- Private pages and notes sit in their usual places in the sidebar, with a padlock
+- Edit on a session switches between Session notes, My notes and Private notes
 
-Also new:
-- Move a page to another folder by dragging it in the sidebar, or with File > Move to…
-- Templates live in Documents/Lorekeeper/Templates, shared by every campaign there
-- Backups go to one place per provider, with a folder for each campaign; older backups stay where they were
-- Settings is simpler: one backup at a time, Hotkeys is now Shortcuts, and the sync server is under Advanced
-- The Journal is an in-app recap; Copy for D&D Beyond is gone
+Fixed:
+- A quick note no longer starts a new session when the session you're playing is from before sharing
+- A session that's all yours can be deleted
+- Move… never makes a private page shared, or a shared one private: Make shared and Make private do, and ask first
+- Settings > Shortcuts has Reset to defaults
 
 Sharing a campaign the first time needs the sync server's creation key: ask Lorekeeper's maintainer. Joining only needs the invite link and Lorekeeper 0.7 or later.
 
