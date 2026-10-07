@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authorLink, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, privateNote, removeLine, splitPrivate, sessions, timeline, toHtml } from "./notes.js";
+import { authorLink, formatOffset, insertLine, linkify, localTime, mergeTimelines, parse, parseMerged, playerFile, privateNote, removeLine, splitPrivate, sessions, timeline, toHtml, utcOffset, zoned } from "./notes.js";
 
 test("~ lines typed into a shared page leave it for your private notes", () => {
   const md = [
@@ -176,15 +176,17 @@ test("sessions newest first, with title, date and note count", () => {
   ]);
 });
 
+const berlin = () => 120; // the viewer's zone in minutes east of UTC (see localZone), so tests don't depend on the computer's
+const newYork = () => -240;
 const shared = [
-  { path: "Sessions/Session 4/Sibling 5.md", content: playerFile("Sessions/Session 4", "Sibling 5", "2026-10-06") + "- 20:05 @[[Mirela]] lies\n- 23:50 #Gold\n- 00:10 Slept\n" },
-  { path: "Sessions/Session 4/Arn.md", content: playerFile("Sessions/Session 4", "Arn", "2026-10-06") + "- 20:05 Arrived\nThe rain stopped.\n- 21:00 ![[map.png]]\n" },
+  { path: "Sessions/Session 4/Sibling 5.md", content: playerFile("Sessions/Session 4", "Sibling 5", "2026-10-06", 120) + "- 20:05 @[[Mirela]] lies\n- 23:50 #Gold\n- 00:10 Slept\n" },
+  { path: "Sessions/Session 4/Arn.md", content: playerFile("Sessions/Session 4", "Arn", "2026-10-06", 120) + "- 20:05 Arrived\nThe rain stopped.\n- 21:00 ![[map.png]]\n" },
   { path: "Sessions/Session 4.md", content: "# Session 4\n- 20:00 Before sharing\n" },
 ];
 const session4 = () => pages(shared).find((p) => p.path === "Sessions/Session 4");
 
 test("a shared session's players' notes merge into one timeline, by time then author", () => {
-  const items = mergeTimelines(session4().parts);
+  const items = mergeTimelines(session4().parts, berlin);
   assert.deepEqual(items.map((n) => [n.time, n.author, n.text]), [
     ["20:00", "", "Before sharing"], // written before the folder: no author
     ["20:05", "Arn", "Arrived"],
@@ -202,7 +204,7 @@ test("a shared session's players' notes merge into one timeline, by time then au
 });
 
 test("the Journal of a shared session names each note's author", () => {
-  const { title, groups } = parseMerged(session4().parts, ["PCs/Sibling 5.md"]);
+  const { title, groups } = parseMerged(session4().parts, ["PCs/Sibling 5.md"], berlin);
   assert.equal(title, "Session 4");
   assert.deepEqual(groups.npc, ["[[Mirela]] lies ([[PCs/Sibling 5|Sibling 5]])"]);
   assert.deepEqual(groups.event.slice(0, 3), ["Before sharing", "Arrived ([[Arn|Arn]])", "The rain stopped. ([[Arn|Arn]])"]);
@@ -212,18 +214,18 @@ test("the Journal of a shared session names each note's author", () => {
 
 test("the sessions list counts a shared session's notes from every player", () => {
   assert.deepEqual(sessions(pages(shared)), [{ path: "Sessions/Session 4", title: "Session 4", date: "2026-10-06", count: 7 }]);
-  assert.equal(playerFile("Sessions/Session 12", "Arn", "2026-10-06"), '---\nsession: 12\ndate: 2026-10-06\nauthor: "[[Arn]]"\n---\n# Session 12 - 2026-10-06\n\n');
+  assert.equal(playerFile("Sessions/Session 12", "Arn", "2026-10-06", -210), '---\nsession: 12\ndate: 2026-10-06\nutc-offset: -03:30\nauthor: "[[Arn]]"\n---\n# Session 12 - 2026-10-06\n\n');
 });
 
 test("a DM without a character is DM: no link, no portrait, even beside a PC page named DM", () => {
   const parts = [
-    { path: "Sessions/Session 5/DM.md", content: playerFile("Sessions/Session 5", "DM", "2026-10-07") + "- 20:00 The bridge is out\n- 20:30 ![[bridge.png]]\n" },
+    { path: "Sessions/Session 5/DM.md", content: playerFile("Sessions/Session 5", "DM", "2026-10-07", 0) + "- 20:00 The bridge is out\n- 20:30 ![[bridge.png]]\n" },
     { path: "Private/Sessions/Session 5/DM.md", content: "- 20:10 ?It was sabotaged\n" },
     { path: "Sessions/Session 5/Arn.md", content: "- 20:05 @Halia waves\n" },
   ];
-  assert.equal(playerFile("Sessions/Session 5", "DM", "2026-10-07"), "---\nsession: 5\ndate: 2026-10-07\nauthor: DM\n---\n# Session 5 - 2026-10-07\n\n");
-  assert.deepEqual(mergeTimelines(parts).map((n) => n.author), ["DM", "Arn", "DM", "DM"]);
-  const { groups } = parseMerged(parts, ["PCs/DM.md", "PCs/Arn.md"]);
+  assert.equal(playerFile("Sessions/Session 5", "DM", "2026-10-07", 0), "---\nsession: 5\ndate: 2026-10-07\nutc-offset: +00:00\nauthor: DM\n---\n# Session 5 - 2026-10-07\n\n");
+  assert.deepEqual(mergeTimelines(parts, () => 0).map((n) => n.author), ["DM", "Arn", "DM", "DM"]);
+  const { groups } = parseMerged(parts, ["PCs/DM.md", "PCs/Arn.md"], () => 0);
   assert.deepEqual(groups.event, ["The bridge is out (DM)", "![[bridge.png]]"]);
   assert.deepEqual(groups.mystery, [{ text: "It was sabotaged (DM)", lock: true, path: "Private/Sessions/Session 5/DM.md" }]);
   assert.deepEqual(groups.npc, ["Halia waves ([[PCs/Arn|Arn]])"]);
@@ -231,4 +233,61 @@ test("a DM without a character is DM: no link, no portrait, even beside a PC pag
   assert.equal(authorLink("DM", "PCs/DM", '<span class="author-portrait"><img></span>'), '<span class="author">DM</span>');
   assert.equal(authorLink("Arn", "PCs/Arn", "<img>"), '<a class="wikilink author" data-target="PCs/Arn" href="#"><img>Arn</a>');
   assert.equal(authorLink("<b>", "<b>"), '<a class="wikilink author" data-target="&lt;b&gt;" href="#">&lt;b&gt;</a>');
+});
+
+// ---------- time zones: each file records its writer's utc-offset; times show in the viewer's zone ----------
+
+const file = (pc, offset, notes) => ({ path: `Sessions/Session 6/${pc}.md`, content: playerFile("Sessions/Session 6", pc, "2026-10-06", offset) + notes });
+const at = (items) => items.map((n) => [n.shown, n.author, n.text]);
+
+test("a party in several time zones merges in the order notes were written, shown in your own zone", () => {
+  const parts = [
+    file("Arn", 120, "- 20:05 Arrived\n- 20:30 #Gold\n"), // Berlin
+    file("Vex", -240, "- 14:10 @Halia waves\nThe rain stopped.\n- 14:40 Slept\n"), // New York: 20:10 and 20:40 in Berlin
+  ];
+  assert.deepEqual(at(mergeTimelines(parts, berlin)), [
+    ["20:05", "Arn", "Arrived"], ["20:10", "Vex", "Halia waves"], ["", "Vex", "The rain stopped."], ["20:30", "Arn", "Gold"], ["20:40", "Vex", "Slept"],
+  ]);
+  const ny = mergeTimelines(parts, newYork);
+  assert.deepEqual(at(ny), [
+    ["14:05", "Arn", "Arrived"], ["14:10", "Vex", "Halia waves"], ["", "Vex", "The rain stopped."], ["14:30", "Arn", "Gold"], ["14:40", "Vex", "Slept"],
+  ]);
+  // Each file keeps its writer's times, and each note its line, so deleting one finds it as written.
+  assert.deepEqual(ny.map((n) => n.time), ["20:05", "14:10", "", "20:30", "14:40"]);
+  for (const n of ny) assert.ok(parts.find((p) => p.path === n.path).content.split("\n")[n.line].includes(n.time));
+});
+
+test("a file without a utc-offset is in the viewer's zone, as before", () => {
+  const parts = [{ path: "Sessions/Session 6.md", content: "# Session 6\n- 20:00 Before sharing\n" }, file("Arn", 120, "- 20:05 Arrived\n")];
+  assert.deepEqual(at(mergeTimelines(parts, berlin)), [["20:00", "", "Before sharing"], ["20:05", "Arn", "Arrived"]]);
+  assert.deepEqual(at(mergeTimelines(parts, newYork)), [["14:05", "Arn", "Arrived"], ["20:00", "", "Before sharing"]], "20:00 in New York is after 20:05 in Berlin");
+  assert.equal(utcOffset("# no properties"), null);
+});
+
+test("past midnight still rolls over with zones, and a player who joins past midnight sorts after it", () => {
+  const parts = [file("Arn", 120, "- 23:50 Camp\n- 00:10 Ambush\n"), file("Vex", -240, "- 18:00 Watch\n")]; // 18:00 in New York is midnight in Berlin
+  assert.deepEqual(at(mergeTimelines(parts, berlin)), [["23:50", "Arn", "Camp"], ["00:00", "Vex", "Watch"], ["00:10", "Arn", "Ambush"]]);
+  assert.deepEqual(at(mergeTimelines(parts, newYork)), [["17:50", "Arn", "Camp"], ["18:00", "Vex", "Watch"], ["18:10", "Arn", "Ambush"]]);
+  // New York starts the session on the 6th; Berlin joins at 01:05 on the 7th, but its file takes the session's date.
+  const late = [file("Vex", -240, "- 19:00 Start\n- 19:20 Fight\n"), file("Arn", 120, "- 01:05 Joined\n")];
+  assert.deepEqual(at(mergeTimelines(late, berlin)), [["01:00", "Vex", "Start"], ["01:05", "Arn", "Joined"], ["01:20", "Vex", "Fight"]]);
+  // One zone: a player whose first note is past midnight comes after the others' notes from before it.
+  assert.deepEqual(at(mergeTimelines([file("Arn", 120, "- 23:50 Camp\n"), file("Vex", 120, "- 00:10 Watch\n")], berlin)), [["23:50", "Arn", "Camp"], ["00:10", "Vex", "Watch"]]);
+});
+
+test("nothing changes when the zones match", () => {
+  const md = playerFile("Sessions/Session 6", "Arn", "2026-10-06", 120) + "- 20:01 a\n- 9:05 typed by hand\n- 20:00 out of order\nno time\n";
+  const items = zoned(md, berlin);
+  assert.deepEqual(items.map((n) => n.shown), ["20:01", "9:05", "20:00", ""]);
+  assert.deepEqual(items.map(({ at: _, shown: __, ...n }) => n), timeline(md), "file order, lines as before");
+  assert.deepEqual(zoned("- 20:01 a\n", newYork).map((n) => n.shown), ["20:01"], "no offset: yours");
+  assert.equal(localTime("20:14", md, berlin), "20:14");
+  assert.equal(localTime("20:14", md, newYork), "14:14");
+  assert.equal(localTime("02:14", md, newYork), "20:14", "the evening before");
+  assert.equal(localTime("20:14", "# no properties", newYork), "20:14");
+});
+
+test("utc-offset reads and writes +HH:MM and -HH:MM", () => {
+  assert.deepEqual([120, -210, 0, 345].map(formatOffset), ["+02:00", "-03:30", "+00:00", "+05:45"]);
+  assert.deepEqual(['"-03:30"', "+05:45", "+2", "nope"].map((v) => utcOffset(`---\nutc-offset: ${v}\n---\n`)), [-210, 345, null, null]);
 });

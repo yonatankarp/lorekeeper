@@ -234,13 +234,19 @@ fn session_date(dir: &Path, n: u32) -> Option<String> {
 /// Session `n`'s notes file (see notes_file; your private one when `private`), made when it isn't there yet with
 /// Obsidian properties, so sessions can be listed as a table. A player's file also names its author. A file added to a
 /// session under way (one from before sharing, or a teammate's) takes the session's date, a new session today's.
+/// `utc-offset` is the writer's zone, so a party in several zones sees its notes in order and in their own zone's
+/// times (zoned in notes.js, as is playerFile there).
+/// ponytail: the offset is the one when the file was made, as one session is one evening: notes written after a DST
+/// change or a flight are an hour (or the flight) off. Record an offset per line if that ever matters.
 fn start_file(dir: &Path, n: u32, me: Option<&str>, private: bool) -> io::Result<PathBuf> {
     let path = notes_file(&if private { dir.join(PRIVATE_FOLDER) } else { dir.to_path_buf() }, n, me);
     if path.exists() {
         return Ok(path);
     }
     fs::create_dir_all(path.parent().unwrap())?;
-    let date = session_date(dir, n).unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    let now = chrono::Local::now();
+    let date = session_date(dir, n).unwrap_or_else(|| now.format("%Y-%m-%d").to_string());
+    let offset = now.format("%:z"); // "+02:00"
     let author = match me {
         Some(DM_ME) => "author: DM\n".to_string(), // no PC page to link to (playerFile in notes.js agrees)
         Some(me) => format!("author: \"[[{me}]]\"\n"),
@@ -248,7 +254,7 @@ fn start_file(dir: &Path, n: u32, me: Option<&str>, private: bool) -> io::Result
     };
     match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(mut f) => {
-            f.write_all(format!("---\nsession: {n}\ndate: {date}\n{author}---\n# Session {n} - {date}\n\n").as_bytes())?;
+            f.write_all(format!("---\nsession: {n}\ndate: {date}\nutc-offset: {offset}\n{author}---\n# Session {n} - {date}\n\n").as_bytes())?;
             watch::wrote(&path);
         }
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
@@ -2237,6 +2243,8 @@ mod tests {
         assert_eq!(append_note(&dir, None, " \n ").unwrap().0, "");
         let s1 = fs::read_to_string(dir.join("Sessions/Session 1.md")).unwrap();
         assert!(s1.starts_with("---\nsession: 1\ndate: "));
+        assert!(has_utc_offset(&s1), "{s1}");
+        assert!(s1.contains(&format!("\nutc-offset: {}\n", chrono::Local::now().format("%:z"))), "this computer's zone: {s1}");
         assert!(s1.contains("\n# Session 1 - "));
         assert_eq!(s1.lines().filter(|l| l.starts_with("- ")).count(), 1);
         assert!(s1.trim_end().ends_with(" @Mirela the innkeeper"));
@@ -2268,6 +2276,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dnd-notes-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// Whether a session file's properties, right after `date`, hold the writer's zone as `utc-offset: +HH:MM` (or -HH:MM).
+    fn has_utc_offset(text: &str) -> bool {
+        let Some(v) = text.lines().skip_while(|l| !l.starts_with("date: ")).nth(1).and_then(|l| l.strip_prefix("utc-offset: ")) else {
+            return false;
+        };
+        let b = v.as_bytes();
+        b.len() == 6 && (b[0] == b'+' || b[0] == b'-') && b[3] == b':' && [1, 2, 4, 5].iter().all(|&i| b[i].is_ascii_digit())
     }
 
     #[test]
@@ -2340,6 +2357,7 @@ mod tests {
         let mine = session_folder(&dir, 3).join("Sibling 5.md");
         let text = fs::read_to_string(&mine).unwrap();
         assert!(text.starts_with("---\nsession: 3\ndate: ") && text.contains("\nauthor: \"[[Sibling 5]]\"\n---\n# Session 3 - "), "{text}");
+        assert!(has_utc_offset(&text), "{text}");
         assert!(text.ends_with(" the party rests\n"), "{text}");
         assert_eq!(text.lines().filter(|l| l.starts_with("- ")).count(), 1);
         assert_eq!((session_name(&mine), session_name(&session_path(&dir, 2))), ("Session 3".into(), "Session 2".into()));
@@ -2420,6 +2438,7 @@ mod tests {
         for file in [session_folder(&dated, 1).join("Sibling 5.md"), dated.join("Private/Sessions/Session 1/Sibling 5.md")] {
             let text = fs::read_to_string(&file).unwrap();
             assert!(text.contains("\ndate: 2026-10-04\n") && text.contains("# Session 1 - 2026-10-04\n"), "{text}");
+            assert!(has_utc_offset(&text), "the writer's zone, shared and private: {text}");
         }
         assert_eq!(session_date(&dated, 1).as_deref(), Some("2026-10-04"));
         fs::remove_file(session_path(&dated, 1)).unwrap();

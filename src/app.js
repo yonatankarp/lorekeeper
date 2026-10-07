@@ -1,7 +1,7 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
-import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, splitPrivate, stripLinks, timeline, toHtml } from "./notes.js";
+import { authorLink, escape, insertLine, linkify, localTime, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, splitPrivate, stripLinks, toHtml, zoned } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
@@ -58,8 +58,8 @@ const me = () => {
 const myFile = (path) => (note(path)?.parts && me() ? `${path}/${baseName(me())}.md` : null);
 /** The file Edit changes: in a shared session the one picked in its switch (see editChoices), else the page. */
 const editPath = (path = current) => (note(path)?.parts ? editTarget(choicesFor(path), path === current ? editChoice : null) : path);
-/** A session's notes in order: every player's, with authors, for a shared one, and the private ones you may read. */
-const sessionItems = (n) => (n.parts ? mergeTimelines([...n.parts, ...(n.private ?? [])]) : timeline(n.content));
+/** A session's notes in order, times in your zone (see zoned): every player's, with authors, for a shared one, and the private ones you may read. */
+const sessionItems = (n) => (n.parts ? mergeTimelines([...n.parts, ...(n.private ?? [])]) : zoned(n.content));
 /** The open campaign's sharing settings, and who reads your private notes in it (see privateLabel). */
 const sharing = () => settings.sharing?.[settings.vaultPath];
 /** What Edit can change on shared session `path`: Session notes, My notes, Private notes (see editChoices). */
@@ -314,13 +314,13 @@ const emptySessionHtml = (keys = globalKeys(settings)) => `<div class="empty-sta
 const timelineHtml = (items, removable = () => false) =>
   `<ol class="timeline">${items
     .map((item) => {
-      const { time, kind, text, line, author, path } = item;
+      const { time, shown, kind, text, line, author, path } = item;
       const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${icon(kind)}${KINDS[kind]}</span>` : "";
       const remove = removable(item)
         ? `<button type="button" class="remove-note" data-line="${line}" data-path="${escape(path ?? current)}" aria-label="Delete note: ${escape(stripLinks(text))}" title="Delete note">${icon("trash")}</button>`
         : "";
       const lock = path && isPrivate(path) ? lockHtml(path) : "";
-      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}${author ? ` <span class="by">${authorHtml(author)}</span>` : ""}${lock}</span>${remove}</li>`;
+      return `<li><time>${escape(shown ?? time)}</time>${badge}<span class="text">${inlineLinks(text)}${author ? ` <span class="by">${authorHtml(author)}</span>` : ""}${lock}</span>${remove}</li>`;
     })
     .join("")}</ol>`;
 
@@ -356,7 +356,7 @@ const showsMentions = (path) => !!privateLabel(sharing()) && !isPrivate(path) &&
 function mentionHtml(src, line) {
   const [, time = "", rest] = line.match(/^(?:[-*+] )?(?:(\d{1,2}:\d{2}) )?(.*)$/);
   const session = unprivate(src).match(/^Sessions\/Session \d+/i)?.[0];
-  const where = session ? `${baseName(session)}${time ? `, ${time}` : ""}` : baseName(src);
+  const where = session ? `${baseName(session)}${time ? `, ${localTime(time, note(src)?.content ?? "")}` : ""}` : baseName(src); // in your zone
   const target = (session && [session, `${session}.md`].find(note)) || src; // the session's page, else the note itself
   const label = isDmCopy(src) ? `${playerName(dmCopyOf(src))}, ${where}` : where;
   return `<li>${lockHtml(src)}<a data-path="${escape(target)}" href="#">${escape(label)}</a>: ${inlineLinks(rest.replace(/^[@#!?]\s*/, ""))}</li>`;
