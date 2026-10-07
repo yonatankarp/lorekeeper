@@ -1424,7 +1424,9 @@ $("sidebar").addEventListener("contextmenu", (e) => {
           { text: "Delete…", action: () => deletePage(file) },
         ]),
       ]
-    : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];
+    : /^sessions(\/|$)/i.test(folder) // only sessions go in Sessions/ (moveProblem)
+      ? [{ text: "New Session", action: () => actions.newSession() }]
+      : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];
   // ponytail: each right-click's menu and items stay open (closing them once popup() returns could drop a click still on
   // its way, see nativeMenu): a few small resources each time. Close the previous menu's on the next right-click if that matters.
   nativeMenu({ items }).then((m) => m.popup()).catch(say);
