@@ -1730,6 +1730,7 @@ listen("vault-changed", refresh);
 listen("settings-changed", (e) => applySettings(e.payload));
 // The global New Page hotkey (Rust shows this window first).
 listen("new-page", actions.newPage);
+listen("cheat-sheet", () => $("cheat-dialog").open || modal() || openCheatSheet()); // Settings > Shortcuts
 window.addEventListener("focus", refresh);
 window.addEventListener("beforeunload", flush);
 
