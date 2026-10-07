@@ -227,6 +227,17 @@ export function pages(files, folders = []) {
   return out;
 }
 
+/**
+ * The files Delete trashes on shared session `page` (from pages()) when it's all yours (`me`, your PC's name): your file
+ * in its folder, and your private one if there is one. [] when anything else is in it (a Session 4.md from before sharing,
+ * a teammate's file, a DM's copy of a player's private notes) or nothing is, so the session stays.
+ */
+export function ownSessionFiles(page, me) {
+  const files = [...(page?.parts ?? []), ...(page?.private ?? [])].map((f) => f.path);
+  const mine = [`${page?.path}/${me}.md`, `Private/${page?.path}/${me}.md`];
+  return me && files.length && files.every((p) => mine.includes(p)) ? files : [];
+}
+
 /** "PCs/Sibling 5.md", the PC page named `name` (any case, any folder in PCs/), or null. */
 export const pcPath = (name, paths) => paths.find((p) => p.startsWith("PCs/") && baseName(p).toLowerCase() === name.toLowerCase()) ?? null;
 
