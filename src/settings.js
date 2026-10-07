@@ -1277,3 +1277,6 @@ const load = () => { saves = saves.then(() => invoke("get_settings").then(render
 load();
 window.addEventListener("focus", load);
 listen("settings-changed", (e) => { render(e.payload); loadSyncInfo(); });
+
+// Shortcuts > Show cheat sheet: the main window opens its Help > Cheat Sheet.
+$("cheat-sheet").onclick = () => invoke("open_cheat_sheet");

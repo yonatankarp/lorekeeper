@@ -1806,6 +1806,13 @@ fn open_settings(app: AppHandle) {
     show_window(&app, "settings");
 }
 
+/// Settings > Shortcuts > Show cheat sheet: the main window comes forward and opens Help > Cheat Sheet.
+#[tauri::command]
+fn open_cheat_sheet(app: AppHandle) {
+    show_window(&app, "main");
+    let _ = app.emit_to("main", "cheat-sheet", ());
+}
+
 /// None when cancelled. Async because the blocking dialog must not run on the main thread.
 #[tauri::command]
 async fn pick_folder(app: AppHandle, window: tauri::WebviewWindow, title: String, start: String) -> Option<String> {
@@ -2008,6 +2015,7 @@ pub fn run() {
             get_settings,
             save_settings,
             open_settings,
+            open_cheat_sheet,
             pick_folder,
             open_vault_folder,
             switch_campaign,

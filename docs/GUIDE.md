@@ -178,7 +178,7 @@ Backups run on each new session, every 30 minutes while notes change, and once a
 
 ## Cheat sheet
 
-In the app: **Help > Cheat Sheet**, `⌘/` / `Ctrl+/`. It shows the global shortcuts as you set them.
+In the app: **Help > Cheat Sheet**, `⌘/` / `Ctrl+/`, or **Show cheat sheet** in **Settings > Shortcuts**. It shows the global shortcuts as you set them.
 
 ### Note symbols
 
