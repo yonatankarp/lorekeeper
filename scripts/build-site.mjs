@@ -116,7 +116,7 @@ ${[["@", "npc", "NPC"], ["#", "loot", "Loot"], ["!", "quest", "Quest"], ["?", "m
 // Built but not in a release yet. When NEXT ships, move these into FEATURES (and drop "coming in" from the FAQ).
 const NEXT = "0.7";
 const SOON = [
-  ["pc", "Play with your party", `<p>Share a campaign with an invite link and everyone's notes land in one session timeline, each with who wrote it. It syncs end-to-end encrypted, so the server can't read a word.</p>`],
+  ["pc", "Play with your party", `<p>Share a campaign with an invite link and everyone's notes land in one session timeline, each with who wrote it, and private notes stay with you (and the DM, if your party allows it). It syncs end-to-end encrypted, so the server can't read a word.</p>`],
   ["faction", "Characters and connections", `<p>Import the whole party from D&amp;D Beyond: class, level, background and portrait, refreshed after a level up. Home maps your NPCs, places and factions and who's linked to whom.</p>`],
 ];
 

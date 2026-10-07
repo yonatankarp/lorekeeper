@@ -36,9 +36,14 @@ mod watch;
 // ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
 //   Sessions/Session N.md   written by the hotkeys
 //   Sessions/Session N/<PC>.md   the same in a campaign shared with your party: one file per player
+//   Private/...   in a shared campaign, your private notes (same layout; synced to your own private space only)
+//   .lorekeeper/dm/<member id>/...   a DM's read-only copies of the players' private notes (sync.rs)
 //   PCs/ NPCs/ Locations/ Items/ Factions/ Quests/ Lore/   your pages
 //   Templates/   starting text for "New page" (Obsidian's {{title}} / {{date}} syntax)
 //   Templates/.seeded   the default templates written so far, one name per line
+
+/// Your private notes in a shared campaign (see sync::PRIVATE).
+const PRIVATE_FOLDER: &str = "Private";
 
 const VAULT_FOLDERS: [&str; 9] = ["Sessions", "PCs", "NPCs", "Locations", "Items", "Factions", "Quests", "Lore", "Templates"];
 
@@ -250,19 +255,51 @@ fn current_session(dir: &Path, me: Option<&str>) -> io::Result<PathBuf> {
     }
 }
 
-/// Appends one note as a single line; multi-line selections are collapsed so the
-/// one-note-per-line format survives. Returns the saved text (empty = nothing saved).
-fn append_note(dir: &Path, me: Option<&str>, text: &str) -> io::Result<String> {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if !text.is_empty() {
-        let _guard = WRITE_LOCK.lock().unwrap();
-        let time = chrono::Local::now().format("%H:%M");
-        let path = current_session(dir, me)?;
-        let mut file = fs::OpenOptions::new().append(true).open(&path)?;
-        writeln!(file, "- {time} {text}")?;
-        watch::wrote(&path);
+/// A quick note starting with `~` is private: (true, the note without it). The rest of the note is filed as usual,
+/// so `~@Halia lies` is a private NPC note. Same rule as privateNote in notes.js.
+fn private_note(text: &str) -> (bool, &str) {
+    match text.trim_start().strip_prefix('~') {
+        Some(rest) => (true, rest),
+        None => (false, text),
     }
-    Ok(text)
+}
+
+/// Your private notes file in the current session, `Private/Sessions/Session N/<PC>.md`: the session number the shared
+/// file would have (see current_session), without making the shared file.
+fn private_session(dir: &Path, me: &str) -> io::Result<PathBuf> {
+    let n = match latest_session(dir)? {
+        0 => 1,
+        n if !session_folder(dir, n).is_dir() => n + 1,
+        n => n,
+    };
+    start_file(&dir.join(PRIVATE_FOLDER), n, Some(me))
+}
+
+/// Where a quick note goes: your private file for a private note in a shared campaign, else the current session's.
+/// (A campaign of your own is all yours: a `~` note goes where any note does.)
+fn note_file(dir: &Path, me: Option<&str>, private: bool) -> io::Result<PathBuf> {
+    match me {
+        Some(me) if private => private_session(dir, me),
+        _ => current_session(dir, me),
+    }
+}
+
+/// Appends one note as a single line; multi-line selections are collapsed so the one-note-per-line format survives. A
+/// `~` note goes to your private file (see private_note). Returns the saved text (empty = nothing saved, and no file is
+/// made) and the file it went to.
+fn append_note(dir: &Path, me: Option<&str>, text: &str) -> io::Result<(String, Option<PathBuf>)> {
+    let (private, text) = private_note(text);
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return Ok((text, None));
+    }
+    let _guard = WRITE_LOCK.lock().unwrap();
+    let path = note_file(dir, me, private)?;
+    let time = chrono::Local::now().format("%H:%M");
+    let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+    writeln!(file, "- {time} {text}")?;
+    watch::wrote(&path);
+    Ok((text, Some(path)))
 }
 
 /// The time and text of a quick-note line, "- HH:MM text".
@@ -296,7 +333,13 @@ fn replace_last_note(content: &str, old: &str, new: &str) -> Option<String> {
 /// the text is appended as a new note instead, so nothing is lost. Returns whether it was fixed in place;
 /// empty text keeps the note as it was.
 fn fix_last_note(dir: &Path, me: Option<&str>, old: &str, text: &str) -> io::Result<bool> {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if me.is_some() && private_note(text).0 {
+        // ↑ fixes a note in your shared file; a private note never goes there: it's saved as a new private note and
+        // the shared one stays as it was.
+        append_note(dir, me, text)?;
+        return Ok(false);
+    }
+    let text = private_note(text).1.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         return Ok(true);
     }
@@ -343,8 +386,20 @@ fn stale_session(dir: &Path, me: Option<&str>, now: std::time::SystemTime) -> io
 /// paths pass: no `..`, no absolute paths or drive prefixes.
 fn vault_file(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
-    let ok = p.extension().is_some_and(|e| e == "md") && p.components().all(|c| matches!(c, Component::Normal(_)));
+    let ok = p.extension().is_some_and(|e| e == "md") && p.components().all(|c| matches!(c, Component::Normal(_))) && !hidden(p);
     if ok { Ok(root.join(p)) } else { Err(format!("Not a note in the vault: {rel}")) }
+}
+
+/// A path through a hidden name, in any spelling a disk takes for one (`.lorekeeper/` is Lorekeeper's own: a DM's copies
+/// of players' private notes there are read-only, and `.Lorekeeper/` is the same folder on a case-insensitive disk; see
+/// sync::folded), or through a top-level folder Windows may take for a short 8.3 name (`LOREKE~1` can be `.lorekeeper`).
+/// The window lists none of these.
+fn hidden(p: &Path) -> bool {
+    let short = |n: &str| n.as_bytes().windows(2).any(|w| w[0] == b'~' && w[1].is_ascii_digit());
+    p.components().enumerate().any(|(i, c)| {
+        let n = c.as_os_str().to_string_lossy();
+        sync::folded(&n).starts_with('.') || (i == 0 && p.components().nth(1).is_some() && short(&n))
+    })
 }
 
 /// Images the page view shows and the editor saves (pasted or dropped); the same list as isImage in images.js.
@@ -358,7 +413,7 @@ fn is_image(p: &Path) -> bool {
 /// vault_file for images: only plain relative paths with an image extension.
 pub(crate) fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
-    let ok = is_image(p) && p.components().all(|c| matches!(c, Component::Normal(_)));
+    let ok = is_image(p) && p.components().all(|c| matches!(c, Component::Normal(_))) && !hidden(p);
     if ok { Ok(root.join(p)) } else { Err(format!("Not an image in the vault: {rel}")) }
 }
 
@@ -389,6 +444,8 @@ struct Vault {
     current_session: String,
     has_obsidian: bool,
     obsidian_installed: bool,
+    /// A DM's copies of players' private notes: member id -> PC name (see add_dm_copies).
+    dm_players: BTreeMap<String, String>,
 }
 
 /// Every folder and `.md` note, skipping hidden entries (.obsidian, .trash, .DS_Store).
@@ -417,7 +474,8 @@ fn walk(root: &Path, dir: &Path, vault: &mut Vault) -> io::Result<()> {
 fn page_names_of<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut names: Vec<String> = paths
         .into_iter()
-        .filter(|p| !p.starts_with("Templates/") && !p.starts_with("Sessions/"))
+        // Private pages aren't offered: a suggestion could carry a private page's name into a shared note.
+        .filter(|p| !p.starts_with("Templates/") && !p.starts_with("Sessions/") && !p.starts_with("Private/"))
         .filter_map(|p| Some(Path::new(p).file_stem()?.to_string_lossy().into_owned()))
         .collect();
     names.sort_by_cached_key(|n| (n.to_lowercase(), n.clone()));
@@ -518,6 +576,14 @@ struct Sharing {
     role: String,
     /// The owner removed you: it no longer syncs.
     removed: bool,
+    /// With `removed`: a re-invite moved you to another computer ("Signed in on another computer").
+    replaced: bool,
+    /// What the sync server last said about you (role, manage, the room's private-notes setting); only the engine sets
+    /// it, so labels say truthfully who reads private notes.
+    access: Option<sync::Access>,
+    /// The private-notes setting changed since you last saw it: the main window shows a notice once. A window can
+    /// only clear it.
+    private_notice: bool,
 }
 
 const PICK_PC: &str = "Pick your character in Settings > General first";
@@ -814,7 +880,7 @@ fn capture_selection(app: &AppHandle) {
         Some(t) => ("Saved selection", t),
         None => ("Saved from clipboard", old),
     };
-    match note_target(app).and_then(|(dir, me)| append_note(&dir, me.as_deref(), &text).map_err(|e| e.to_string())) {
+    match note_target(app).and_then(|(dir, me)| append_note(&dir, me.as_deref(), &text).map(|(saved, _)| saved).map_err(|e| e.to_string())) {
         Ok(saved) if saved.is_empty() => notify(app, "Nothing to save", "No text selected or copied."),
         Ok(saved) => {
             emit_changed(app);
@@ -894,7 +960,9 @@ fn save_note(app: AppHandle, text: String, start_new: Option<bool>) -> Result<St
     let saved = note_target(&app).and_then(|(dir, me)| {
         let me = me.as_deref();
         let fresh = if start_new == Some(true) { new_session(&dir, me).map(|_| backup::request()) } else { Ok(()) };
-        fresh.and_then(|_| append_note(&dir, me, &text)).and_then(|_| current_session(&dir, me)).map_err(|e| e.to_string())
+        let private = me.is_some() && private_note(&text).0;
+        let path = fresh.and_then(|_| append_note(&dir, me, &text)).map(|(_, path)| path);
+        path.and_then(|p| p.map_or_else(|| note_file(&dir, me, private), Ok)).map_err(|e| e.to_string())
     });
     match saved {
         Ok(path) => {
@@ -921,13 +989,20 @@ fn last_note(app: AppHandle) -> Option<String> {
 fn fix_note(app: AppHandle, old: String, text: String) -> Result<String, String> {
     let fixed = note_target(&app).and_then(|(dir, me)| {
         let me = me.as_deref();
-        fix_last_note(&dir, me, &old, &text).and_then(|fixed| Ok((fixed, current_session(&dir, me)?))).map_err(|e| e.to_string())
+        let private = me.is_some() && private_note(&text).0;
+        fix_last_note(&dir, me, &old, &text).and_then(|fixed| Ok((fixed, private, note_file(&dir, me, private)?))).map_err(|e| e.to_string())
     });
     match fixed {
-        Ok((fixed, path)) => {
+        Ok((fixed, private, path)) => {
             emit_changed(&app);
             let session = session_name(&path);
-            Ok(if fixed { format!("Fixed in {session}") } else { format!("Saved to {session} as a new note (the last one changed)") })
+            Ok(if fixed {
+                format!("Fixed in {session}")
+            } else if private {
+                format!("Saved to {session} as a new private note; the shared one stays")
+            } else {
+                format!("Saved to {session} as a new note (the last one changed)")
+            })
         }
         Err(e) => {
             notify(&app, "Couldn't save note", &e);
@@ -1037,7 +1112,43 @@ fn read_vault(app: AppHandle) -> Result<Vault, String> {
     vault.has_obsidian = obsidian::vault_root(&root).is_some();
     vault.obsidian_installed = obsidian::installed();
     add_shared_templates(&root, &library_dir(&app), &mut vault);
+    add_dm_copies(&root, &mut vault);
     Ok(vault)
+}
+
+/// A DM's copies of the players' private notes (sync.rs keeps them in .lorekeeper/dm/), listed with their own paths so
+/// the window shows them read-only, and the players' names for them. Only paths sync.rs could have written, never
+/// through a symlink.
+fn add_dm_copies(root: &Path, vault: &mut Vault) {
+    let base = sync::DM_COPIES.trim_end_matches('/');
+    let real_dir = |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    if !real_dir(&root.join(".lorekeeper")) || !real_dir(&root.join(base)) {
+        return;
+    }
+    let mut stack = vec![root.join(base)];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let (path, Ok(kind)) = (entry.path(), entry.file_type()) else { continue };
+            let rel = rel_path(root, &path);
+            if kind.is_dir() && vault.notes.len() < 20_000 {
+                stack.push(path);
+            } else if kind.is_file() && rel.ends_with(".md") && matches!(sync::place(&rel), Some(sync::Place::Copy(..))) {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    vault.notes.push(Note { path: rel, content });
+                }
+            }
+        }
+    }
+    let names: BTreeMap<String, String> = fs::read(root.join(sync::DM_NAMES))
+        .ok()
+        .filter(|b| b.len() < 64 * 1024)
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    vault.dm_players = names
+        .into_iter()
+        .filter(|(id, _)| sync_protocol::is_id(id))
+        .map(|(id, name)| (id, name.chars().filter(|c| !c.is_control()).take(60).collect()))
+        .collect();
 }
 
 /// The shared templates (see templates_home), listed as the campaign's Templates/ so "New page" finds them.
@@ -1137,7 +1248,8 @@ fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let (src, dst) = (vault_file(root, from)?, vault_file(root, to)?);
     // Hotkey notes find the current session by its "Session N" name, so sessions keep theirs, and players' files their PC's.
     let session = |rel: &str| {
-        let r = rel.strip_prefix("Sessions/").unwrap_or_default();
+        let r = rel.strip_prefix(PRIVATE_FOLDER).and_then(|r| r.strip_prefix('/')).unwrap_or(rel);
+        let r = r.strip_prefix("Sessions/").unwrap_or_default();
         r.split_once('/').map_or(session_number(r, false), |(folder, _)| session_number(folder, true)).is_some()
     };
     if session(from) || session(to) {
@@ -1161,6 +1273,9 @@ fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let case_only = from.to_lowercase() == to.to_lowercase() && !listed;
     if dst.exists() && !case_only {
         return Err(format!("{to} already exists."));
+    }
+    if let Some(dir) = dst.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("Couldn't rename {from}: {e}"))?; // making a page private or shared
     }
     let tmp = dst.with_extension("md.renaming");
     let renamed = if case_only && !tmp.exists() {
@@ -1633,6 +1748,10 @@ pub fn run() {
             shared::sync_cancel_invite,
             shared::sync_members,
             shared::sync_remove_member,
+            shared::sync_reinvite,
+            shared::sync_set_role,
+            shared::sync_set_dm_reads,
+            shared::sync_set_owner_dm,
             shared::sync_check_invite,
             shared::sync_join
         ])
@@ -1743,8 +1862,8 @@ mod tests {
         assert!(!dir.join("Templates/NPC.md").exists(), "deleted template must stay deleted");
 
         // First note creates Session 1 (with properties); multi-line text becomes one line.
-        assert_eq!(append_note(&dir, None, "  @Mirela\n the  innkeeper ").unwrap(), "@Mirela the innkeeper");
-        assert_eq!(append_note(&dir, None, " \n ").unwrap(), "");
+        assert_eq!(append_note(&dir, None, "  @Mirela\n the  innkeeper ").unwrap().0, "@Mirela the innkeeper");
+        assert_eq!(append_note(&dir, None, " \n ").unwrap().0, "");
         let s1 = fs::read_to_string(dir.join("Sessions/Session 1.md")).unwrap();
         assert!(s1.starts_with("---\nsession: 1\ndate: "));
         assert!(s1.contains("\n# Session 1 - "));
@@ -1846,7 +1965,7 @@ mod tests {
         fs::remove_file(session_path(&dir, 4)).unwrap();
 
         // Your notes go to your own file in the newest folder, made with its properties on the first one.
-        assert_eq!(append_note(&dir, me, " the  party\n rests ").unwrap(), "the party rests");
+        assert_eq!(append_note(&dir, me, " the  party\n rests ").unwrap().0, "the party rests");
         let mine = session_folder(&dir, 3).join("Sibling 5.md");
         let text = fs::read_to_string(&mine).unwrap();
         assert!(text.starts_with("---\nsession: 3\ndate: ") && text.contains("\nauthor: \"[[Sibling 5]]\"\n---\n# Session 3 - "), "{text}");
@@ -1889,6 +2008,59 @@ mod tests {
         for d in [dir, solo] {
             fs::remove_dir_all(d).unwrap();
         }
+    }
+
+    /// A `~` note is private: it goes to Private/Sessions/Session N/<PC>.md (the shared session's number) with the
+    /// rest of the note filed as usual, and never into the shared file, not even through ↑.
+    #[test]
+    fn private_quick_notes_go_to_your_private_file() {
+        assert_eq!(private_note("  ~@Halia lies"), (true, "@Halia lies"));
+        assert_eq!(private_note("a ~ b"), (false, "a ~ b"));
+        let dir = temp_dir("private-notes");
+        let me = Some("Sibling 5");
+        // No session yet: the private file starts Session 1, and no shared file is made for it.
+        let (saved, path) = append_note(&dir, me, "~@Halia lies").unwrap();
+        assert_eq!(saved, "@Halia lies");
+        assert_eq!(path.unwrap(), dir.join("Private/Sessions/Session 1/Sibling 5.md"));
+        assert!(!session_folder(&dir, 1).exists());
+        let text = fs::read_to_string(dir.join("Private/Sessions/Session 1/Sibling 5.md")).unwrap();
+        assert!(text.contains("session: 1\n") && text.ends_with(" @Halia lies\n"), "{text}");
+        // A shared note joins the same session; private and shared stay in their own files.
+        append_note(&dir, me, "we meet Halia").unwrap();
+        let shared = session_folder(&dir, 1).join("Sibling 5.md");
+        append_note(&dir, me, "~ she's lying about the mine").unwrap();
+        let private = fs::read_to_string(dir.join("Private/Sessions/Session 1/Sibling 5.md")).unwrap();
+        assert!(private.ends_with(" she's lying about the mine\n") && !private.contains("we meet"), "{private}");
+        assert!(!fs::read_to_string(&shared).unwrap().contains("lying"));
+        // ↑ turning the shared note into a private one: saved privately, the shared note stays.
+        assert!(!fix_last_note(&dir, me, "we meet Halia", "~we meet Halia, who lies").unwrap());
+        let shared_text = fs::read_to_string(&shared).unwrap();
+        assert!(shared_text.ends_with(" we meet Halia\n") && !shared_text.contains('~') && !shared_text.contains("lies"), "{shared_text}");
+        assert!(fs::read_to_string(dir.join("Private/Sessions/Session 1/Sibling 5.md")).unwrap().ends_with(" we meet Halia, who lies\n"));
+        // New session: the private file follows the shared session's number.
+        new_session(&dir, me).unwrap();
+        assert_eq!(append_note(&dir, me, "~later").unwrap().1.unwrap(), dir.join("Private/Sessions/Session 2/Sibling 5.md"));
+        // A campaign of your own: every note is yours, the ~ just goes.
+        let solo = temp_dir("private-solo");
+        assert_eq!(append_note(&solo, None, "~mine").unwrap(), ("mine".into(), Some(session_path(&solo, 1))));
+        assert!(!solo.join("Private").exists());
+        // Private session files keep their names; pages move in and out of Private/ (making the folder).
+        fs::create_dir_all(dir.join("NPCs")).unwrap();
+        fs::write(dir.join("NPCs/Halia.md"), "# Halia").unwrap();
+        rename_note(&dir, "NPCs/Halia.md", "Private/NPCs/Halia.md").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("Private/NPCs/Halia.md")).unwrap(), "# Halia");
+        assert!(rename_note(&dir, "Private/Sessions/Session 1/Sibling 5.md", "Private/NPCs/S.md").is_err());
+        // A DM's copies of players' private notes can't be written from a window.
+        for copy in [".lorekeeper/dm/aaaaaaaaaaaaaaaaaaaaaaaaaa/NPCs/Vex.md", ".Lorekeeper/dm/aaaaaaaaaaaaaaaaaaaaaaaaaa/NPCs/Vex.md", "LOREKE~1/dm/a/Vex.md", "\u{feff}.lorekeeper/dm/a/Vex.md"] {
+            assert!(vault_file(&dir, copy).is_err(), "{copy}");
+        }
+        assert!(vault_image(&dir, ".lorekeeper/dm/aaaaaaaaaaaaaaaaaaaaaaaaaa/map.png").is_err(), "nor its images");
+        for page in ["NPCs/Plan~2.md", "Draft~2.md"] {
+            assert!(vault_file(&dir, page).is_ok(), "{page}");
+        }
+        assert!(vault_image(&dir, "Attachments/map.png").is_ok());
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&solo).unwrap();
     }
 
     #[test]

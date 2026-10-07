@@ -1,5 +1,6 @@
 import { applyTheme } from "./theme.js";
-import { onlineText, syncText } from "./sync-status.js";
+import { onlineText, roleText, syncText } from "./sync-status.js";
+import { privateLabel } from "./vault.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen, emitTo } = window.__TAURI__.event;
@@ -201,7 +202,9 @@ function fillPcs(select, path, me) {
 // Names and messages here can come from teammates or the server: they're only ever set as text.
 
 const snapshots = new Map(); // campaign folder -> { status, online, warning } from sync-status events
-let syncInfo = null, partyPath = null, sharingNow = false, askKey = false, linksTimer;
+/** You own the campaign, or the server says you're a DM who manages players. */
+const manages = (sh) => sh.role === "owner" || (sh.access?.role === "dm" && !!sh.access?.manage);
+let syncInfo = null, partyPath = null, sharingNow = false, askKey = false, linksTimer, privateBusy = false;
 let unshare = null; // a campaign Share turned sharing on for: turned back off if Share doesn't finish (its notes would
 // otherwise go to per-character files in a campaign nobody shares)
 
@@ -276,7 +279,10 @@ function openParty(path, note = "") {
   if (!$("players-dialog").open) $("players-dialog").showModal();
   const sh = current.sharing?.[path] ?? {};
   $(sh.room && sh.me ? "players-close" : "party-me").focus();
-  if (sh.room && sh.role === "owner") loadPlayers();
+  $("invite-role").value = "player";
+  $("invite-manage").checked = false;
+  showInviteRole();
+  if (sh.room && manages(sh) && !sh.removed) loadPlayers();
 }
 
 function renderParty() {
@@ -289,7 +295,8 @@ function renderParty() {
   $("party-sync").textContent = setup ? "" : sharingText(path, false);
   if (document.activeElement !== select) fillPcs(select, path, setup ? select.value : sh.me);
   $("party-no-pcs").hidden = select.options.length > 1;
-  $("party-invites").hidden = !(sh.room && sh.role === "owner");
+  $("party-invites").hidden = !(sh.room && manages(sh) && !sh.removed);
+  renderPrivate(sh);
   $("party-pause").hidden = setup && (!sh.shared || unshare === path); // also an old never-shared one, so it can be turned off
   $("party-shared").checked = !!sh.shared;
   $("party-cancel").hidden = $("party-share").hidden = !setup;
@@ -298,6 +305,47 @@ function renderParty() {
   $("party-share").disabled = sharingNow || !select.value;
   select.disabled = sharingNow;
 }
+
+/**
+ * Who reads private notes, as the sync server last said (sh.access), so the line is always the truth. The owner sets it
+ * here, and says whether they're also the DM; everyone else sees their role and the setting.
+ */
+function renderPrivate(sh) {
+  const owner = sh.role === "owner";
+  $("party-private").hidden = !sh.room || !!sh.removed;
+  if ($("party-private").hidden) return;
+  const role = owner ? (sh.access?.ownerIsDm ? "the owner and the DM" : "the owner") : sh.access?.role ? `a ${roleText(sh.access.role, sh.access.manage)}` : "";
+  $("party-role").textContent = role ? `You're ${role}. Your private notes: ${privateLabel(sh).replace(/^Private: /, "")}.` : `${privateLabel(sh)}.`;
+  $("party-private-owner").hidden = !owner;
+  $("party-private-select").value = sh.access?.dmReadsPrivate ? "yes" : "no";
+  $("party-owner-dm").checked = !!sh.access?.ownerIsDm;
+  $("party-private-select").disabled = $("party-owner-dm").disabled = privateBusy;
+}
+
+/** Runs an owner's private-notes change (sync_set_dm_reads, sync_set_owner_dm), then shows what the server now says. */
+async function changePrivate(command, args) {
+  const path = partyPath;
+  privateBusy = true;
+  renderParty();
+  $("players-error").textContent = "";
+  try {
+    await invoke(command, { path, ...args });
+  } catch (err) {
+    $("players-error").textContent = String(err);
+  }
+  privateBusy = false;
+  render(await invoke("get_settings")); // redraws the dialog too
+}
+$("party-private-select").addEventListener("change", () => changePrivate("sync_set_dm_reads", { on: $("party-private-select").value === "yes" }));
+$("party-owner-dm").addEventListener("change", () => changePrivate("sync_set_owner_dm", { on: $("party-owner-dm").checked }));
+
+/** Invite as a DM: only the owner can let them manage players. The button says who the link is for. */
+function showInviteRole() {
+  const dm = $("invite-role").value === "dm";
+  $("invite-manage-row").hidden = !dm || current?.sharing?.[partyPath]?.role !== "owner";
+  $("invite-one").textContent = dm ? "Invite a DM" : "Invite a player";
+}
+$("invite-role").addEventListener("change", showInviteRole);
 
 $("party-me").addEventListener("change", () => {
   if (current.sharing?.[partyPath]?.room) changeSharing({ me: $("party-me").value });
@@ -358,22 +406,34 @@ function clearLinks() {
   $("invite-links").hidden = true;
 }
 
+/** Shows a new link (an invite or a re-invite) once: Copy copies it; cleared on close or after 10 minutes. */
+function showLink(link, hint) {
+  $("invite-text").value = link;
+  $("invite-hint").textContent = hint;
+  $("invite-links").hidden = false;
+  clearTimeout(linksTimer);
+  linksTimer = setTimeout(clearLinks, 10 * 60 * 1000);
+  $("invite-copy").focus();
+}
+
 async function makeInvites() {
   const path = partyPath;
   $("players-error").textContent = "";
+  const role = $("invite-role").value;
+  const manage = role === "dm" && !$("invite-manage-row").hidden && $("invite-manage").checked;
   try {
-    const links = await invoke("sync_invite", { path, count: 1 });
+    const links = await invoke("sync_invite", { path, count: 1, role, manage });
     if (partyPath !== path) return;
-    $("invite-text").value = links.join("\n");
-    $("invite-links").hidden = false;
-    clearTimeout(linksTimer);
-    linksTimer = setTimeout(clearLinks, 10 * 60 * 1000);
-    $("invite-copy").focus();
+    const who = role === "dm" ? (manage ? "a DM who manages players" : "a DM") : "a player";
+    showLink(links.join("\n"), `The link lets one person join as ${who}, once, within 7 days. Send it to them privately: it holds the campaign's key. Make a new one for each.`);
     await loadPlayers();
   } catch (err) {
     $("players-error").textContent = String(err);
   }
 }
+
+/** Player, DM, or a DM who manages players, in the owner's role picker: role and manage as one value. */
+const ROLE_CHOICES = [["player", "Player"], ["dm", "DM"], ["dm-manage", "DM who manages players"]];
 
 const lastSeen = (ms) => (ms ? `last seen ${when(new Date(ms).toISOString())}` : "hasn't connected yet");
 
@@ -399,15 +459,52 @@ async function loadPlayers() {
     return li;
   };
   const pending = invites.value ?? [];
-  $("invite-list").replaceChildren(...(pending.length ? pending.map((i) => item(`Invite, expires ${when(new Date(i.expires).toISOString())}`, "Cancel", async () => {
+  const kind = (i) => (i.reinvite ? "Re-invite" : `Invite as ${roleText(i.role, i.manage)}`);
+  $("invite-list").replaceChildren(...(pending.length ? pending.map((i) => item(`${kind(i)}, expires ${when(new Date(i.expires).toISOString())}`, "Cancel", async () => {
     await invoke("sync_cancel_invite", { path, invite: i.invite }).catch((err) => { $("players-error").textContent = String(err); });
     loadPlayers();
   })) : [item("None")]));
   const online = new Set(snapshots.get(path)?.online ?? []);
+  const owner = current.sharing?.[path]?.role === "owner";
+  const fail = (err) => { $("players-error").textContent = String(err); };
   $("player-list").replaceChildren(...(players.value ?? []).map((p) => {
     const name = p.name || "No character picked yet";
-    if (p.owner) return item(`${name} (you, the owner)`);
-    return item(`${name}, ${online.has(p.name) ? "online now" : lastSeen(p.lastSeen)}`, "Remove", async (b) => {
+    if (p.owner) return item(`${name} (${p.you ? "you, " : ""}the owner${p.ownerIsDm ? " and the DM" : ""})`);
+    const seen = p.you ? "you" : online.has(p.name) ? "online now" : lastSeen(p.lastSeen);
+    const li = item(owner ? `${name}, ${seen}` : `${name}, ${roleText(p.role, p.manage)}, ${seen}`);
+    // The owner changes roles; a manager handles only members who don't manage (the server checks again).
+    if (owner) {
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", `Role of ${name}`);
+      for (const [value, label] of ROLE_CHOICES) select.append(new Option(label, value));
+      select.value = p.role === "dm" ? (p.manage ? "dm-manage" : "dm") : "player";
+      select.addEventListener("change", async () => {
+        const [role, manage] = select.value === "dm-manage" ? ["dm", true] : [select.value, false];
+        await invoke("sync_set_role", { path, memberId: p.memberId, role, manage }).catch(fail);
+        loadPlayers();
+      });
+      li.append(select);
+    }
+    if (p.you || (!owner && p.manage)) return li;
+    const button = (text, action) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ghost";
+      b.textContent = text;
+      b.addEventListener("click", () => action(b));
+      li.append(b);
+    };
+    button("Re-invite", async () => {
+      try {
+        const link = await invoke("sync_reinvite", { path, memberId: p.memberId });
+        if (partyPath !== path) return;
+        showLink(link, `Re-invite for ${name}, for their new computer: whoever opens it becomes ${name}, with their role and private notes, once, within 7 days. ${name}'s old computer stops syncing and says Signed in on another computer. Send it only to ${name}, privately.`);
+        loadPlayers();
+      } catch (err) {
+        fail(err);
+      }
+    });
+    button("Remove", async (b) => {
       // Two clicks: the first asks, out loud too (the status line is live).
       if (b.dataset.sure !== "yes") {
         b.dataset.sure = "yes";
@@ -416,9 +513,10 @@ async function loadPlayers() {
         return;
       }
       $("players-status").textContent = "";
-      await invoke("sync_remove_member", { path, memberId: p.memberId }).catch((err) => { $("players-error").textContent = String(err); });
+      await invoke("sync_remove_member", { path, memberId: p.memberId }).catch(fail);
       loadPlayers();
     });
+    return li;
   }));
 }
 

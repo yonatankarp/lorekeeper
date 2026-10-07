@@ -5,6 +5,7 @@ import { escape, insertLine, linkify, mergeTimelines, parse, parseMerged, player
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
+  dmCopyOf, isDmCopy, isPrivate, privateLabel, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -57,8 +58,18 @@ const myFile = (path) => (note(path)?.parts && me() ? `${path}/${baseName(me())}
 const editPath = (path = current) => (note(path)?.parts ? myFile(path) ?? note(path).parts[0]?.path ?? path : path);
 /** A file Obsidian can open for a page: in a shared session yours, or its first. */
 const obsidianPath = (path) => (note(editPath(path)) ? editPath(path) : note(path)?.parts?.[0]?.path ?? path);
-/** A session's notes in order: every player's, with authors, for a shared one. */
-const sessionItems = (n) => (n.parts ? mergeTimelines(n.parts) : timeline(n.content));
+/** A session's notes in order: every player's, with authors, for a shared one, and the private ones you may read. */
+const sessionItems = (n) => (n.parts ? mergeTimelines([...n.parts, ...(n.private ?? [])]) : timeline(n.content));
+/** The open campaign's sharing settings, and who reads your private notes in it (see privateLabel). */
+const sharing = () => settings.sharing?.[settings.vaultPath];
+const ownLabel = () => privateLabel(sharing()) || "Private";
+/** A player's name for their private notes a DM reads (sync.rs writes the names); never HTML. */
+const playerName = (id) => vault.dmPlayers?.[id] || "A player";
+/** What a private note's padlock says: yours, or (on a DM's computer) whose. */
+const lockLabel = (path) => (isDmCopy(path) ? `Private: ${playerName(dmCopyOf(path))} and the DM` : ownLabel());
+const lockHtml = (path) => `<span class="lock" title="${escape(lockLabel(path))}">${icon("lock")}<span class="sr-only">${escape(lockLabel(path))}</span></span>`;
+/** Your private notes file in shared session `path`, there yet or not. */
+const myPrivateFile = (path) => (me() ? `Private/${path}/${baseName(me())}.md` : null);
 const isSession = (path) => path?.startsWith("Sessions/");
 const alive = (path) => path === null || !!note(path); // Home, or a page still in the vault
 const modal = () => !!document.querySelector("dialog[open]");
@@ -72,7 +83,8 @@ function ed() {
       onChange: scheduleSave,
       onFollowLink: followLink,
       onImage: saveImage,
-      pageNames: () => vault.notes.map((n) => baseName(n.path)),
+      // Private pages are offered only while editing a private one, so their names don't slip into shared pages.
+      pageNames: () => vault.notes.filter((n) => isPrivate(editPath()) || !isPrivate(n.path)).map((n) => baseName(n.path)),
     });
     editor.setFontSize(settings.editorFontSize);
   }
@@ -193,14 +205,16 @@ function propsHtml(props, path) {
 
 // ---------- sidebar ----------
 
-function treeHtml(node) {
+function treeHtml(node, names = {}) {
   const dirs = node.dirs
     .map((d) => {
       const n = d.files.length;
       const count = n ? `<span class="sr-only">, </span>${n}<span class="sr-only"> page${n === 1 ? "" : "s"}</span>` : "";
       const empty = `<button type="button" class="folder-new" data-folder="${escape(d.path)}">+ New ${escape(typeFor(d.path) || "page")}</button>`;
+      // Your Private/ folder, and each player's folder of private notes on a DM's computer: a padlock and who reads them.
+      const lock = d.path === "Private" || names[d.path] ? lockHtml(`${d.path}/`) : "";
       return `<details data-folder="${escape(d.path)}"${closedFolders.has(d.path) ? "" : " open"}>
-        <summary>${escape(d.name)}<span class="count">${count}</span></summary>
+        <summary>${lock}${escape(names[d.path] ?? d.name)}<span class="count">${count}</span></summary>
         <div class="children">${treeHtml(d) || empty}</div></details>`;
     })
     .join("");
@@ -218,8 +232,25 @@ function treeHtml(node) {
 
 function renderTree() {
   const scroll = $("tree").scrollTop;
-  replaceHtml($("tree"), treeHtml(buildTree(vault.folders, paths())));
+  const all = paths();
+  let html = treeHtml(buildTree(vault.folders, all.filter((p) => !isDmCopy(p))));
+  // A DM's copies of the players' private notes: one group, a folder per player, read-only.
+  const copies = all.filter(isDmCopy);
+  const players = buildTree([], copies).dirs[0]?.dirs[0];
+  if (players) {
+    const names = Object.fromEntries(players.dirs.map((d) => [d.path, playerName(d.name)]));
+    html += `<details data-folder="dm"${closedFolders.has("dm") ? "" : " open"}><summary>${icon("lock")}Players' private notes</summary>
+      <div class="children">${treeHtml(players, names)}</div></details>`;
+  }
+  replaceHtml($("tree"), html);
   $("tree").scrollTop = scroll;
+}
+
+/** Where a page is, in words: "NPCs", "Private / NPCs", or "Syloth's private notes / NPCs" on a DM's computer. */
+function whereOf(path) {
+  const folder = unprivate(path).split("/").slice(0, -1).join(" / ");
+  const head = isDmCopy(path) ? `${playerName(dmCopyOf(path))}'s private notes` : path.startsWith("Private/") ? "Private" : "";
+  return [head, folder].filter(Boolean).join(" / ");
 }
 
 function renderResults() {
@@ -236,8 +267,8 @@ function renderResults() {
   $("results").innerHTML = hits.length
     ? hits
         .map((h) => {
-          const folder = h.path.split("/").slice(0, -1).join("/");
-          return `<button class="file" data-path="${escape(h.path)}">${mark(baseName(h.path))}
+          const folder = whereOf(h.path);
+          return `<button class="file" data-path="${escape(h.path)}">${isPrivate(h.path) ? lockHtml(h.path) : ""}${mark(baseName(h.path))}
             ${folder ? `<span class="where">${escape(folder)}</span>` : ""}
             ${h.snippet ? `<span class="snip">${mark(h.snippet.slice(0, 160))}</span>` : ""}</button>`;
         })
@@ -274,7 +305,8 @@ const timelineHtml = (items, removable = () => false) =>
       const remove = removable(item)
         ? `<button type="button" class="remove-note" data-line="${line}" data-path="${escape(path ?? current)}" aria-label="Delete note: ${escape(stripLinks(text))}" title="Delete note">${icon("trash")}</button>`
         : "";
-      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}${author ? ` <span class="by">${authorHtml(author)}</span>` : ""}</span>${remove}</li>`;
+      const lock = path && isPrivate(path) ? lockHtml(path) : "";
+      return `<li><time>${escape(time)}</time>${badge}<span class="text">${inlineLinks(text)}${author ? ` <span class="by">${authorHtml(author)}</span>` : ""}${lock}</span>${remove}</li>`;
     })
     .join("")}</ol>`;
 
@@ -288,7 +320,7 @@ function openQuestsHtml() {
 
 /** A session page `n`: a shared one merges every player's file (see mergeTimelines), and only your own notes can be deleted. */
 function sessionHtml(n) {
-  const session = n.parts ? parseMerged(n.parts, paths()) : parse(n.content);
+  const session = n.parts ? parseMerged([...n.parts, ...(n.private ?? [])], paths()) : parse(n.content);
   const items = sessionItems(n);
   const title = `<h1 class="session-title">${session.title ? inlineLinks(session.title) : escape(baseName(current))}</h1>`;
   if (!items.length) return title + openQuestsHtml() + emptySessionHtml;
@@ -296,11 +328,11 @@ function sessionHtml(n) {
   const views = `<div class="view-switch" role="group" aria-label="Session view">
     <button type="button" data-view="timeline" ${pressed("timeline")}>Timeline</button>
     <button type="button" data-view="journal" ${pressed("journal")}>Journal</button></div>`;
-  const mine = myFile(current);
+  const mine = [myFile(current), myPrivateFile(current)];
   return views + title + openQuestsHtml() + (sessionView === "journal"
-    ? `<div class="journal">${toHtml({ ...session, title: "" }, inlineLink)}</div>` +
+    ? `<div class="journal">${toHtml({ ...session, title: "" }, inlineLink, (item) => lockHtml(item.path))}</div>` +
       `<p class="session-note">A recap of the session, grouped by kind. Click Edit to see every line.</p>`
-    : timelineHtml(items, n.parts ? (item) => item.path === mine : () => true));
+    : timelineHtml(items, n.parts ? (item) => mine.includes(item.path) : () => true));
 }
 
 // ---------- home ----------
@@ -398,19 +430,23 @@ function setView(html) {
 function render() {
   const n = note(current); // none: Home
   const folder = current ? current.split("/").slice(0, -1).join(" / ") : "";
+  const where = current ? whereOf(current) : "";
+  const label = current && isPrivate(current) ? `<span class="lock" aria-hidden="true">${icon("lock")}</span><span class="private-label">${escape(lockLabel(current))}${isDmCopy(current) ? ", read-only" : ""}</span>` : "";
   $("crumbs").innerHTML = n
-    ? `<a href="#" data-home>Home</a><span class="folder"> / ${folder ? `${escape(folder)} / ` : ""}</span><strong>${escape(baseName(current))}</strong>`
+    ? `<a href="#" data-home>Home</a><span class="folder"> / ${where ? `${escape(where)} / ` : ""}</span><strong>${escape(baseName(current))}</strong>${label}`
     : `<strong aria-current="page">Home</strong>`;
   $("home").classList.toggle("active", !n);
   n ? $("home").removeAttribute("aria-current") : $("home").setAttribute("aria-current", "page");
   $("back").disabled = nav.find(-1, alive, current) < 0;
   $("forward").disabled = nav.find(1, alive, current) < 0;
-  $("delete").disabled = !n || !!n.parts; // a shared session is everyone's notes
-  $("rename").disabled = $("move").disabled = !n || keepsPlace(current);
+  const copy = !!current && isDmCopy(current); // a player's private note on a DM's computer: read-only
+  $("delete").disabled = !n || !!n.parts || copy; // a shared session is everyone's notes
+  $("rename").disabled = $("move").disabled = !n || keepsPlace(current) || copy;
+  showPrivacy(n);
   $("backlinks").hidden = !n;
   $("connections").hidden = true; // until it has pages to show
-  $("toggle").hidden = !n;
-  $("obsidian").hidden = !n || !canObsidian();
+  $("toggle").hidden = !n || copy;
+  $("obsidian").hidden = !n || !canObsidian() || copy;
   $("toggle").textContent = editing ? "Done" : "Edit";
   $("editor").hidden = !editing || !n;
   $("editor-hint").hidden = !editing || !n || !isSession(current);
@@ -604,7 +640,15 @@ function syncNewTitle() {
  * on the type.
  */
 function openNewDialog(name = "", { folder = "" } = {}) {
+  // From a folder in Private/ the page is private (the switch starts on); a DM's copies take no new pages.
+  if (isDmCopy(`${folder}/`) || folder === "dm") folder = "";
+  const startPrivate = folder === "Private" || folder.startsWith("Private/");
+  folder = startPrivate ? folder.replace(/^Private\/?/, "") : folder;
   newFrom = folder;
+  const label = privateLabel(sharing());
+  $("new-private-row").hidden = !label; // only in a campaign shared with your party
+  $("new-private-text").textContent = label;
+  $("new-private").checked = !!label && startPrivate;
   const types = newTypes();
   const pick = folder ? typeFor(folder) || "Note" : types.includes(lastType) ? lastType : "Note";
   $("new-chips").innerHTML = types
@@ -638,7 +682,8 @@ $("new-form").addEventListener("submit", async (e) => {
   }
   const type = chosenType();
   const folder = folderOf(type);
-  const path = folder ? `${folder}/${name}.md` : `${name}.md`;
+  const shared = folder ? `${folder}/${name}.md` : `${name}.md`;
+  const path = !$("new-private-row").hidden && $("new-private").checked ? `Private/${shared}` : shared;
   const tpl = templateOf(type);
   const content = tpl ? fillTemplate(tpl.content, name, today()) : `# ${name}\n\n`;
   try {
@@ -915,6 +960,7 @@ async function ownFile() {
 }
 
 $("toggle").addEventListener("click", async () => {
+  if (current && isDmCopy(current)) return; // read-only
   if (editing) {
     await flush();
     editing = false;
@@ -977,6 +1023,7 @@ async function restore(path, content) {
 async function deletePage(path) {
   if (modal()) return say("Close the open dialog first.");
   if (!note(path)) return say("Open a page to move it to the Trash.");
+  if (isDmCopy(path)) return say("A player's private note is read-only here.");
   if (note(path).parts) return say("A shared session holds everyone's notes. Delete your own notes from its Timeline instead.");
   if (!(await confirmDelete(path))) return;
   const name = baseName(path);
@@ -1080,6 +1127,7 @@ function openRenameDialog(path, move = false) {
   if (modal()) return say("Close the open dialog first.");
   if (!note(path)) return say(`Open a page to ${move ? "move" : "rename"} it.`);
   if (keepsPlace(path)) return say(SESSIONS_STAY);
+  if (isDmCopy(path)) return say("A player's private note is read-only here.");
   renaming = path;
   $("rename-title").textContent = move ? "Move page" : "Rename page";
   $("rename-confirm").textContent = move ? "Move" : "Rename";
@@ -1102,7 +1150,10 @@ async function renamePage(from, to, exact = []) {
   await loadVault(); // rewrite what's on disk now, so the saves below don't conflict
   const known = paths();
   const edits = [];
-  for (const { path, content } of [...vault.files, ...templates]) { // files: links in a shared session's players' files too
+  // Links in a shared session's players' files too. Renaming a private page touches only private pages (its new name
+  // mustn't reach shared ones); a DM's copies are never written.
+  const editable = (path) => !isDmCopy(path) && (!isPrivate(from) || isPrivate(path));
+  for (const { path, content } of [...vault.files, ...templates].filter((f) => editable(f.path))) {
     const back = exact.find(([p, now]) => p === path && now === content);
     const next = back ? back[2] : renameLinks(content, from, to, known);
     if (next !== content) edits.push([path === from ? to : path, content, next]);
@@ -1207,6 +1258,73 @@ $("tree").addEventListener("drop", async (e) => {
   if (problem) return moveError(`Can't move ${baseName(from)}: ${problem}`);
   moveError("");
   await renameOrMove(from, movedPath(from, folder)).catch((err) => moveError(`Can't move ${baseName(from)}: ${err}`));
+});
+
+// ---------- private notes: making a page private or shared, and the notice when who reads them changes ----------
+
+/**
+ * The header's Make private / Make shared button, in a campaign shared with your party, for a page that can move: not a
+ * session (they keep their place) and not a DM's copy of a player's note.
+ */
+function showPrivacy(n) {
+  const label = privateLabel(sharing());
+  const movable = !!n && !!label && !n.parts && !isDmCopy(current) && !isSession(unprivate(current));
+  $("privacy").hidden = !movable;
+  if (!movable) return;
+  delete $("privacy").dataset.sure;
+  $("privacy").textContent = isPrivate(current) ? "Make shared" : "Make private";
+  $("privacy").title = isPrivate(current) ? "Move this page out of Private/: the whole party gets it"
+    : `Move this page into Private/ (${label}). Anyone who already synced it keeps the version they have`;
+}
+
+/**
+ * Moves a page into Private/ or out of it. Sync sees a deletion on one side and a new page on the other. Links aren't
+ * rewritten: they find the page by its name either way, and a shared page must not learn a private page's path.
+ */
+async function movePrivacy(from, to) {
+  await flush();
+  await invoke("rename_file", { from, to });
+  nav.rename(from, to);
+  if (current === from) current = to;
+  await refresh();
+}
+
+$("privacy").addEventListener("click", async () => {
+  const from = current;
+  if (!from || !note(from)) return;
+  const to = isPrivate(from) ? unprivate(from) : `Private/${from}`;
+  // Sharing a private page is for everyone at once: the first click asks.
+  if (isPrivate(from) && $("privacy").dataset.sure !== "yes") {
+    $("privacy").dataset.sure = "yes";
+    $("privacy").textContent = "Share it with the party?";
+    return;
+  }
+  try {
+    await movePrivacy(from, to);
+  } catch (err) {
+    return say(String(err));
+  }
+  // Undo and redo never share a page (it may have private changes by then): only the button, which asks first, does.
+  const share = () => { throw "that would share the page with the party; use Make shared, which asks first"; };
+  const [back, again] = [() => movePrivacy(to, from), () => movePrivacy(from, to)];
+  record({ label: isPrivate(to) ? "Make private" : "Make shared", undo: isPrivate(to) ? share : back, redo: isPrivate(to) ? again : share });
+  // It was shared until now: players who synced it keep what they got (sync moves it to their trash), so say so.
+  say(isPrivate(to) ? `${baseName(to)} is private from now on (${ownLabel()}); anyone who already synced it keeps the version they have`
+    : `${baseName(to)} is shared with the party now`);
+});
+
+/** Once, after who reads private notes in the open campaign changed (sync.rs raises it, Settings or OK clears it). */
+function showNotice() {
+  const sh = sharing();
+  $("notice").hidden = !sh?.privateNotice;
+  if (sh?.privateNotice) $("notice-text").textContent = `Who reads private notes in this campaign changed. ${privateLabel(sh)}.`;
+}
+
+$("notice-ok").addEventListener("click", async () => {
+  const path = settings.vaultPath, sh = sharing();
+  $("notice").hidden = true;
+  if (!sh) return;
+  await invoke("save_settings", { settings: { ...settings, sharing: { ...settings.sharing, [path]: { ...sh, privateNotice: false } } } }).catch(say);
 });
 
 // ---------- Obsidian ----------
@@ -1458,6 +1576,7 @@ function applySettings(next) {
   else render();
   $("campaign").textContent = campaignName(settings.vaultPath);
   showSync();
+  showNotice();
 }
 
 // ---------- a shared campaign's sync status and who's online (shared.rs), in the sidebar's footer ----------

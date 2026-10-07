@@ -1,7 +1,7 @@
 // Turns a session file into a timeline and sections grouped by kind (the Journal view).
 // Hotkey notes look like "- 21:43 @Mirela the innkeeper"; the first character picks the section.
 // Hand-written bullets and paragraphs count too, so nothing typed in the editor is silently dropped.
-import { authorOf, baseName, naturally, pcPath, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
+import { authorOf, baseName, isPrivate, naturally, pcPath, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
 import { IMAGE_EMBED } from "./images.js";
 
 export const SECTIONS = [
@@ -32,6 +32,15 @@ function* lines(md) {
     if (kind !== "event" && kind !== "quote") text = text.slice(1).trim(); // quotes keep their marks
     if (text) yield { time: bullet?.[1] ?? "", kind, text, line: offset + i };
   }
+}
+
+/**
+ * A quick note that starts with `~` is private: { private, text } with the `~` gone and the rest filed as usual
+ * ("~@Halia lies" is a private NPC note). lib.rs private_note decides where it's saved; this is for the note box.
+ */
+export function privateNote(text) {
+  const m = text.match(/^\s*~(.*)$/s);
+  return m ? { private: true, text: m[1] } : { private: false, text };
 }
 
 /** Notes in file order: [{ time, kind, text }]. */
@@ -108,13 +117,15 @@ export function mergeTimelines(parts) {
 
 /**
  * parse() for a shared session: the merged notes grouped by kind, each followed by its author as a link to their PC page
- * (`paths`: the vault's pages), "... ([[PCs/Sibling 5|Sibling 5]])". Image-only notes get no author.
+ * (`paths`: the vault's pages), "... ([[PCs/Sibling 5|Sibling 5]])". Image-only notes get no author. A private note
+ * (from a file in Private/ or a DM's copy) is { text, lock: true, path }, for toHtml to mark.
  */
 export function parseMerged(parts, paths = []) {
   const groups = Object.fromEntries(SECTIONS.map(([key]) => [key, []]));
-  for (const { kind, text, author } of mergeTimelines(parts)) {
+  for (const { kind, text, author, path } of mergeTimelines(parts)) {
     const page = author && (pcPath(author, paths)?.replace(/\.md$/i, "") ?? author);
-    groups[kind].push(page && text.replace(IMAGE_EMBED, "").trim() ? `${text} ([[${page}|${author}]])` : text);
+    const shown = page && text.replace(IMAGE_EMBED, "").trim() ? `${text} ([[${page}|${author}]])` : text;
+    groups[kind].push(isPrivate(path) ? { text: shown, lock: true, path } : shown);
   }
   return { title: parts.map((p) => parse(p.content).title).find(Boolean) ?? "", groups };
 }
@@ -142,10 +153,11 @@ export function linkify(text, link) {
 
 /**
  * The Journal view: a recap grouped by kind. `link(target, labelHtml, match)` renders [[links]] and ![[embeds]] (see
- * linkify); the default writes the label only, so it never shows brackets.
+ * linkify); the default writes the label only, so it never shows brackets. A private note ({ text, lock }) gets
+ * `lockHtml(item)` after it.
  */
-export function toHtml({ title, groups }, link = (target, label) => label) {
-  const item = (t) => linkify(t, link);
+export function toHtml({ title, groups }, link = (target, label) => label, lockHtml = () => " (private)") {
+  const item = (t) => (typeof t === "string" ? linkify(t, link) : linkify(t.text, link) + lockHtml(t));
   const head = title ? `<h2>${escape(stripLinks(title))}</h2>` : "";
   return head + filled(groups)
     .map(([key, label]) => `<h3>${label}</h3><ul>${groups[key].map((t) => `<li>${item(t)}</li>`).join("")}</ul>`)

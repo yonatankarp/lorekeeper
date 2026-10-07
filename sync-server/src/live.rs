@@ -1,9 +1,10 @@
 //! `GET /v1/rooms/{room}/live`: the sync channel. Each room has a hub with the latest `seq`
 //! (a watch: sockets wake on writes and read what's new from the database, so nothing is missed
-//! or reordered) and the connected members (presence).
+//! or reordered), a counter bumped whenever anyone's access changes, and the connected members
+//! (presence). What a socket may read is decided by the database on every read (db::changes).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +13,9 @@ use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use sync_protocol::{ClientMessage, PresenceMember, Role, ServerMessage, WS_PROTOCOL, WS_TOKEN_PROTOCOL_PREFIX};
+use sync_protocol::{
+    decode_secret, token_hash, ClientMessage, PresenceMember, Role, ServerMessage, Space, WS_PROTOCOL, WS_TOKEN_PROTOCOL_PREFIX,
+};
 use tokio::sync::{watch, Notify};
 use tokio::time::{interval_at, timeout, Instant, Interval};
 
@@ -34,6 +37,9 @@ const MESSAGES_PER_MINUTE: u32 = 600;
 /// Live sockets per member (their devices), so one token can't take a room's or the server's
 /// whole share.
 const MEMBER_CONNECTIONS: usize = 8;
+/// Close codes: the member was removed, or re-invited and signed in on another computer.
+pub(crate) const REVOKED: u16 = 4001;
+pub(crate) const REPLACED: u16 = 4002;
 
 /// Rooms' hubs, and the number of sockets in all of them (for the server-wide cap).
 #[derive(Default)]
@@ -41,8 +47,17 @@ pub(crate) struct Hubs(HashMap<String, Hub>, usize);
 
 struct Hub {
     seq: watch::Sender<u64>,
+    /// Bumped when a role, a manage flag, the room's setting or the members change: each socket reads its access again.
+    access: watch::Sender<u64>,
     presence: watch::Sender<Vec<PresenceMember>>,
     conns: HashMap<u64, Conn>,
+}
+
+/// Closes a socket with a code.
+#[derive(Default)]
+struct Kick {
+    notify: Notify,
+    code: AtomicU16,
 }
 
 struct Conn {
@@ -50,7 +65,7 @@ struct Conn {
     role: Role,
     /// Set by `hello`; until then the connection isn't in presence.
     member: Option<String>,
-    kick: Arc<Notify>,
+    kick: Arc<Kick>,
 }
 
 impl Hub {
@@ -82,11 +97,19 @@ pub(crate) fn notify(state: &AppState, room: &str, seq: u64) {
     }
 }
 
-/// Closes a revoked member's sockets.
-pub(crate) fn kick(state: &AppState, room: &str, member_id: &str) {
+/// Someone's access changed: every socket of the room reads its own again and is told when it differs.
+pub(crate) fn access_changed(state: &AppState, room: &str) {
+    if let Some(hub) = lock(&state.0.hubs).0.get(room) {
+        hub.access.send_modify(|n| *n += 1);
+    }
+}
+
+/// Closes a member's sockets with `code` (removed, or signed in elsewhere).
+pub(crate) fn kick(state: &AppState, room: &str, member_id: &str, code: u16) {
     if let Some(hub) = lock(&state.0.hubs).0.get(room) {
         for c in hub.conns.values().filter(|c| c.member_id == member_id) {
-            c.kick.notify_one();
+            c.kick.code.store(code, Ordering::Relaxed);
+            c.kick.notify.notify_one();
         }
     }
 }
@@ -97,8 +120,9 @@ struct Slot {
     room: String,
     conn: u64,
     seq: watch::Receiver<u64>,
+    access: watch::Receiver<u64>,
     presence: watch::Receiver<Vec<PresenceMember>>,
-    kick: Arc<Notify>,
+    kick: Arc<Kick>,
 }
 
 impl Slot {
@@ -111,6 +135,7 @@ impl Slot {
         }
         let hub = rooms.entry(caller.room.clone()).or_insert_with(|| Hub {
             seq: watch::Sender::new(0),
+            access: watch::Sender::new(0),
             presence: watch::Sender::new(Vec::new()),
             conns: HashMap::new(),
         });
@@ -120,7 +145,7 @@ impl Slot {
         }
         *total += 1;
         let conn = state.0.next_conn.fetch_add(1, Ordering::Relaxed);
-        let kick = Arc::new(Notify::new());
+        let kick = Arc::new(Kick::default());
         hub.conns.insert(
             conn,
             Conn { member_id: caller.member_id.clone(), role: caller.role, member: None, kick: kick.clone() },
@@ -130,15 +155,20 @@ impl Slot {
             room: caller.room.clone(),
             conn,
             seq: hub.seq.subscribe(),
+            access: hub.access.subscribe(),
             presence: hub.presence.subscribe(),
             kick,
         })
     }
 
-    fn hello(&self, member: String) {
+    /// Updates this connection's entry in presence (display id from hello, role from access).
+    fn set(&self, member: Option<String>, role: Role) {
         if let Some(hub) = lock(&self.state.0.hubs).0.get_mut(&self.room) {
             if let Some(c) = hub.conns.get_mut(&self.conn) {
-                c.member = Some(member);
+                if member.is_some() {
+                    c.member = member;
+                }
+                c.role = role;
             }
             hub.update_presence();
         }
@@ -187,10 +217,11 @@ pub(crate) async fn upgrade(
         Err(rejection) => return Ok(rejection.into_response()),
     };
     let slot = Slot::join(&state, &caller)?;
-    let (r, id) = (caller.room.clone(), caller.member_id.clone());
-    // After joining the hub: a removal that lands before this finds no token (401 here), one
-    // that lands after finds the connection to kick.
-    if !state.db(move |c| db::touch_member(c, &r, &id, None)).await? {
+    // After joining the hub: a removal or re-invite that lands before this finds no token (401 here), one that lands
+    // after finds the connection to kick. By the token, not the member id, which a re-invite hands to a new token.
+    let hash = live_token(&headers).and_then(|t| decode_secret(t).ok()).map(|t| token_hash(&t)).ok_or(ApiError::UNAUTHORIZED)?;
+    let r = caller.room.clone();
+    if !state.db(move |c| db::touch_token(c, &r, &hash)).await? {
         return Err(ApiError::UNAUTHORIZED);
     }
     let max = state.0.config.max_frame();
@@ -219,6 +250,8 @@ struct Session {
     last_sent: u64,
     /// Seqs of this socket's own writes, not echoed back to it.
     own: HashSet<u64>,
+    /// The access last told to the client.
+    access: Option<db::Access>,
     last_heard: Instant,
     /// Start of the current minute and the client messages in it.
     window: (Instant, u32),
@@ -230,14 +263,15 @@ async fn run(mut socket: WebSocket, mut slot: Slot, caller: Caller) {
     let kick = slot.kick.clone();
     let mut ping = interval_at(Instant::now() + PING_EVERY, PING_EVERY);
     let now = Instant::now();
-    let mut s = Session { caller, hello: false, last_sent: 0, own: HashSet::new(), last_heard: now, window: (now, 0) };
+    let mut s = Session { caller, hello: false, last_sent: 0, own: HashSet::new(), access: None, last_heard: now, window: (now, 0) };
     loop {
         // Removal and shutdown win, and interrupt whatever the step is doing (a long replay, a send
         // to a slow reader), so a removed member gets nothing more.
         let keep = tokio::select! {
             biased;
-            _ = kick.notified() => {
-                close(&mut socket, 4001, "revoked").await;
+            _ = kick.notify.notified() => {
+                let code = kick.code.load(Ordering::Relaxed);
+                close(&mut socket, code, if code == REPLACED { "replaced" } else { "revoked" }).await;
                 break;
             }
             _ = async { shutdown.wait_for(|down| *down).await.map(|_| ()) } => {
@@ -277,7 +311,11 @@ async fn step(state: &AppState, socket: &mut WebSocket, slot: &mut Slot, s: &mut
                 Message::Ping(_) | Message::Pong(_) => true,
             }
         }
-        changed = slot.seq.changed(), if s.hello => changed.is_ok() && send_new(state, socket, s).await,
+        changed = slot.seq.changed(), if s.hello => {
+            let last = s.last_sent;
+            changed.is_ok() && send_new(state, socket, s, last).await
+        }
+        changed = slot.access.changed(), if s.hello => changed.is_ok() && refresh_access(state, socket, slot, s).await,
         changed = slot.presence.changed(), if s.hello => {
             let members = slot.presence.borrow_and_update().clone();
             changed.is_ok() && send(socket, &ServerMessage::Presence { members }).await
@@ -293,31 +331,81 @@ fn error(req: Option<u64>, code: &str) -> ServerMessage {
     ServerMessage::Error { req, error: code.into() }
 }
 
+fn reads(access: &Option<db::Access>) -> bool {
+    access.as_ref().is_some_and(|a| a.role.reads_private(a.owner_is_dm, a.dm_reads_private))
+}
+
+/// Reads this member's access from the database; tells the client when it changed. When it now reads others' private
+/// notes and didn't before, it gets all of them (they were never sent: its replay and stream left them out). False
+/// ends the connection (the member is gone: a kick is on its way).
+async fn refresh_access(state: &AppState, socket: &mut WebSocket, slot: &mut Slot, s: &mut Session) -> bool {
+    slot.access.borrow_and_update();
+    let (r, id) = (s.caller.room.clone(), s.caller.member_id.clone());
+    let Ok(Some(access)) = state.db(move |c| db::access(c, &r, &id)).await else { return false };
+    if s.access.as_ref() == Some(&access) {
+        return true;
+    }
+    let gained = !reads(&s.access) && access.role.reads_private(access.owner_is_dm, access.dm_reads_private);
+    slot.set(None, access.role);
+    if !send(socket, &access_message(&s.caller, &access)).await {
+        return false;
+    }
+    s.access = Some(access);
+    !gained || send_new(state, socket, s, 0).await
+}
+
+fn access_message(caller: &Caller, a: &db::Access) -> ServerMessage {
+    ServerMessage::Access {
+        member_id: caller.member_id.clone(),
+        role: a.role,
+        manage: a.manage,
+        owner_is_dm: a.owner_is_dm,
+        dm_reads_private: a.dm_reads_private,
+        members: a.members.clone(),
+    }
+}
+
 /// Handles one client message; false ends the connection.
 async fn handle(state: &AppState, socket: &mut WebSocket, slot: &mut Slot, s: &mut Session, msg: ClientMessage) -> bool {
     match msg {
         ClientMessage::Ping => send(socket, &ServerMessage::Pong).await,
-        ClientMessage::Hello { since, member } => {
+        ClientMessage::Hello { since, member, dm_since } => {
             if s.hello {
                 return send(socket, &error(None, "hello_twice")).await;
             }
             if member.len() > MAX_MEMBER_LEN {
                 return send(socket, &error(None, "member_too_long")).await;
             }
+            // Before reading: a write or an access change from here on wakes the socket again.
+            slot.seq.borrow_and_update();
+            slot.access.borrow_and_update();
             let (r, id, m) = (s.caller.room.clone(), s.caller.member_id.clone(), member.clone());
-            if state.db(move |c| db::touch_member(c, &r, &id, Some(&m))).await.is_err() {
-                return send(socket, &error(None, "internal")).await;
-            }
+            let access = state.db(move |c| {
+                db::touch_member(c, &r, &id, &m)?;
+                db::access(c, &r, &id)
+            });
+            let access = match access.await {
+                Ok(Some(a)) => a,
+                Ok(None) => return false, // removed meanwhile
+                Err(_) => return send(socket, &error(None, "internal")).await,
+            };
             s.hello = true;
             s.last_sent = since;
-            slot.seq.borrow_and_update();
-            // Replay, then presence; writes during the replay wake `seq` again.
+            // Who you are first (the client needs its member id for the private files in the replay), then the
+            // replay, then presence; writes during the replay wake `seq` again, access changes wake `access`.
+            if !send(socket, &access_message(&s.caller, &access)).await {
+                return false;
+            }
+            slot.set(Some(member), access.role);
+            s.access = Some(access);
+            let (mut since, mut dm_since) = (since, dm_since.unwrap_or(since));
             loop {
-                let Ok(page) = changes_page(state, &s.caller.room, s.last_sent).await else {
+                let Ok(page) = changes_page(state, &s.caller.room, &s.caller.member_id, since, dm_since).await else {
                     return send(socket, &error(None, "internal")).await;
                 };
                 if let Some(last) = page.changes.last() {
-                    s.last_sent = last.seq;
+                    (since, dm_since) = (since.max(last.seq), dm_since.max(last.seq));
+                    s.last_sent = s.last_sent.max(last.seq);
                 }
                 let more = page.more;
                 if !send(socket, &ServerMessage::Changes { seq: page.seq, changes: page.changes, more }).await {
@@ -327,24 +415,31 @@ async fn handle(state: &AppState, socket: &mut WebSocket, slot: &mut Slot, s: &m
                     break;
                 }
             }
-            slot.hello(member);
             let members = slot.presence.borrow_and_update().clone();
             send(socket, &ServerMessage::Presence { members }).await
         }
-        ClientMessage::Put { req, id, base, blob } => {
+        ClientMessage::Put { req, id, base, blob, space } => {
             if !s.hello {
                 return send(socket, &error(Some(req), "hello_first")).await;
             }
-            let result = write(state, &s.caller.room, &id, base, Some(&blob)).await;
+            let result = write(state, &s.caller.room, &s.caller.member_id, owner(s, space), &id, base, Some(&blob)).await;
             answer(socket, s, req, result).await
         }
-        ClientMessage::Delete { req, id, base } => {
+        ClientMessage::Delete { req, id, base, space } => {
             if !s.hello {
                 return send(socket, &error(Some(req), "hello_first")).await;
             }
-            let result = write(state, &s.caller.room, &id, base, None).await;
+            let result = write(state, &s.caller.room, &s.caller.member_id, owner(s, space), &id, base, None).await;
             answer(socket, s, req, result).await
         }
+    }
+}
+
+/// The space a write goes to: the shared files, or the writer's own private space. Nothing names another member's.
+fn owner(s: &Session, space: Space) -> &str {
+    match space {
+        Space::Shared => "",
+        Space::Private => &s.caller.member_id,
     }
 }
 
@@ -362,15 +457,19 @@ async fn answer(socket: &mut WebSocket, s: &mut Session, req: u64, result: Resul
     send(socket, &msg).await
 }
 
-/// Sends every change after `last_sent` except this socket's own writes.
-async fn send_new(state: &AppState, socket: &mut WebSocket, s: &mut Session) -> bool {
+/// Sends every change this socket may see after `last_sent` (others' private files after `dm_since`) except its own
+/// writes.
+async fn send_new(state: &AppState, socket: &mut WebSocket, s: &mut Session, mut dm_since: u64) -> bool {
+    let mut since = s.last_sent;
     loop {
-        let Ok(page) = changes_page(state, &s.caller.room, s.last_sent).await else {
+        let Ok(page) = changes_page(state, &s.caller.room, &s.caller.member_id, since, dm_since).await else {
             return send(socket, &error(None, "internal")).await;
         };
         for change in page.changes {
-            s.last_sent = change.seq;
-            if !s.own.remove(&change.seq) && !send(socket, &ServerMessage::Change(change)).await {
+            let seq = change.seq;
+            (since, dm_since) = (since.max(seq), dm_since.max(seq));
+            s.last_sent = s.last_sent.max(seq);
+            if !s.own.remove(&seq) && !send(socket, &ServerMessage::Change(change)).await {
                 return false;
             }
         }
