@@ -544,6 +544,19 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 #view .open-quests ul { display: flex; flex-wrap: wrap; gap: 2px 18px; margin: 0; padding: 0; list-style: none; }
 #view .open-quests li { margin: 0; }
 #view .open-quests .icon { color: var(--kind-quest); }
+/* The private notes that link a page, at its bottom (app.js mentionsHtml): framed like the open quests, in muted ink. */
+#view .private-mentions {
+  margin: 28px 0 0;
+  padding: 8px 14px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  background: var(--surface-panel);
+}
+#view .private-mentions h2 { margin: 0; font-size: 19px; }
+#view .private-mentions-who { margin: 0 0 8px; color: var(--muted); font: 14px var(--font-ui); }
+#view .private-mentions ul { margin: 0; padding: 0; list-style: none; }
+#view .private-mentions li { margin: 0 0 4px; overflow-wrap: anywhere; }
 /* Deleting one note: a small bin at the end of the row, shown on hover or keyboard focus. */
 .remove-note { flex: none; align-self: center; padding: 1px 4px; border: 0; background: transparent; color: var(--muted); line-height: 1; opacity: 0; }
 .remove-note .icon { margin: 0; }

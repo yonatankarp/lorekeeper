@@ -35,6 +35,22 @@ test("the map: people, places and factions, each link once and either way", () =
   assert.deepEqual(edges, [["NPCs/Mirela.md", "Locations/Phandalin.md"], ["NPCs/Mirela.md", "PCs/Demus.md"], ["PCs/Demus.md", "Factions/Lords' Alliance.md"]]);
 });
 
+test("private notes never link anything on the map", () => {
+  const shared = [
+    { path: "NPCs/Halia.md", content: "# Halia" },
+    { path: "NPCs/Lorelei.md", content: "# Lorelei" },
+  ];
+  const secret = [
+    { path: "Private/NPCs/Vex.md", content: "Vex knows [[Halia]] and [[Lorelei]]." },
+    { path: "Private/Sessions/Session 4/Sibling 5.md", content: "- 20:01 @[[Halia]] met [[Lorelei]] at night" },
+  ];
+  const alone = connections(shared, images);
+  assert.deepEqual(alone.nodes.map((n) => n.path), ["NPCs/Halia.md", "NPCs/Lorelei.md"]);
+  assert.deepEqual(alone.edges, []);
+  for (const file of secret) assert.deepEqual(connections([...shared, file], images), alone, file.path);
+  assert.deepEqual(connections([...shared, ...secret], images), alone);
+});
+
 test("one link away", () => {
   const graph = connections(notes, images);
   const near = neighbourhood(graph, "PCs/Demus.md");

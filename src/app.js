@@ -5,7 +5,7 @@ import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMe
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  DM, dmCopyOf, isDmCopy, isPrivate, myPc, privateLabel, startView, unprivate,
+  DM, dmCopyOf, isDmCopy, isPrivate, myPc, privateLabel, privateMentions, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -340,6 +340,31 @@ function sessionHtml(n) {
     : timelineHtml(items, n.parts ? (item) => mine.includes(item.path) : () => true));
 }
 
+/** Whether page `path` shows the private notes that link it: a shared page, not a session, in a shared campaign. */
+const showsMentions = (path) => !!privateLabel(sharing()) && !isPrivate(path) && !isSession(path);
+
+/** A line of a private note that links the open page, with a padlock and its source ("Session 1, 20:14", a private page), which opens it. */
+function mentionHtml(src, line) {
+  const [, time = "", rest] = line.match(/^(?:[-*+] )?(?:(\d{1,2}:\d{2}) )?(.*)$/);
+  const session = unprivate(src).match(/^Sessions\/Session \d+/i)?.[0];
+  const where = session ? `${baseName(session)}${time ? `, ${time}` : ""}` : baseName(src);
+  const target = (session && [session, `${session}.md`].find(note)) || src; // the session's page, else the note itself
+  const label = isDmCopy(src) ? `${playerName(dmCopyOf(src))}, ${where}` : where;
+  return `<li>${lockHtml(src)}<a data-path="${escape(target)}" href="#">${escape(label)}</a>: ${inlineLinks(rest.replace(/^[@#!?]\s*/, ""))}</li>`;
+}
+
+/**
+ * The private notes that link shared page `path`, at its bottom, for you only (and the DM, as the label says): rendered
+ * from their own files, never merged into the page's content, which the map, backlinks and search read. Nothing when none do.
+ */
+function mentionsHtml(path) {
+  if (!showsMentions(path)) return "";
+  const items = privateMentions(path, vault.notes).flatMap((m) => m.lines.map((l) => mentionHtml(m.path, l)));
+  return items.length ? `<section class="private-mentions" aria-labelledby="private-mentions-title">
+    <h2 id="private-mentions-title"><span class="lock" aria-hidden="true">${icon("lock")}</span>Private notes</h2>
+    <p class="private-mentions-who">${escape(ownLabel())}</p><ul>${items.join("")}</ul></section>` : "";
+}
+
 // ---------- home ----------
 
 /** Before there's a campaign: make one, or join one a friend shares (the Join dialog is in Settings). */
@@ -487,7 +512,7 @@ function render() {
   }
   if (!editing) {
     const { props, body } = splitFrontmatter(n.content);
-    setView(isSession(current) ? sessionHtml(n) : propsHtml(props, current) + marked.parse(body));
+    setView(isSession(current) ? sessionHtml(n) : propsHtml(props, current) + marked.parse(body) + mentionsHtml(current));
   }
   const near = graph && neighbourhood(graph, current);
   if (near?.nodes.length > 1) {
@@ -497,7 +522,8 @@ function render() {
     canvas.setAttribute("aria-label", `${baseName(current)} is linked with ${others.join(", ")}`);
     drawGraph(canvas, near, { focus: current, onOpen: open });
   }
-  const links = backlinks(current, vault.notes);
+  // Private notes that link a page showing them are listed there instead (mentionsHtml).
+  const links = backlinks(current, showsMentions(current) ? vault.notes.filter((b) => !isPrivate(b.path)) : vault.notes);
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length
     ? `<ul>${links
         .map((b) => `<li><a data-path="${escape(b.path)}" href="#">${escape(baseName(b.path))}</a>

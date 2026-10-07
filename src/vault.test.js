@@ -65,6 +65,26 @@ test("a session page shows its private files in its timeline, never in its conte
   assert.ok(all.some((p) => p.path === "Private/NPCs/Vex.md"));
 });
 
+test("a private note that links a page is a private mention there, never a backlink", async () => {
+  const { privateMentions } = await import("./vault.js");
+  const id = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const notes = pages([
+    { path: "NPCs/Lorelei.md", content: "# Lorelei" },
+    { path: "Sessions/Session 1/Sibling 5.md", content: "- 20:10 met [[Lorelei]] at the ferry" },
+    { path: "Private/Sessions/Session 1/Sibling 5.md", content: "- 20:14 @[[Lorelei]] might be in a secret society" },
+    { path: "Private/NPCs/Vex.md", content: "# Vex\nPays [[NPCs/Lorelei|her]] in gold." },
+    { path: `.lorekeeper/dm/${id}/Sessions/Session 1/Syloth.md`, content: "- 20:15 [[Lorelei]] lied to me\n- 20:16 nothing here" },
+  ]);
+  const shared = notes.filter((n) => !isPrivate(n.path)); // app.js: what Linked from lists on a page that shows private mentions
+  assert.deepEqual(backlinks("NPCs/Lorelei.md", shared).map((b) => b.path), ["Sessions/Session 1"]);
+  assert.deepEqual(privateMentions("NPCs/Lorelei.md", notes), [
+    { path: `.lorekeeper/dm/${id}/Sessions/Session 1/Syloth.md`, lines: ["- 20:15 [[Lorelei]] lied to me"] },
+    { path: "Private/NPCs/Vex.md", lines: ["Pays [[NPCs/Lorelei|her]] in gold."] },
+    { path: "Private/Sessions/Session 1/Sibling 5.md", lines: ["- 20:14 @[[Lorelei]] might be in a secret society"] },
+  ]);
+  assert.deepEqual(privateMentions("NPCs/Halia.md", notes), []);
+});
+
 const notes = [
   { path: "Sessions/Session 2.md", content: "# Session 2\n- 20:15 @[[Mirela]] again\n- 20:30 went to [[Locations/Phandalin|town]]" },
   { path: "Sessions/Session 10.md", content: "# Session 10\n- 21:00 [[mirela#Secrets|she]] lied\n- 21:05 [[Nobody]] here" },

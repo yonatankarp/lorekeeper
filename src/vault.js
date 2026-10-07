@@ -55,9 +55,8 @@ export function buildTree(folders, paths) {
   return root;
 }
 
-/** Notes linking to `path`, each with the lines that contain the link. */
-export function backlinks(path, notes) {
-  const paths = notes.map((n) => n.path);
+/** Notes linking to `path`, each with the lines that contain the link (resolved against `paths`, by default the notes'). */
+export function backlinks(path, notes, paths = notes.map((n) => n.path)) {
   const result = [];
   for (const note of notes) {
     if (note.path === path) continue;
@@ -124,6 +123,13 @@ export const isPrivate = (path) => path.startsWith("Private/") || isDmCopy(path)
 
 /** A path without its private prefix: "Private/NPCs/Vex.md" and ".lorekeeper/dm/<id>/NPCs/Vex.md" are "NPCs/Vex.md". */
 export const unprivate = (path) => path.replace(/^Private\//, "").replace(DM_COPY, "");
+
+/**
+ * The lines of private notes (`notes`: the vault's pages) that [[link]] to page `path`: your `~` session notes and private
+ * pages, and a DM's copies of the players'. [{ path, lines }] like backlinks. They show on the page for you only, never in
+ * its Linked from, and never on the map (graph.js leaves Private/ out).
+ */
+export const privateMentions = (path, notes) => backlinks(path, notes.filter((n) => isPrivate(n.path)), notes.map((n) => n.path));
 
 /**
  * Who reads your private notes in a campaign (its sharing settings), as every label says it: the server's last word on
