@@ -5,7 +5,7 @@ import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMe
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  DM, dmCopyOf, isDmCopy, isPrivate, myPc, privateLabel, privateMentions, startView, unprivate,
+  DM, dmCopyOf, isDmCopy, isPrivate, moveTarget, myPc, privateLabel, privateMentions, shownAt, sidebarTree, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -103,7 +103,7 @@ async function loadVault() {
   const folders = v.folders.filter((f) => !internal(f));
   vault = {
     ...v, files, notes: pages(files, folders),
-    folders: folders.filter((f) => !isSessionFolder(f) && !images(f)), // a session folder shows as the session's page
+    folders: folders.filter((f) => !isSessionFolder(f) && !images(shownAt(f))), // a session folder shows as the session's page
     conflicts: syncConflicts([...folders, ...files.map((n) => n.path), ...(v.images ?? [])]),
   };
 }
@@ -214,10 +214,12 @@ function treeHtml(node, names = {}) {
     .map((d) => {
       const n = d.files.length;
       const count = n ? `<span class="sr-only">, </span>${n}<span class="sr-only"> page${n === 1 ? "" : "s"}</span>` : "";
-      const empty = `<button type="button" class="folder-new" data-folder="${escape(d.path)}">+ New ${escape(typeFor(d.path) || "page")}</button>`;
-      // Your Private/ folder, and each player's folder of private notes on a DM's computer: a padlock and who reads them.
-      const lock = d.path === "Private" || names[d.path] ? lockHtml(`${d.path}/`) : "";
-      return `<details data-folder="${escape(d.path)}"${closedFolders.has(d.path) ? "" : " open"}>
+      // A folder that's only in Private/ (shown under its own name, see sidebarTree) is that one: New page there starts private.
+      const real = !vault.folders.includes(d.path) && vault.folders.includes(`Private/${d.path}`) ? `Private/${d.path}` : d.path;
+      const empty = `<button type="button" class="folder-new" data-folder="${escape(real)}">+ New ${escape(typeFor(d.path) || "page")}</button>`;
+      // A private-only folder, and each player's folder of private notes on a DM's computer: a padlock and who reads them.
+      const lock = real !== d.path || names[d.path] ? lockHtml(`${real}/`) : "";
+      return `<details data-folder="${escape(real)}"${closedFolders.has(real) ? "" : " open"}>
         <summary>${lock}${escape(names[d.path] ?? d.name)}<span class="count">${count}</span></summary>
         <div class="children">${treeHtml(d) || empty}</div></details>`;
     })
@@ -227,8 +229,12 @@ function treeHtml(node, names = {}) {
       // Finished quests: dimmed, with a check or a cross, and the outcome in the accessible name.
       const status = p.startsWith("Quests/") ? questStatus(note(p)?.content ?? "") : "";
       const ended = status === "done" || status === "failed";
+      // A private page, and a session that has only private notes so far: a padlock and who reads them (a DM's copies
+      // have theirs on their player's folder).
+      const only = note(p)?.parts?.length === 0 && note(p).private?.[0]?.path;
+      const lock = isDmCopy(p) ? "" : isPrivate(p) ? lockHtml(p) : only ? lockHtml(only) : "";
       return `<button draggable="true" class="file${p === current ? " active" : ""}${ended ? " quest-ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
-        `${ended ? icon(status) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
+        `${lock}${ended ? icon(status) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
     })
     .join("");
   return dirs + files;
@@ -237,7 +243,7 @@ function treeHtml(node, names = {}) {
 function renderTree() {
   const scroll = $("tree").scrollTop;
   const all = paths();
-  let html = treeHtml(buildTree(vault.folders, all.filter((p) => !isDmCopy(p))));
+  let html = treeHtml(sidebarTree(vault.folders, all.filter((p) => !isDmCopy(p))));
   // A DM's copies of the players' private notes: one group, a folder per player, read-only.
   const copies = all.filter(isDmCopy);
   const players = buildTree([], copies).dirs[0]?.dirs[0];
@@ -1222,8 +1228,10 @@ function openRenameDialog(path, move = false) {
   $("rename-confirm").textContent = move ? "Move" : "Rename";
   $("rename-name").value = baseName(path);
   // Only sessions go in Sessions/ (a page already there can stay); Templates/ and Attachments/ aren't for pages, as in the tree.
-  const folders = ["", ...[...vault.folders].sort(naturally)].filter((f) => f === dirOf(path) || !/^(sessions|templates|attachments)(\/|$)/i.test(f));
-  $("rename-folder").replaceChildren(...folders.map((f) => new Option(f || "Top level", f, false, f === dirOf(path))));
+  // Folders as the sidebar shows them: a private page stays private wherever it goes (see moveTarget).
+  const here = shownAt(dirOf(path));
+  const folders = [...new Set(["", ...vault.folders.map(shownAt)])].sort(naturally).filter((f) => f === here || !/^(sessions|templates|attachments)(\/|$)/i.test(f));
+  $("rename-folder").replaceChildren(...folders.map((f) => new Option(f || "Top level", f, false, f === here)));
   $("rename-error").textContent = "";
   $("rename-dialog").showModal();
   move ? $("rename-folder").focus() : $("rename-name").select();
@@ -1265,12 +1273,12 @@ async function renameOrMove(from, to) {
   const moved = dirOf(from) !== dirOf(to);
   const verb = moved ? "Move" : "Rename";
   // A folder closed before the move opens, so the moved page shows selected in the tree.
-  for (let f = dirOf(to); f; f = dirOf(f)) closedFolders.delete(f);
+  for (let f = dirOf(to); f; f = dirOf(f)) for (const name of [f, shownAt(f)]) closedFolders.delete(name); // by either name (treeHtml)
   renderTree();
   // ponytail: undo / redo report only their label, so a page whose links couldn't be saved then goes unmentioned.
   record({ label: `${verb} ${baseName(from)}`, undo: () => renamePage(to, from, edits.map(([p, was, now]) => [p, now, was])), redo: () => renamePage(from, to) });
   const n = edits.filter(([p]) => p !== to).length;
-  const done = moved ? `Moved ${baseName(to)} to ${dirOf(to) || "the top level"}` : `Renamed to ${baseName(to)}`;
+  const done = moved ? `Moved ${baseName(to)} to ${shownAt(dirOf(to)) || "the top level"}` : `Renamed to ${baseName(to)}`; // as the sidebar names it
   say(failed.length ? `${verb}d, but couldn't update the links in ${failed.join(", ")}`
     : `${done}${n ? `; links updated in ${n} page${n === 1 ? "" : "s"}` : ""}`);
 }
@@ -1282,12 +1290,13 @@ $("rename-form").addEventListener("submit", async (e) => {
   const from = renaming;
   const name = $("rename-name").value.trim();
   // Never across the private line (Make private / Make shared ask first): the same rules as a drop, but the name's own.
-  const problem = badName(name) || moveProblem(from, $("rename-folder").value, []);
+  const folder = moveTarget(from, $("rename-folder").value);
+  const problem = badName(name) || moveProblem(from, folder, []);
   if (problem) {
     $("rename-error").textContent = problem;
     return $("rename-name").focus();
   }
-  const to = movedPath(`${name}.md`, $("rename-folder").value);
+  const to = movedPath(`${name}.md`, folder);
   if (to === from) return $("rename-dialog").close();
   try {
     await renameOrMove(from, to);
@@ -1303,7 +1312,11 @@ $("move").addEventListener("click", () => openRenameDialog(current, true));
 // dialog) does the same from the keyboard. dragDropEnabled is off in tauri.conf.json, so the webview gets these events.
 let dragged = null; // the page being dragged
 let dropMark = null; // the folder (or the tree) highlighted as where it would go
-const dropFolder = (el) => el.closest?.("details[data-folder]")?.dataset.folder ?? "";
+/** Where page `page` dropped on `el` goes: that folder, inside Private/ for a private page (moveTarget); a DM's copies stay as they are, refused. */
+const dropFolder = (el, page) => {
+  const folder = el.closest?.("details[data-folder]")?.dataset.folder ?? "";
+  return folder === "dm" || isDmCopy(`${folder}/`) ? folder : moveTarget(page, folder);
+};
 function markDrop(el, refused) {
   dropMark?.classList.remove("drop-target", "drop-refused");
   dropMark = el;
@@ -1326,7 +1339,7 @@ const pageDrag = (e) => dragged && !e.dataTransfer.types.includes("Files");
 $("tree").addEventListener("dragover", (e) => {
   if (!pageDrag(e)) return;
   e.preventDefault(); // a refused folder still takes the drop, to say why
-  const folder = dropFolder(e.target);
+  const folder = dropFolder(e.target, dragged);
   const same = folder === dirOf(dragged);
   markDrop(same ? null : e.target.closest?.("details[data-folder]") ?? $("tree"), !!moveProblem(dragged, folder, paths()));
   e.dataTransfer.dropEffect = same ? "none" : "move";
@@ -1342,7 +1355,7 @@ $("tree").addEventListener("drop", async (e) => {
   e.preventDefault();
   dragged = null;
   markDrop(null);
-  const folder = dropFolder(e.target);
+  const folder = dropFolder(e.target, from);
   if (folder === dirOf(from)) return;
   const problem = moveProblem(from, folder, paths());
   if (problem) return moveError(`Can't move ${baseName(from)}: ${problem}`);

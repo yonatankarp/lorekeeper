@@ -65,6 +65,40 @@ test("a session page shows its private files in its timeline, never in its conte
   assert.ok(all.some((p) => p.path === "Private/NPCs/Vex.md"));
 });
 
+test("the sidebar shows private pages in their usual folders and private session notes in their session", async () => {
+  const { sidebarTree, moveTarget, privateMentions } = await import("./vault.js");
+  const files = [
+    { path: "NPCs/Vex.md", content: "# Vex" },
+    { path: "Private/NPCs/Vex.md", content: "# Vex, the real story: works for [[Lorelei]]" },
+    { path: "NPCs/Lorelei.md", content: "# Lorelei" },
+    { path: "Private/Plots/Heist.md", content: "# Heist" },
+    { path: "Sessions/Session 1/Sibling 5.md", content: "- 20:00 we arrive" },
+    { path: "Private/Sessions/Session 1/Sibling 5.md", content: "- 20:14 @[[Lorelei]] might be in a secret society" },
+    { path: "Private/Sessions/Session 2/Sibling 5.md", content: "- 21:00 alone so far" },
+  ];
+  const folders = ["NPCs", "Private", "Private/NPCs", "Private/Plots", "Private/Sessions", "Private/Sessions/Session 1", "Private/Sessions/Session 2", "Sessions"];
+  const notes = pages(files, folders);
+  const tree = sidebarTree(folders.filter((f) => !isSessionFolder(f)), notes.map((n) => n.path));
+  const dir = (name) => tree.dirs.find((d) => d.name === name);
+  assert.deepEqual(tree.dirs.map((d) => d.name), ["NPCs", "Plots", "Sessions"], "no Private group");
+  assert.deepEqual(dir("NPCs").files, ["NPCs/Lorelei.md", "NPCs/Vex.md", "Private/NPCs/Vex.md"], "both Vexes, told apart by isPrivate");
+  assert.deepEqual(dir("Plots").files, ["Private/Plots/Heist.md"], "a private-only folder under its own name");
+  assert.deepEqual(dir("Sessions").files, ["Sessions/Session 2", "Sessions/Session 1"], "a session with only private notes still shows");
+  assert.deepEqual(dir("Sessions").dirs, [], "no private session folders or files of their own");
+  const all = JSON.stringify(tree);
+  assert.ok(!all.includes("Private/Sessions"), all);
+  assert.deepEqual(notes.find((n) => n.path === "Sessions/Session 2").parts, []);
+  // Still found where they link, never as backlinks.
+  assert.deepEqual(privateMentions("NPCs/Lorelei.md", notes).map((m) => m.path), ["Private/NPCs/Vex.md", "Private/Sessions/Session 1/Sibling 5.md"]);
+  assert.deepEqual(backlinks("NPCs/Lorelei.md", notes.filter((n) => !isPrivate(n.path))), []);
+  // Moving through the sidebar never crosses the private line: a private page stays in Private/, a shared one out of it.
+  assert.equal(moveTarget("Private/NPCs/Vex.md", "Plots"), "Private/Plots");
+  assert.equal(moveTarget("Private/NPCs/Vex.md", "Private/Plots"), "Private/Plots");
+  assert.equal(moveTarget("Private/NPCs/Vex.md", ""), "Private");
+  assert.equal(moveTarget("NPCs/Vex.md", "Private/Plots"), "Plots");
+  assert.equal(moveTarget("NPCs/Vex.md", "Locations"), "Locations");
+});
+
 test("a private note that links a page is a private mention there, never a backlink", async () => {
   const { privateMentions } = await import("./vault.js");
   const id = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
