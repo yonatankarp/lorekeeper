@@ -346,7 +346,7 @@ fn append_note(dir: &Path, me: Option<&str>, text: &str) -> io::Result<(String, 
 fn append_private(dir: &Path, me: &str, n: Option<u32>, lines: &[String]) -> io::Result<PathBuf> {
     let _guard = WRITE_LOCK.lock().unwrap();
     let path = match n {
-        Some(n) => start_file(&dir.join(PRIVATE_FOLDER), n, Some(me))?,
+        Some(n) => start_file(dir, n, Some(me), true)?,
         None => private_session(dir, me)?,
     };
     let old = fs::read_to_string(&path)?;
