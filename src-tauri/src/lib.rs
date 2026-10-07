@@ -216,12 +216,31 @@ fn session_name(path: &Path) -> String {
     name.unwrap_or_default().to_string_lossy().into_owned()
 }
 
-/// Session `n`'s notes file (see notes_file), made when it isn't there yet with Obsidian properties, so sessions can
-/// be listed as a table. A player's file also names its author.
-fn start_file(dir: &Path, n: u32, me: Option<&str>) -> io::Result<PathBuf> {
-    let path = notes_file(dir, n, me);
+/// Session `n`'s date: the `date` property of its Session N.md, else of the first file in its Session N/ folder that has
+/// one. None for a session that has no files yet.
+fn session_date(dir: &Path, n: u32) -> Option<String> {
+    let mut files: Vec<PathBuf> = fs::read_dir(session_folder(dir, n)).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    files.retain(|p| p.extension().is_some_and(|e| e == "md"));
+    files.sort();
+    std::iter::once(session_path(dir, n)).chain(files).find_map(|p| {
+        let text = fs::read_to_string(p).ok()?;
+        let mut lines = text.lines();
+        (lines.next()?.trim_end() == "---").then_some(())?;
+        let date = lines.take_while(|l| l.trim_end() != "---").find_map(|l| l.strip_prefix("date:"))?;
+        Some(date.trim().trim_matches(['"', '\'']).to_owned()).filter(|d| !d.is_empty())
+    })
+}
+
+/// Session `n`'s notes file (see notes_file; your private one when `private`), made when it isn't there yet with
+/// Obsidian properties, so sessions can be listed as a table. A player's file also names its author. A file added to a
+/// session under way (one from before sharing, or a teammate's) takes the session's date, a new session today's.
+fn start_file(dir: &Path, n: u32, me: Option<&str>, private: bool) -> io::Result<PathBuf> {
+    let path = notes_file(&if private { dir.join(PRIVATE_FOLDER) } else { dir.to_path_buf() }, n, me);
+    if path.exists() {
+        return Ok(path);
+    }
     fs::create_dir_all(path.parent().unwrap())?;
-    let date = chrono::Local::now().format("%Y-%m-%d");
+    let date = session_date(dir, n).unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
     let author = match me {
         Some(DM_ME) => "author: DM\n".to_string(), // no PC page to link to (playerFile in notes.js agrees)
         Some(me) => format!("author: \"[[{me}]]\"\n"),
@@ -251,18 +270,31 @@ fn going(dir: &Path, now: std::time::SystemTime) -> bool {
 fn new_session(dir: &Path, me: Option<&str>) -> io::Result<PathBuf> {
     let n = latest_session(dir)?;
     let join = me.is_some() && n > 0 && !notes_file(dir, n, me).exists() && going(&session_folder(dir, n), std::time::SystemTime::now());
-    start_file(dir, if join { n } else { n + 1 }, me)
+    start_file(dir, if join { n } else { n + 1 }, me, false)
 }
 
 /// Your notes file in the newest session. Sessions only roll over via "New session", never by date, so a game running
-/// past midnight stays in one session. A shared campaign never writes to a Session N.md file: when the newest session
-/// is one (from before sharing), your notes start the next session, as a folder.
+/// past midnight stays in one session. In a shared campaign, see shared_session.
 fn current_session(dir: &Path, me: Option<&str>) -> io::Result<PathBuf> {
-    match latest_session(dir)? {
-        0 => new_session(dir, me),
-        n if me.is_some() && !session_folder(dir, n).is_dir() => start_file(dir, n + 1, me),
-        n => start_file(dir, n, me),
-    }
+    let n = if me.is_some() { shared_session(dir)? } else { latest_session(dir)?.max(1) };
+    start_file(dir, n, me, false)
+}
+
+/// The session your notes go to in a shared campaign, shared and private alike (so they never pick different ones). A
+/// shared campaign never writes to a Session N.md file: when the newest session is one (from before sharing), your notes
+/// join it in a Session N/ folder next to it while it's still going (written in the last 12 hours, as in `going`), else
+/// they start the next session, as a folder.
+fn shared_session(dir: &Path) -> io::Result<u32> {
+    let n = latest_session(dir)?;
+    let file_going = || {
+        let modified = fs::metadata(session_path(dir, n)).and_then(|m| m.modified());
+        modified.is_ok_and(|t| stale_hours(t, std::time::SystemTime::now()).is_none())
+    };
+    Ok(match n {
+        0 => 1,
+        n if session_folder(dir, n).is_dir() || file_going() => n,
+        n => n + 1,
+    })
 }
 
 /// A quick note starting with `~` is private: (true, the note without it). The rest of the note is filed as usual,
@@ -275,14 +307,9 @@ fn private_note(text: &str) -> (bool, &str) {
 }
 
 /// Your private notes file in the current session, `Private/Sessions/Session N/<PC>.md`: the session number the shared
-/// file would have (see current_session), without making the shared file.
+/// file would have (see shared_session), without making the shared file.
 fn private_session(dir: &Path, me: &str) -> io::Result<PathBuf> {
-    let n = match latest_session(dir)? {
-        0 => 1,
-        n if !session_folder(dir, n).is_dir() => n + 1,
-        n => n,
-    };
-    start_file(&dir.join(PRIVATE_FOLDER), n, Some(me))
+    start_file(dir, shared_session(dir)?, Some(me), true)
 }
 
 /// Where a quick note goes: your private file for a private note in a shared campaign, else the current session's.
@@ -310,6 +337,32 @@ fn append_note(dir: &Path, me: Option<&str>, text: &str) -> io::Result<(String, 
     writeln!(file, "- {time} {text}")?;
     watch::wrote(&path);
     Ok((text, Some(path)))
+}
+
+/// Lines typed with a `~` into a shared page in the window (splitPrivate in notes.js), appended as they come to your
+/// private file for session `n` (made like any session file), or for the current session (see private_session) when
+/// it's another page. Written before the window saves the shared page without them, so they never reach a shared file.
+fn append_private(dir: &Path, me: &str, n: Option<u32>, lines: &[String]) -> io::Result<PathBuf> {
+    let _guard = WRITE_LOCK.lock().unwrap();
+    let path = match n {
+        Some(n) => start_file(dir, n, Some(me), true)?,
+        None => private_session(dir, me)?,
+    };
+    let old = fs::read_to_string(&path)?;
+    let lines: Vec<String> = lines.iter().map(|l| l.replace(['\r', '\n'], " ")).collect(); // one note per line
+    let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+    writeln!(file, "{}{}", if old.is_empty() || old.ends_with('\n') { "" } else { "\n" }, lines.join("\n"))?;
+    watch::wrote(&path);
+    Ok(path)
+}
+
+/// From the window's editor: see append_private. Needs a shared campaign with your character picked.
+#[tauri::command]
+fn save_private_lines(app: AppHandle, session: Option<u32>, lines: Vec<String>) -> Result<(), String> {
+    let (dir, me) = note_target(&app)?;
+    append_private(&dir, &me.ok_or(PICK_PC)?, session, &lines).map_err(|e| e.to_string())?;
+    emit_changed(&app);
+    Ok(())
 }
 
 /// The time and text of a quick-note line, "- HH:MM text".
@@ -1654,6 +1707,12 @@ fn get_settings(app: AppHandle) -> Settings {
     current_settings(&app)
 }
 
+/// What a fresh install starts with; Settings > Shortcuts > Reset to defaults puts the shortcuts back to these.
+#[tauri::command]
+fn default_settings() -> Settings {
+    Settings::default()
+}
+
 /// Checks and applies every setting, saves them, then tells all windows. On error nothing changes.
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
@@ -1940,6 +1999,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             save_note,
+            save_private_lines,
             last_note,
             fix_note,
             dismiss,
@@ -1958,6 +2018,7 @@ pub fn run() {
             campaign_pcs,
             open_url,
             get_settings,
+            default_settings,
             save_settings,
             open_settings,
             open_cheat_sheet,
@@ -2305,13 +2366,69 @@ mod tests {
         assert_eq!(new_session(&dir, Some("Vex")).unwrap(), session_folder(&dir, 6).join("Vex.md"));
         assert!(fs::read_to_string(session_folder(&dir, 6).join("Vex.md")).unwrap().contains("session: 6\n"));
 
-        // Shared never appends to a Session N.md from before sharing: the next session starts as a folder.
-        let solo = temp_dir("shared-from-solo");
-        append_note(&solo, None, "before").unwrap();
-        append_note(&solo, me, "after").unwrap();
-        assert!(!fs::read_to_string(session_path(&solo, 1)).unwrap().contains("after"));
-        assert!(fs::read_to_string(session_folder(&solo, 2).join("Sibling 5.md")).unwrap().ends_with(" after\n"));
-        for d in [dir, solo] {
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Shared never appends to a Session N.md from before sharing: notes join it in a Session N/ folder while it's still
+    /// going (written in the last 12 hours), else the next session starts as a folder. Private notes pick the same one.
+    #[test]
+    fn a_session_from_before_sharing_continues_while_its_going() {
+        let me = Some("Sibling 5");
+        let backdate = |path: &Path, hours: u64| {
+            let t = std::time::SystemTime::now() - Duration::from_secs(hours * 3600);
+            fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+        };
+
+        // Written minutes ago: shared and private notes join Session 1, and the file itself stays as it was.
+        let going = temp_dir("from-solo-going");
+        append_note(&going, None, "before").unwrap();
+        assert_eq!(append_note(&going, me, "~@[[Lorelei]] lies").unwrap().1.unwrap(), going.join("Private/Sessions/Session 1/Sibling 5.md"));
+        assert_eq!(append_note(&going, me, "after").unwrap().1.unwrap(), session_folder(&going, 1).join("Sibling 5.md"));
+        assert!(!fs::read_to_string(session_path(&going, 1)).unwrap().contains("after"));
+        assert!(!session_folder(&going, 2).exists());
+        // Once the folder is there, it's a folder session like any: it stays the current one, however old the file.
+        backdate(&session_path(&going, 1), 13);
+        assert_eq!(append_note(&going, me, "~still").unwrap().1.unwrap(), going.join("Private/Sessions/Session 1/Sibling 5.md"));
+        assert_eq!(append_note(&going, me, "still").unwrap().1.unwrap(), session_folder(&going, 1).join("Sibling 5.md"));
+        assert!(stale_session(&going, me, std::time::SystemTime::now()).unwrap().is_none());
+        assert_eq!(new_session(&going, me).unwrap(), session_folder(&going, 2).join("Sibling 5.md"));
+
+        // Quiet for 12 hours: the next session starts as a folder, private notes too.
+        let over = temp_dir("from-solo-over");
+        append_note(&over, None, "before").unwrap();
+        backdate(&session_path(&over, 1), 13);
+        assert_eq!(append_note(&over, me, "~secret").unwrap().1.unwrap(), over.join("Private/Sessions/Session 2/Sibling 5.md"));
+        assert!(!session_folder(&over, 2).exists(), "a private note makes no shared file");
+        append_note(&over, me, "after").unwrap();
+        assert!(!fs::read_to_string(session_path(&over, 1)).unwrap().contains("after"));
+        assert!(fs::read_to_string(session_folder(&over, 2).join("Sibling 5.md")).unwrap().ends_with(" after\n"));
+        assert!(!session_folder(&over, 1).exists());
+
+        // New session on a session from before sharing that's still going starts the next one, as it always has, and
+        // the box offers no new session: you have no notes of your own in it yet.
+        let fresh = temp_dir("from-solo-new");
+        append_note(&fresh, None, "before").unwrap();
+        assert!(stale_session(&fresh, me, std::time::SystemTime::now() + Duration::from_secs(13 * 3600)).unwrap().is_none());
+        assert_eq!(new_session(&fresh, me).unwrap(), session_folder(&fresh, 2).join("Sibling 5.md"));
+
+        // A file added to a session under way takes the session's date, shared and private; a new session takes today's.
+        let dated = temp_dir("from-solo-dated");
+        fs::create_dir_all(dated.join("Sessions")).unwrap();
+        fs::write(session_path(&dated, 1), "---\r\nsession: 1\r\ndate: \"2026-10-04\"\r\n---\r\n# Session 1 - 2026-10-04\r\n").unwrap();
+        append_note(&dated, me, "after").unwrap();
+        append_note(&dated, me, "~secret").unwrap();
+        for file in [session_folder(&dated, 1).join("Sibling 5.md"), dated.join("Private/Sessions/Session 1/Sibling 5.md")] {
+            let text = fs::read_to_string(&file).unwrap();
+            assert!(text.contains("\ndate: 2026-10-04\n") && text.contains("# Session 1 - 2026-10-04\n"), "{text}");
+        }
+        assert_eq!(session_date(&dated, 1).as_deref(), Some("2026-10-04"));
+        fs::remove_file(session_path(&dated, 1)).unwrap();
+        assert_eq!(session_date(&dated, 1).as_deref(), Some("2026-10-04"), "from a player's file in its folder");
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let next = fs::read_to_string(new_session(&dated, me).unwrap()).unwrap();
+        assert!(next.contains(&format!("# Session 2 - {today}\n")), "{next}");
+        assert_eq!(session_date(&dated, 3), None);
+        for d in [going, over, fresh, dated] {
             fs::remove_dir_all(d).unwrap();
         }
     }
@@ -2343,6 +2460,13 @@ mod tests {
         let shared_text = fs::read_to_string(&shared).unwrap();
         assert!(shared_text.ends_with(" we meet Halia\n") && !shared_text.contains('~') && !shared_text.contains("lies"), "{shared_text}");
         assert!(fs::read_to_string(dir.join("Private/Sessions/Session 1/Sibling 5.md")).unwrap().ends_with(" we meet Halia, who lies\n"));
+        // ~ lines typed into a shared page in the window: into that session's private file, else the current one.
+        let lines = ["- 20:14 @[[Lorelei]] has a deal".to_string(), "no time\nor two lines".to_string()];
+        assert_eq!(append_private(&dir, "Sibling 5", Some(3), &lines).unwrap(), dir.join("Private/Sessions/Session 3/Sibling 5.md"));
+        let text = fs::read_to_string(dir.join("Private/Sessions/Session 3/Sibling 5.md")).unwrap();
+        assert!(text.starts_with("---\nsession: 3\n") && text.contains("author: \"[[Sibling 5]]\"") && text.ends_with("\n\n- 20:14 @[[Lorelei]] has a deal\nno time or two lines\n"), "{text}");
+        assert_eq!(append_private(&dir, "Sibling 5", None, &["[[Halia]] x".into()]).unwrap(), dir.join("Private/Sessions/Session 1/Sibling 5.md"));
+        assert!(fs::read_to_string(dir.join("Private/Sessions/Session 1/Sibling 5.md")).unwrap().ends_with(" who lies\n[[Halia]] x\n"));
         // New session: the private file follows the shared session's number.
         new_session(&dir, me).unwrap();
         assert_eq!(append_note(&dir, me, "~later").unwrap().1.unwrap(), dir.join("Private/Sessions/Session 2/Sibling 5.md"));

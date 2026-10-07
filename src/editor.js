@@ -368,6 +368,8 @@ export function createEditor(parent, { onChange, onFollowLink, pageNames, onImag
 
   return {
     getValue: () => view.state.doc.toString(),
+    /** The text of the line the cursor is on. */
+    cursorLine: () => view.state.doc.lineAt(view.state.selection.main.head).text,
     /** Replaces the text, keeping the cursor and undo history. `reset` starts fresh (another page). */
     setValue(text, { reset = false } = {}) {
       if (reset) return view.setState(EditorState.create({ doc: text, extensions }));

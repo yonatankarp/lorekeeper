@@ -29,8 +29,11 @@ export function resolve(target, paths) {
   return hits.sort((a, b) => a.length - b.length || naturally(a, b))[0] ?? null;
 }
 
-/** Nested { name, path, dirs, files } from folder paths and note paths. Sessions/ lists newest first. */
-export function buildTree(folders, paths) {
+/**
+ * Nested { name, path, dirs, files } from folder paths and note paths, each note in the folder `at` its path says.
+ * Sessions/ lists newest first.
+ */
+export function buildTree(folders, paths, at = (p) => p) {
   const root = { name: "", path: "", dirs: [], files: [] };
   const dirAt = (path) => {
     let node = root;
@@ -45,7 +48,7 @@ export function buildTree(folders, paths) {
     return node;
   };
   folders.forEach(dirAt);
-  for (const p of paths) dirAt(p.split("/").slice(0, -1).join("/")).files.push(p);
+  for (const p of paths) dirAt(at(p).split("/").slice(0, -1).join("/")).files.push(p);
   const sort = (node) => {
     node.dirs.sort((a, b) => naturally(a.name, b.name)).forEach(sort);
     const order = node.path === "Sessions" ? -1 : 1;
@@ -55,9 +58,8 @@ export function buildTree(folders, paths) {
   return root;
 }
 
-/** Notes linking to `path`, each with the lines that contain the link. */
-export function backlinks(path, notes) {
-  const paths = notes.map((n) => n.path);
+/** Notes linking to `path`, each with the lines that contain the link (resolved against `paths`, by default the notes'). */
+export function backlinks(path, notes, paths = notes.map((n) => n.path)) {
   const result = [];
   for (const note of notes) {
     if (note.path === path) continue;
@@ -126,6 +128,30 @@ export const isPrivate = (path) => path.startsWith("Private/") || isDmCopy(path)
 export const unprivate = (path) => path.replace(/^Private\//, "").replace(DM_COPY, "");
 
 /**
+ * The lines of private notes (`notes`: the vault's pages) that [[link]] to page `path`: your `~` session notes and private
+ * pages, and a DM's copies of the players'. [{ path, lines }] like backlinks. They show on the page for you only, never in
+ * its Linked from, and never on the map (graph.js leaves Private/ out).
+ */
+export const privateMentions = (path, notes) => backlinks(path, notes.filter((n) => isPrivate(n.path)), notes.map((n) => n.path));
+
+/** Where a private page or folder shows in the sidebar: its usual place ("Private/NPCs" is NPCs, Private/ the top level). */
+export const shownAt = (path) => (path === "Private" ? "" : path.replace(/^Private\//, ""));
+
+/** The folder a page put in sidebar folder `folder` goes to: a private page stays in Private/, a shared one out of it. */
+export function moveTarget(page, folder) {
+  const f = shownAt(folder);
+  return page.startsWith("Private/") ? (f ? `Private/${f}` : "Private") : f;
+}
+
+/**
+ * The sidebar's tree (buildTree, `paths` without a DM's copies): your private pages in their usual folders, each by its
+ * own path ("Private/NPCs/Vex.md" in NPCs, next to a shared Vex), a folder only in Private/ under its own name, no
+ * Private group, and no private session files: their session's page shows them.
+ */
+export const sidebarTree = (folders, paths) =>
+  buildTree(folders.map(shownAt).filter((f) => !isSessionFolder(f)), paths.filter((p) => !/^Private\/Sessions\/Session \d+\/[^/]+\.md$/i.test(p)), shownAt);
+
+/**
  * Who reads your private notes in a campaign (its sharing settings), as every label says it: the server's last word on
  * the campaign's setting (sync.rs Access), so it's always the truth. "" outside a shared campaign. A campaign on a
  * server that hasn't said yet (just joined, offline) may let the DM read them, and a `~` note written now goes up once
@@ -192,13 +218,47 @@ export function pages(files, folders = []) {
       parts,
       private: secret,
       get content() {
-        const date = parts.map((p) => splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "date")?.[1]).find(Boolean);
+        const date = sessionDate(this);
         const head = `---\nsession: ${id.replace(/^.* /, "")}\n${date ? `date: ${date}\n` : ""}---\n`;
         return head + parts.map((p) => splitFrontmatter(p.content).body).join("\n");
       },
     });
   }
   return out;
+}
+
+/** A shared session's date: the `date` property of its first file that has one (its Session 4.md first), or "". */
+export const sessionDate = (page) =>
+  (page?.parts ?? []).map((p) => splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "date")?.[1]).find(Boolean) ?? "";
+
+/**
+ * The files Edit can change on shared session `page` (from pages()) for `me` (your PC's name, "" for none), the one it
+ * opens first: [{ id, path }], each there yet or not. "session" is its Session 4.md from before sharing, "mine" your
+ * Session 4/<PC>.md, and "private" (when `privateNotes`: a shared campaign) your Private/Sessions/Session 4/<PC>.md.
+ * Without a character, just its first file. More than one: Edit shows the switch (Session notes | My notes | Private notes).
+ */
+export function editChoices(page, me, privateNotes = false) {
+  const old = page.parts.find((p) => p.path === `${page.path}.md`);
+  if (!me) return [{ id: "session", path: old?.path ?? page.parts[0]?.path ?? page.path }];
+  return [
+    ...(old ? [{ id: "session", path: old.path }] : []),
+    { id: "mine", path: `${page.path}/${me}.md` },
+    ...(privateNotes ? [{ id: "private", path: `Private/${page.path}/${me}.md` }] : []),
+  ];
+}
+
+/** The file Edit changes among `choices` (editChoices): the one with id `choice`, else the first. */
+export const editTarget = (choices, choice) => (choices.find((c) => c.id === choice) ?? choices[0]).path;
+
+/**
+ * The files Delete trashes on shared session `page` (from pages()) when it's all yours (`me`, your PC's name): your file
+ * in its folder, and your private one if there is one. [] when anything else is in it (a Session 4.md from before sharing,
+ * a teammate's file, a DM's copy of a player's private notes) or nothing is, so the session stays.
+ */
+export function ownSessionFiles(page, me) {
+  const files = [...(page?.parts ?? []), ...(page?.private ?? [])].map((f) => f.path);
+  const mine = [`${page?.path}/${me}.md`, `Private/${page?.path}/${me}.md`];
+  return me && files.length && files.every((p) => mine.includes(p)) ? files : [];
 }
 
 /** "PCs/Sibling 5.md", the PC page named `name` (any case, any folder in PCs/), or null. */

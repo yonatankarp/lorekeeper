@@ -1,7 +1,7 @@
 // Turns a session file into a timeline and sections grouped by kind (the Journal view).
 // Hotkey notes look like "- 21:43 @Mirela the innkeeper"; the first character picks the section.
 // Hand-written bullets and paragraphs count too, so nothing typed in the editor is silently dropped.
-import { authorOf, baseName, DM, isPrivate, naturally, pcPath, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
+import { authorOf, baseName, DM, isPrivate, kindOf, naturally, pcPath, resolve, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
 import { IMAGE_EMBED } from "./images.js";
 
 export const SECTIONS = [
@@ -42,6 +42,37 @@ function* lines(md) {
 export function privateNote(text) {
   const m = text.match(/^\s*~(.*)$/s);
   return m ? { private: true, text: m[1] } : { private: false, text };
+}
+
+/** A line typed private: `~` first, after an optional list marker and "HH:MM " time ("~~gone~~" is strikethrough). */
+const PRIVATE_LINE = /^\s*((?:[-*+] )?(?:\d{1,2}:\d{2} )?)~(?!~)\s*(\S.*?)\r?$/;
+
+/**
+ * `md` from the editor with its `~` lines taken out, before it's saved to a shared file (app.js save): { shared, private,
+ * taken }. `private` holds each line as your private notes get it, the `~` gone and its list marker and time kept (none
+ * added); `taken` the lines as typed. Frontmatter and fenced code blocks are left alone, and so is a `~` anywhere but
+ * a line's start. For page `page` (not a session; `paths`: the vault's pages), a line that doesn't link it gets a link
+ * first, `@[[Halia]]` on an NPC, so it shows in that page's Private notes.
+ */
+export function splitPrivate(md, page = "", paths = []) {
+  const body = splitFrontmatter(md).body;
+  const out = { shared: [], private: [], taken: [] };
+  const name = page && (resolve(baseName(page), paths) === page ? baseName(page) : page.replace(/\.md$/i, ""));
+  const link = page && `${kindOf(page) === "npc" ? "@" : ""}[[${name}]] `;
+  let code = false;
+  for (const piece of body.split(/(?<=\n)/)) { // each line with its line break, which goes with it
+    const line = piece.replace(/\n$/, "");
+    if (/^\s*(```|~~~)/.test(line)) code = !code;
+    const m = !code && line.match(PRIVATE_LINE);
+    if (!m) {
+      out.shared.push(piece);
+      continue;
+    }
+    const linked = [...m[2].matchAll(WIKILINK)].some((l) => resolve(l[2], paths) === page);
+    out.taken.push(line);
+    out.private.push(m[1] + (page && !linked ? link : "") + m[2]);
+  }
+  return { ...out, shared: md.slice(0, md.length - body.length) + out.shared.join("") };
 }
 
 /** Notes in file order: [{ time, kind, text }]. */

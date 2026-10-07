@@ -4,7 +4,7 @@ import {
   backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
   authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel, startView,
-  DM, mayPlayDm, myPc,
+  DM, mayPlayDm, myPc, ownSessionFiles, editChoices, editTarget, sessionDate,
 } from "./vault.js";
 
 test("private notes: your own in Private/, a DM's read-only copies of the players' in .lorekeeper/dm/", () => {
@@ -63,6 +63,60 @@ test("a session page shows its private files in its timeline, never in its conte
   assert.ok(all.some((p) => p.path === "Private/Sessions/Session 4/Arn.md"), "your private file is a page of its own");
   assert.ok(all.some((p) => p.path === "Sessions/Session 5" && p.parts.length === 0 && p.private.length === 1), "a session only you wrote in yet");
   assert.ok(all.some((p) => p.path === "Private/NPCs/Vex.md"));
+});
+
+test("the sidebar shows private pages in their usual folders and private session notes in their session", async () => {
+  const { sidebarTree, moveTarget, privateMentions } = await import("./vault.js");
+  const files = [
+    { path: "NPCs/Vex.md", content: "# Vex" },
+    { path: "Private/NPCs/Vex.md", content: "# Vex, the real story: works for [[Lorelei]]" },
+    { path: "NPCs/Lorelei.md", content: "# Lorelei" },
+    { path: "Private/Plots/Heist.md", content: "# Heist" },
+    { path: "Sessions/Session 1/Sibling 5.md", content: "- 20:00 we arrive" },
+    { path: "Private/Sessions/Session 1/Sibling 5.md", content: "- 20:14 @[[Lorelei]] might be in a secret society" },
+    { path: "Private/Sessions/Session 2/Sibling 5.md", content: "- 21:00 alone so far" },
+  ];
+  const folders = ["NPCs", "Private", "Private/NPCs", "Private/Plots", "Private/Sessions", "Private/Sessions/Session 1", "Private/Sessions/Session 2", "Sessions"];
+  const notes = pages(files, folders);
+  const tree = sidebarTree(folders.filter((f) => !isSessionFolder(f)), notes.map((n) => n.path));
+  const dir = (name) => tree.dirs.find((d) => d.name === name);
+  assert.deepEqual(tree.dirs.map((d) => d.name), ["NPCs", "Plots", "Sessions"], "no Private group");
+  assert.deepEqual(dir("NPCs").files, ["NPCs/Lorelei.md", "NPCs/Vex.md", "Private/NPCs/Vex.md"], "both Vexes, told apart by isPrivate");
+  assert.deepEqual(dir("Plots").files, ["Private/Plots/Heist.md"], "a private-only folder under its own name");
+  assert.deepEqual(dir("Sessions").files, ["Sessions/Session 2", "Sessions/Session 1"], "a session with only private notes still shows");
+  assert.deepEqual(dir("Sessions").dirs, [], "no private session folders or files of their own");
+  const all = JSON.stringify(tree);
+  assert.ok(!all.includes("Private/Sessions"), all);
+  assert.deepEqual(notes.find((n) => n.path === "Sessions/Session 2").parts, []);
+  // Still found where they link, never as backlinks.
+  assert.deepEqual(privateMentions("NPCs/Lorelei.md", notes).map((m) => m.path), ["Private/NPCs/Vex.md", "Private/Sessions/Session 1/Sibling 5.md"]);
+  assert.deepEqual(backlinks("NPCs/Lorelei.md", notes.filter((n) => !isPrivate(n.path))), []);
+  // Moving through the sidebar never crosses the private line: a private page stays in Private/, a shared one out of it.
+  assert.equal(moveTarget("Private/NPCs/Vex.md", "Plots"), "Private/Plots");
+  assert.equal(moveTarget("Private/NPCs/Vex.md", "Private/Plots"), "Private/Plots");
+  assert.equal(moveTarget("Private/NPCs/Vex.md", ""), "Private");
+  assert.equal(moveTarget("NPCs/Vex.md", "Private/Plots"), "Plots");
+  assert.equal(moveTarget("NPCs/Vex.md", "Locations"), "Locations");
+});
+
+test("a private note that links a page is a private mention there, never a backlink", async () => {
+  const { privateMentions } = await import("./vault.js");
+  const id = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const notes = pages([
+    { path: "NPCs/Lorelei.md", content: "# Lorelei" },
+    { path: "Sessions/Session 1/Sibling 5.md", content: "- 20:10 met [[Lorelei]] at the ferry" },
+    { path: "Private/Sessions/Session 1/Sibling 5.md", content: "- 20:14 @[[Lorelei]] might be in a secret society" },
+    { path: "Private/NPCs/Vex.md", content: "# Vex\nPays [[NPCs/Lorelei|her]] in gold." },
+    { path: `.lorekeeper/dm/${id}/Sessions/Session 1/Syloth.md`, content: "- 20:15 [[Lorelei]] lied to me\n- 20:16 nothing here" },
+  ]);
+  const shared = notes.filter((n) => !isPrivate(n.path)); // app.js: what Linked from lists on a page that shows private mentions
+  assert.deepEqual(backlinks("NPCs/Lorelei.md", shared).map((b) => b.path), ["Sessions/Session 1"]);
+  assert.deepEqual(privateMentions("NPCs/Lorelei.md", notes), [
+    { path: `.lorekeeper/dm/${id}/Sessions/Session 1/Syloth.md`, lines: ["- 20:15 [[Lorelei]] lied to me"] },
+    { path: "Private/NPCs/Vex.md", lines: ["Pays [[NPCs/Lorelei|her]] in gold."] },
+    { path: "Private/Sessions/Session 1/Sibling 5.md", lines: ["- 20:14 @[[Lorelei]] might be in a secret society"] },
+  ]);
+  assert.deepEqual(privateMentions("NPCs/Halia.md", notes), []);
 });
 
 const notes = [
@@ -370,6 +424,53 @@ test("a shared session's folder is one page, which links, backlinks, search and 
   assert.ok(isSessionFolder("Sessions/Session 12") && !isSessionFolder("Sessions/Session 12 (1)") && !isSessionFolder("Sessions/Arc"));
   assert.equal(pcPath("sibling 5", ["NPCs/Sibling 5.md", "PCs/Retired/Sibling 5.md"]), "PCs/Retired/Sibling 5.md");
   assert.equal(pcPath("Vex", paths), null);
+});
+
+test("Edit on a shared session: Session notes, My notes and Private notes, each when it applies", () => {
+  const f = (path, content = "- 20:00 x\n") => ({ path, content });
+  const session = (...files) => pages(files, ["Sessions/Session 1"]).find((p) => p.path === "Sessions/Session 1");
+  const old = f("Sessions/Session 1.md", "---\nsession: 1\ndate: 2026-10-04\n---\n# Session 1 - 2026-10-04\n");
+  const arn = f("Sessions/Session 1/Arn.md", "---\ndate: 2026-10-05\n---\n- 20:00 x\n");
+  const [mine, secret] = ["Sessions/Session 1/Sibling 5.md", "Private/Sessions/Session 1/Sibling 5.md"];
+  const ids = (choices) => choices.map((c) => c.id);
+
+  // A session from before sharing, in a shared campaign: all three, its own notes first; files there yet or not.
+  const all = editChoices(session(old), "Sibling 5", true);
+  assert.deepEqual(all, [{ id: "session", path: old.path }, { id: "mine", path: mine }, { id: "private", path: secret }]);
+  assert.equal(editTarget(all, null), old.path, "Edit opens Session notes");
+  assert.equal(editTarget(all, "mine"), mine);
+  assert.equal(editTarget(all, "private"), secret);
+  // A folder session: My notes first, then Private notes.
+  const folder = editChoices(session(arn), "Sibling 5", true);
+  assert.deepEqual(ids(folder), ["mine", "private"]);
+  assert.equal(editTarget(folder, null), mine);
+  assert.equal(editTarget(folder, "session"), mine, "a choice that isn't there opens the first");
+  // Not shared (no private notes): one choice, so no switch, unless there's a Session 1.md too.
+  assert.deepEqual(ids(editChoices(session(arn), "Sibling 5")), ["mine"]);
+  assert.deepEqual(ids(editChoices(session(old, f(mine)), "Sibling 5")), ["session", "mine"]);
+  // No character picked: just the session's first file.
+  assert.deepEqual(editChoices(session(old, arn), "", true), [{ id: "session", path: old.path }]);
+  assert.deepEqual(editChoices(session(arn), "", true), [{ id: "session", path: arn.path }]);
+
+  // A file added to a session takes its date: its Session 1.md's, else the first part's that has one.
+  assert.equal(sessionDate(session(old, arn)), "2026-10-04");
+  assert.equal(sessionDate(session(f(mine), arn)), "2026-10-05");
+  assert.equal(sessionDate(session(f(mine))), "", "none: today's, then");
+});
+
+test("Delete takes a shared session only when every file in it is yours", () => {
+  const f = (path) => ({ path, content: "- 20:00 x\n" });
+  const session = (...paths) => pages(paths.map(f)).find((p) => p.path === "Sessions/Session 1");
+  const mine = "Sessions/Session 1/Sibling 5.md", secret = "Private/Sessions/Session 1/Sibling 5.md";
+  assert.deepEqual(ownSessionFiles(session(mine), "Sibling 5"), [mine]);
+  assert.deepEqual(ownSessionFiles(session(mine, secret), "Sibling 5"), [mine, secret], "your private notes go with it");
+  assert.deepEqual(ownSessionFiles(session(secret), "Sibling 5"), [secret], "only private notes so far");
+  assert.deepEqual(ownSessionFiles(session(mine, "Sessions/Session 1.md"), "Sibling 5"), [], "a session from before sharing");
+  assert.deepEqual(ownSessionFiles(session(mine, "Sessions/Session 1/Arn.md"), "Sibling 5"), [], "a teammate's notes");
+  assert.deepEqual(ownSessionFiles(session(mine, ".lorekeeper/dm/aaaaaaaaaaaaaaaaaaaaaaaaaa/Sessions/Session 1/Arn.md"), "Sibling 5"), [], "a DM's copy of a player's");
+  assert.deepEqual(ownSessionFiles(session(mine), "Arn"), [], "someone else's");
+  assert.deepEqual(ownSessionFiles(session(mine), ""), [], "no character picked");
+  assert.deepEqual(ownSessionFiles(pages([], ["Sessions/Session 1"])[0], "Sibling 5"), [], "an empty folder");
 });
 
 test("sync conflict copies are found by their names", () => {

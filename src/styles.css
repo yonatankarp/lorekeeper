@@ -548,6 +548,19 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 #view .open-quests ul { display: flex; flex-wrap: wrap; gap: 2px 18px; margin: 0; padding: 0; list-style: none; }
 #view .open-quests li { margin: 0; }
 #view .open-quests .icon { color: var(--kind-quest); }
+/* The private notes that link a page, at its bottom (app.js mentionsHtml): framed like the open quests, in muted ink. */
+#view .private-mentions {
+  margin: 28px 0 0;
+  padding: 8px 14px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  background: var(--surface-panel);
+}
+#view .private-mentions h2 { margin: 0; font-size: 19px; }
+#view .private-mentions-who { margin: 0 0 8px; color: var(--muted); font: 14px var(--font-ui); }
+#view .private-mentions ul { margin: 0; padding: 0; list-style: none; }
+#view .private-mentions li { margin: 0 0 4px; overflow-wrap: anywhere; }
 /* Deleting one note: a small bin at the end of the row, shown on hover or keyboard focus. */
 .remove-note { flex: none; align-self: center; padding: 1px 4px; border: 0; background: transparent; color: var(--muted); line-height: 1; opacity: 0; }
 .remove-note .icon { margin: 0; }
@@ -606,6 +619,8 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
   font: 14px/1.6 ui-monospace, Menlo, Consolas, monospace;
   resize: none;
 }
+.edit-switch { width: calc(100% - 32px); max-width: 780px; margin: 0 auto; padding: 0 4px; }
+.edit-switch .lock .icon { margin: 0 0.3em 0 0; }
 .editor-hint { width: calc(100% - 32px); max-width: 780px; margin: 0 auto 8px; padding: 0 4px; color: var(--muted); font-size: 14px; }
 .editor-hint > span { margin: 0 0.2em; white-space: nowrap; }
 #backlinks { padding-bottom: 40px; font-family: var(--font-body); }
