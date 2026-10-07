@@ -1,5 +1,5 @@
 // The connections map (graph.js) drawn on a <canvas>: each page as its picture, else its kind's icon; people round,
-// places and factions square. Zoomed out it's coloured dots. Pinch or Ctrl+scroll zooms, dragging moves, a click opens.
+// places and factions square. Zoomed out it's coloured dots. Scrolling or a pinch zooms, dragging moves, a click opens.
 // Pictures are shrunk to thumbnails once and kept in the app's cache folder (lib.rs).
 import { layout } from "./graph.js";
 import { baseName } from "./vault.js";
@@ -233,7 +233,7 @@ function draw(canvas) {
   }
 }
 
-/** Hover names a page, a click opens it, dragging moves the map, pinch or Ctrl+scroll zooms, double-click resets. */
+/** Hover names a page, a click opens it, dragging moves the map, scrolling or a pinch zooms, double-click resets. */
 function listen(canvas) {
   const m = () => maps.get(canvas);
   const local = (e) => {
@@ -278,20 +278,29 @@ function listen(canvas) {
     m().hover = undefined;
     draw(canvas);
   });
-  // Plain scrolling still scrolls the page; macOS sends a pinch as Ctrl+scroll.
-  canvas.addEventListener("wheel", (e) => {
-    if (!e.ctrlKey) return;
-    e.preventDefault(); // app.js keeps it from zooming the whole window too
+  /** Zooms to `to` (kept between 0.5 and 8), the point under the cursor staying put. */
+  const zoomAt = (e, to) => {
     const v = m().view;
     v.fitting = null;
-    // A pinch sends many small steps, a mouse wheel notch one big one: capped, a notch zooms about 1.3 times.
-    const step = Math.max(-25, Math.min(25, e.deltaY));
-    const zoom = Math.min(8, Math.max(0.5, v.zoom * Math.exp(-step * 0.01)));
+    const zoom = Math.min(8, Math.max(0.5, to));
     const [x, y] = local(e);
     const mx = x - canvas.clientWidth / 2, my = y - canvas.clientHeight / 2;
     const k = zoom / v.zoom;
-    Object.assign(v, { zoom, panX: mx - (mx - v.panX) * k, panY: my - (my - v.panY) * k }); // the point under the cursor stays
+    Object.assign(v, { zoom, panX: mx - (mx - v.panX) * k, panY: my - (my - v.panY) * k });
     draw(canvas);
+  };
+  // WebKit (the macOS app) sends a trackpad pinch as gesture events, with the scale since the pinch began.
+  let pinch = null; // the zoom when the pinch began
+  canvas.addEventListener("gesturestart", (e) => { e.preventDefault(); pinch = m().view.zoom; });
+  canvas.addEventListener("gesturechange", (e) => { e.preventDefault(); if (pinch !== null) zoomAt(e, pinch * e.scale); });
+  canvas.addEventListener("gestureend", (e) => { e.preventDefault(); pinch = null; });
+  // Scrolling over the map zooms it (Chromium, WebView2 on Windows, and Linux send a pinch as Ctrl+scroll too).
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault(); // nor the page scrolling; app.js keeps Ctrl+scroll from zooming the whole window
+    if (pinch !== null) return; // the gesture events have it
+    // A pinch or trackpad sends many small steps, a mouse wheel notch one big one: capped, a notch zooms about 1.3 times.
+    const step = Math.max(-25, Math.min(25, e.deltaY));
+    zoomAt(e, m().view.zoom * Math.exp(-step * 0.01));
   }, { passive: false });
   // Glides back to the whole map (zoom eased evenly, as a ratio); at once when reduced motion is asked for.
   const fit = () => {

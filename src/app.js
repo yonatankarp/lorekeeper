@@ -465,10 +465,9 @@ function homeHtml(graph) {
     cards.push(card("sessions", "Sessions", "note", `<ul class="home-list contents">${items.join("")}</ul>`));
   }
   if (graph.edges.length) {
-    const zoom = mac ? "Pinch" : "Ctrl+scroll";
     cards.push(card("map", "Connections", "faction", `<div class="graph-box"><canvas class="graph" role="img"
       aria-label="Map of ${graph.nodes.length} people, places and factions and who links to whom"></canvas>${FIT_BUTTON}</div>
-      <p class="home-meta">${zoom} to zoom, drag to move, double-click to see it all. Pages show their portrait or first picture.</p>`, true));
+      <p class="home-meta">Scroll or pinch to zoom, drag to move, double-click to see it all. Pages show their portrait or first picture.</p>`, true));
   }
   if (!cards.length) {
     return `<div class="empty-state">${icon("home")}<h1>Welcome to Lorekeeper</h1>
