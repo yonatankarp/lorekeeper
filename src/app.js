@@ -1433,8 +1433,9 @@ $("sidebar").addEventListener("contextmenu", (e) => {
 });
 
 // The webview's own menu (Reload, Back, Print, Inspect…) is for web pages: only text keeps it, for Cut, Copy, Paste and
-// spelling. The sidebar's pages and folders get the app's menu above.
-document.addEventListener("contextmenu", (e) => e.target.closest?.("#editor, textarea, input:not([type=checkbox], [type=radio])") || e.preventDefault());
+// spelling, and so does selected text anywhere, for Copy. The sidebar's pages and folders get the app's menu above.
+document.addEventListener("contextmenu", (e) =>
+  e.target.closest?.("#editor, textarea, input:not([type=checkbox], [type=radio])") || getSelection()?.toString() || e.preventDefault());
 
 if (mac) {
   // The title bar overlays the page (tauri.conf.json): the sidebar's top strip and the header move the window.
