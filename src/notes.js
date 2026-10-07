@@ -13,7 +13,8 @@ export const SECTIONS = [
   ["quote", "Quotes"],
 ];
 
-const PREFIX = { "@": "npc", "#": "loot", "!": "quest", "?": "mystery", '"': "quote", "“": "quote" };
+/** The first character of a note that files it (the cheat sheet lists each, cheatsheet.test.js checks). */
+export const PREFIX = { "@": "npc", "#": "loot", "!": "quest", "?": "mystery", '"': "quote", "“": "quote" };
 
 /** Every line in file order: { title } for a "# " heading, else a note { time, kind, text, line } (its line index in the file). */
 function* lines(md) {

@@ -14,6 +14,7 @@ import { GRAPH_KINDS, connections, neighbourhood } from "./graph.js";
 import { drawGraph, forgetPictures } from "./graph-view.js";
 import { ATTACHMENTS, freeName, imageLabel, isImage, imageTarget, pastedName, resolveImage, safeName } from "./images.js";
 import { onlineText, syncText } from "./sync-status.js";
+import { cheatSheetHtml, globalKeys, NOTE_PREFIXES, readable } from "./cheatsheet.js";
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen, emitTo } = window.__TAURI__.event;
@@ -37,7 +38,7 @@ let saveTimer = null;
 let saving = null; // in-flight save promise
 let inConflict = false;
 const closedFolders = new Set();
-const KINDS = { npc: ["@", "NPC"], loot: ["#", "Loot"], quest: ["!", "Quest"], mystery: ["?", "Mystery"], quote: ['"', "Quote"] };
+const KINDS = { npc: "NPC", loot: "Loot", quest: "Quest", mystery: "Mystery", quote: "Quote" }; // a note's badge; symbols: NOTE_PREFIXES
 let settings = { theme: "system", editorFontSize: 15 }; // until get_settings answers
 let sessionView = "timeline"; // or "journal": a recap grouped by kind; the switch changes it until restart
 let editor = null; // created on first Edit, then reused for every page
@@ -288,12 +289,14 @@ function selectResult(i) {
 // ---------- page ----------
 
 const legendHtml =
-  `<dl class="prefix-legend">${Object.entries(KINDS).map(([kind, [k, label]]) => `<dt><kbd>${escape(k)}</kbd></dt><dd>${icon(kind)}${label}</dd>`).join("")}</dl>`;
+  `<dl class="prefix-legend">${NOTE_PREFIXES.map(({ keys: [k], kind }) => `<dt><kbd>${escape(k)}</kbd></dt><dd>${icon(kind)}${KINDS[kind]}</dd>`).join("")}</dl>`;
 
-const emptySessionHtml = `<div class="empty-state">${icon("session")}<h2>No notes yet</h2>
-  <p>Press <kbd>⌘⌥N</kbd> for a quick note, or <kbd>⌘⇧S</kbd> to save selected text (or the clipboard).</p>
+/** An empty session: the global shortcuts as set, the note symbols, and the way to the cheat sheet. */
+const emptySessionHtml = (keys = globalKeys(settings)) => `<div class="empty-state">${icon("session")}<h2>No notes yet</h2>
+  <p>Press <kbd>${escape(readable(keys.quickNote, mac))}</kbd> for a quick note, or <kbd>${escape(readable(keys.capture, mac))}</kbd> to save selected text (or the clipboard).</p>
   <p>Notes appear here live during the game. Start a note with a symbol to file it:</p>${legendHtml}
-  <p class="legend-note">A <kbd>!</kbd> note goes in this session's Quests section. To follow a quest across sessions, make a Quest page with + New page: open ones are listed at the top of every session.</p></div>`;
+  <p class="legend-note">A <kbd>!</kbd> note goes in this session's Quests section. To follow a quest across sessions, make a Quest page with + New page: open ones are listed at the top of every session.</p>
+  <p class="home-actions"><button type="button" class="button-link" data-action="cheatSheet">Cheat sheet</button></p></div>`;
 
 /**
  * The notes in order, with their authors in a shared session; `removable(note)` adds that row's delete button (the
@@ -303,7 +306,7 @@ const timelineHtml = (items, removable = () => false) =>
   `<ol class="timeline">${items
     .map((item) => {
       const { time, kind, text, line, author, path } = item;
-      const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${icon(kind)}${KINDS[kind][1]}</span>` : "";
+      const badge = KINDS[kind] ? `<span class="kind kind-${kind}">${icon(kind)}${KINDS[kind]}</span>` : "";
       const remove = removable(item)
         ? `<button type="button" class="remove-note" data-line="${line}" data-path="${escape(path ?? current)}" aria-label="Delete note: ${escape(stripLinks(text))}" title="Delete note">${icon("trash")}</button>`
         : "";
@@ -325,7 +328,7 @@ function sessionHtml(n) {
   const session = n.parts ? parseMerged([...n.parts, ...(n.private ?? [])], paths()) : parse(n.content);
   const items = sessionItems(n);
   const title = `<h1 class="session-title">${session.title ? inlineLinks(session.title) : escape(baseName(current))}</h1>`;
-  if (!items.length) return title + openQuestsHtml() + emptySessionHtml;
+  if (!items.length) return title + openQuestsHtml() + emptySessionHtml();
   const pressed = (v) => `aria-pressed="${sessionView === v}"`;
   const views = `<div class="view-switch" role="group" aria-label="Session view">
     <button type="button" data-view="timeline" ${pressed("timeline")}>Timeline</button>
@@ -1413,6 +1416,13 @@ $("keep-mine").addEventListener("click", async () => {
 
 // ---------- menu bar, shortcuts, context menu ----------
 
+/** Help > Cheat Sheet: note symbols, links and shortcuts, with the global shortcuts as set now. */
+function openCheatSheet() {
+  $("cheat-body").innerHTML = cheatSheetHtml({ settings, mac });
+  $("cheat-body").scrollTop = 0;
+  $("cheat-dialog").showModal();
+}
+
 const zoomKey = (key) => () => window.dispatchEvent(new KeyboardEvent("keydown", { key, metaKey: mac, ctrlKey: !mac }));
 
 /** What the menu bar and the keyboard shortcuts do; each reuses the button or function behind it. */
@@ -1424,6 +1434,7 @@ const actions = {
   joinCampaign: () => invoke("open_settings").then(() => emitTo("settings", "open-join")).catch(say),
   obsidian: () => current && canObsidian() && $("obsidian").click(),
   settings: () => invoke("open_settings").catch(say),
+  cheatSheet: () => ($("cheat-dialog").open ? $("cheat-dialog").close() : modal() || openCheatSheet()),
   home: () => modal() || open(null),
   back: () => modal() || go(-1),
   forward: () => modal() || go(1),
@@ -1472,7 +1483,7 @@ document.addEventListener("keydown", (e) => {
   let name;
   if (key === "z" || (key === "y" && !mac)) name = key === "z" && !e.shiftKey ? "undo" : "redo"; // routed by focus in undoRedo
   else if (key === "backspace") name = typing ? "" : "deletePage"; // in text, it deletes to the line start
-  else name = (e.shiftKey && { n: "newSession", h: "home" }[key]) || { k: "search", e: "toggle", n: "newPage", ",": "settings", "[": "back", "]": "forward" }[key];
+  else name = (e.shiftKey && { n: "newSession", h: "home" }[key]) || { k: "search", e: "toggle", n: "newPage", ",": "settings", "[": "back", "]": "forward", "/": "cheatSheet" }[key];
   if (!name) return;
   e.preventDefault(); // also keeps the matching menu accelerator from firing on macOS
   run(name);
@@ -1530,6 +1541,7 @@ async function buildMenu() {
       ] },
       // Tauri's Window-menu id: set_menu registers it with AppKit, which adds the open-window list.
       ...(linux ? [] : [{ id: "__tauri_window_menu__", text: "Window", items: predefined("Minimize", "Maximize", "Separator", "CloseWindow") }]),
+      { text: "Help", items: [item("Cheat Sheet", "cheatSheet", "CmdOrCtrl+/")] },
     ],
   });
   await (mac ? menu.setAsAppMenu() : menu.setAsWindowMenu());
@@ -1710,8 +1722,8 @@ window.addEventListener("mouseup", (e) => {
   run(e.button === 3 ? "back" : "forward", "mouse");
 });
 
-$("editor-hint").innerHTML = Object.entries(KINDS)
-  .map(([kind, [k, label]]) => `<span>${escape(k)} ${icon(kind)}${label}</span>`).join(" · ");
+$("editor-hint").innerHTML = NOTE_PREFIXES
+  .map(({ keys: [k], kind }) => `<span>${escape(k)} ${icon(kind)}${KINDS[kind]}</span>`).join(" · ");
 
 // Hotkey notes and edits made in Obsidian show up here without a manual reload.
 listen("vault-changed", refresh);

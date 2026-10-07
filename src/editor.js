@@ -6,6 +6,7 @@ import {
   Language, LanguageSupport, markdownLanguage, placeholder, redo, startCompletion, syntaxTree, Transaction, undo,
   ViewPlugin, WidgetType,
 } from "./vendor/codemirror.js";
+import { PREFIX as KINDS } from "./notes.js";
 import { splitFrontmatter } from "./vault.js";
 import { cycleHeading, diff, linkTarget, nameQuery, togglePrefix } from "./editor-text.js";
 
@@ -29,8 +30,6 @@ const wikiLinks = {
 };
 // Shares markdownLanguage's data, so its list commands (Enter, Backspace) still recognise it.
 const markdown = new Language(markdownLanguage.data, markdownLanguage.parser.configure([wikiLinks]), [], "markdown");
-
-const KINDS = { "@": "npc", "#": "loot", "!": "quest", "?": "mystery", '"': "quote", "“": "quote" };
 
 class Checkbox extends WidgetType {
   constructor(checked) {
@@ -319,8 +318,8 @@ export function createEditor(parent, { onChange, onFollowLink, pageNames, onImag
       { key: "Enter", run: insertNewlineContinueMarkup },
       { key: "Backspace", run: deleteMarkupBackward },
       { key: "Tab", run: (v) => acceptCompletion(v) || (inList(v) && indentMore(v)), shift: (v) => inList(v) && indentLess(v) },
-      // ⌘⇧K jumps to search and ⌘[ / ⌘] go Back / Forward (app.js), so CodeMirror doesn't take them.
-      ...defaultKeymap.filter((b) => !["Shift-Mod-k", "Mod-[", "Mod-]"].includes(b.key)),
+      // ⌘⇧K jumps to search, ⌘[ / ⌘] go Back / Forward and ⌘/ opens the cheat sheet (app.js), so CodeMirror doesn't take them.
+      ...defaultKeymap.filter((b) => !["Shift-Mod-k", "Mod-[", "Mod-]", "Mod-/"].includes(b.key)),
       // Undo and redo come through app.js (keys and the Edit menu alike), which calls undo() / redo() below.
       ...historyKeymap.filter((b) => b.run !== undo && b.run !== redo),
     ]),

@@ -154,6 +154,17 @@
       </form>
     </dialog>
 
+    <!-- Help > Cheat Sheet (⌘/): filled by openCheatSheet in app.js. Close comes first, so opening focuses it at the top. -->
+    <dialog id="cheat-dialog" aria-labelledby="cheat-title">
+      <form method="dialog">
+        <div class="cheat-head">
+          <h2 id="cheat-title">Cheat sheet</h2>
+          <button value="done" class="ghost">Close</button>
+        </div>
+        <div id="cheat-body" class="cheat-body" tabindex="0" role="region" aria-labelledby="cheat-title"></div>
+      </form>
+    </dialog>
+
     <script type="module" src="app.js"></script>
   </body>
 </html>
