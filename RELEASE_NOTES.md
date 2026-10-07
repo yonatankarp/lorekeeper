@@ -1,14 +1,12 @@
-What's new in 0.7.1:
-- Private notes show on the pages they link: write ~@[[Lorelei]] … and it appears under Private notes at the bottom of her page, for you only (and the DM, if the owner allows it), never on the map
-- A line starting with ~ typed into a shared page moves to your private notes when it saves
-- Private pages and notes sit in their usual places in the sidebar, with a padlock
-- Edit on a session switches between Session notes, My notes and Private notes
+What's new in 0.7.2:
+- Playing across time zones: note times in a shared session show in your own time zone, and the Timeline is in the right order whoever wrote what
+- A player who joins sees old sessions as old, so their notes go to the same session as everyone else's
+- A lighter look: icons instead of bulky buttons, and shortcut hints that match your computer (⌘ on macOS, Ctrl elsewhere)
 
-Fixed:
-- A quick note no longer starts a new session when the session you're playing is from before sharing
-- A session that's all yours can be deleted
-- Move… never makes a private page shared, or a shared one private: Make shared and Make private do, and ask first
-- Settings > Shortcuts has Reset to defaults
+Also changed:
+- The Obsidian buttons are gone; your notes are still plain Markdown that Obsidian can open
+- Rename and Move left the page header: use F2, the File menu, right-click or drag
+- Session notes record your UTC offset, which only your party can see
 
 Sharing a campaign the first time needs the sync server's creation key: ask Lorekeeper's maintainer. Joining only needs the invite link and Lorekeeper 0.7 or later.
 
