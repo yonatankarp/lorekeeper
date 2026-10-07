@@ -927,7 +927,7 @@ impl Core {
             return Ok(());
         }
         let json = serde_json::to_vec(&names).expect("names serialize");
-        match self.write_file(DM_NAMES, &json) {
+        match self.write_file(DM_NAMES, &json, None) {
             Ok(_) => {}
             Err(Fail::Io(e)) => return Err(e),
             Err(Fail::Fatal(_)) => return Err(io::ErrorKind::Other.into()),
@@ -1177,8 +1177,10 @@ impl Core {
         if total > MAX_ROOM_BYTES || self.written > MAX_WRITTEN {
             return Err(Fail::Fatal("The campaign is bigger than sync handles (1 GB).".into()));
         }
+        // The author's time, not the download's: session times ("still going") come from file times.
+        let at = written_at(file.modified);
         if local_unchanged {
-            if !self.write_file(rel, &file.content)? {
+            if !self.write_file(rel, &file.content, at)? {
                 self.warn("Skipped a change to something that isn't a plain file here.");
                 return Ok(());
             }
@@ -1188,7 +1190,7 @@ impl Core {
             if self.conflicts > MAX_CONFLICTS {
                 return Err(Fail::Fatal("Too many sync conflicts at once; sync stopped to be safe.".into()));
             }
-            self.write_conflict_copy(rel, &file.content)?;
+            self.write_conflict_copy(rel, &file.content, at)?;
         }
         self.state.files.insert(rel.to_string(), entry);
         Ok(())
@@ -1277,12 +1279,19 @@ impl Core {
         }
     }
 
-    /// Writes a remote file through a temporary file and a rename in its folder. False when refused (see target).
-    fn write_file(&mut self, rel: &str, content: &[u8]) -> Result<bool, Fail> {
+    /// Writes a remote file through a temporary file and a rename in its folder, modified `at` when given. False when
+    /// refused (see target).
+    fn write_file(&mut self, rel: &str, content: &[u8], at: Option<SystemTime>) -> Result<bool, Fail> {
         let Some(target) = self.target(rel)? else { return Ok(false) };
         // A short name of its own: one built from the target's could pass the 255-byte limit the target is within.
         let tmp = target.with_file_name(format!(".lorekeeper-{}.tmp", &random_id()[..8]));
-        let written = fs::OpenOptions::new().write(true).create_new(true).open(&tmp).and_then(|mut f| f.write_all(content));
+        let written = fs::OpenOptions::new().write(true).create_new(true).open(&tmp).and_then(|mut f| {
+            f.write_all(content)?;
+            stamp(&f, at);
+            Ok(())
+        });
+        // The file may now have the size and time of the version the scan cache knows: hash it again.
+        self.cache.remove(rel);
         self.sink.wrote(&target);
         if let Err(e) = written.and_then(|_| fs::rename(&tmp, &target)) {
             let _ = fs::remove_file(&tmp);
@@ -1293,7 +1302,7 @@ impl Core {
     }
 
     /// Saves another player's version beside yours under a name that can't exist yet (create_new).
-    fn write_conflict_copy(&mut self, rel: &str, content: &[u8]) -> Result<(), Fail> {
+    fn write_conflict_copy(&mut self, rel: &str, content: &[u8], at: Option<SystemTime>) -> Result<(), Fail> {
         let when = chrono::Local::now().format("%Y-%m-%d %H%M").to_string();
         for n in 1..=100 {
             let name = conflict_name(rel, &when, n);
@@ -1302,6 +1311,7 @@ impl Core {
                 Ok(mut f) => {
                     self.sink.wrote(&target);
                     f.write_all(content)?;
+                    stamp(&f, at);
                     self.touched = true;
                     return Ok(());
                 }
@@ -1341,6 +1351,22 @@ impl Core {
             dir = d.parent();
         }
         Ok(())
+    }
+}
+
+/// When a downloaded version was last changed by its author: the blob's `modified` (unix ms, the author's file time
+/// when it went up). One in the future is now, so a skewed or hostile clock can't keep a session "going"; none (0, or
+/// nonsense) is None, and the file keeps the time it was written here.
+fn written_at(modified: i64) -> Option<SystemTime> {
+    let ms = u64::try_from(modified).ok().filter(|&ms| ms > 0)?;
+    Some(UNIX_EPOCH.checked_add(Duration::from_millis(ms))?.min(SystemTime::now()))
+}
+
+/// Sets a just-written file's modified time. Best effort: a file system that refuses keeps the download time, which
+/// must not stop sync.
+fn stamp(f: &fs::File, at: Option<SystemTime>) {
+    if let Some(at) = at {
+        let _ = f.set_modified(at);
     }
 }
 
