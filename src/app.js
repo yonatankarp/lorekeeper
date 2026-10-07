@@ -1218,7 +1218,8 @@ $("rename-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const from = renaming;
   const name = $("rename-name").value.trim();
-  const problem = badName(name);
+  // Never across the private line (Make private / Make shared ask first): the same rules as a drop, but the name's own.
+  const problem = badName(name) || moveProblem(from, $("rename-folder").value, []);
   if (problem) {
     $("rename-error").textContent = problem;
     return $("rename-name").focus();
