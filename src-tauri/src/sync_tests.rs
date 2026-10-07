@@ -451,7 +451,17 @@ async fn two_players_sync_through_the_server() {
     let rogue_invite = blocking(move || create_invite(&u, &r, &t, Role::Player, false)).await.unwrap().invite;
     let (u, r) = (url.clone(), room.room.clone());
     let rogue_token = blocking(move || redeem(&u, &r, &rogue_invite, "")).await.unwrap().token;
+    // The owner is offline meanwhile: the server keeps only each file's latest version, so an owner that puts Vex back
+    // before the member reads the rogue's delete would hide that delete (and its warning) from the member.
+    owner.stop().await;
     rogue_puts(&room, &rogue_token).await;
+    let expected = ["decrypted", "Ignored a deletion", "kind Lorekeeper doesn't sync"];
+    until("the member's warnings", || {
+        let warnings = member.rec.warnings.lock().unwrap();
+        expected.iter().all(|e| warnings.iter().any(|w| w.contains(e)))
+    })
+    .await;
+    let owner = start(&room, &owner_dir, &base.join("owner-state.json"), &owner_token, "Lorelei");
     // A garbage blob planted where a file doesn't exist yet: creating that file later still works.
     member.write("NPCs/Future.md", "planted over");
     until("a file created over a planted blob", || owner.read("NPCs/Future.md").as_deref() == Some("planted over")).await;
