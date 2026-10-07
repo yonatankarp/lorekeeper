@@ -1081,8 +1081,8 @@ function openRenameDialog(path, move = false) {
   $("rename-title").textContent = move ? "Move page" : "Rename page";
   $("rename-confirm").textContent = move ? "Move" : "Rename";
   $("rename-name").value = baseName(path);
-  // Only sessions go in Sessions/ (a page already there can stay).
-  const folders = ["", ...[...vault.folders].sort(naturally)].filter((f) => f === dirOf(path) || !/^sessions(\/|$)/i.test(f));
+  // Only sessions go in Sessions/ (a page already there can stay); Templates/ and Attachments/ aren't for pages, as in the tree.
+  const folders = ["", ...[...vault.folders].sort(naturally)].filter((f) => f === dirOf(path) || !/^(sessions|templates|attachments)(\/|$)/i.test(f));
   $("rename-folder").replaceChildren(...folders.map((f) => new Option(f || "Top level", f, false, f === dirOf(path))));
   $("rename-error").textContent = "";
   $("rename-dialog").showModal();
