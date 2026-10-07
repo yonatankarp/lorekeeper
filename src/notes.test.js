@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, timeline, toHtml } from "./notes.js";
+import { insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, privateNote, removeLine, sessions, timeline, toHtml } from "./notes.js";
+
+test("a quick note starting with ~ is private, and keeps its prefix for filing", () => {
+  assert.deepEqual(privateNote("~@Halia lies"), { private: true, text: "@Halia lies" });
+  assert.deepEqual(privateNote("  ~ the gem is fake"), { private: true, text: " the gem is fake" });
+  assert.deepEqual(privateNote("@Halia ~ lies"), { private: false, text: "@Halia ~ lies" });
+  assert.deepEqual(privateNote("plain"), { private: false, text: "plain" });
+});
+
+test("the Journal marks private notes, from your Private/ file or a DM's copy", () => {
+  const parts = [
+    { path: "Sessions/Session 4/Arn.md", content: "- 20:00 @Vex arrives" },
+    { path: "Private/Sessions/Session 4/Arn.md", content: "- 20:01 @Vex is lying" },
+  ];
+  const { groups } = parseMerged(parts, []);
+  assert.deepEqual(groups.npc, ["Vex arrives ([[Arn|Arn]])", { text: "Vex is lying ([[Arn|Arn]])", lock: true, path: "Private/Sessions/Session 4/Arn.md" }]);
+  const html = toHtml({ title: "", groups }, undefined, (item) => (item.path.startsWith("Private/") ? "<i>lock</i>" : ""));
+  assert.ok(html.includes("<li>Vex is lying (Arn)<i>lock</i></li>") && html.includes("<li>Vex arrives (Arn)</li>"), html);
+  assert.equal(mergeTimelines(parts)[1].path, "Private/Sessions/Session 4/Arn.md");
+});
 import { pages } from "./vault.js";
 
 const md = `---

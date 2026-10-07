@@ -109,29 +109,61 @@ export const openQuests = (notes) =>
 export const sessionPaths = (notes) =>
   notes.map((n) => n.path).filter((p) => p.startsWith("Sessions/")).sort((a, b) => naturally(baseName(b), baseName(a)));
 
+// ---------- private notes (sync.rs): your own in Private/, a DM's read-only copies of the players' in .lorekeeper/dm/ ----------
+
+const DM_COPY = /^\.lorekeeper\/dm\/([a-z2-7]{26})\//;
+
+/** A DM's copy of a player's private note: ".lorekeeper/dm/<member id>/NPCs/Vex.md". Read-only. */
+export const isDmCopy = (path) => DM_COPY.test(path);
+
+/** The member id whose private note a DM copy is; "" for any other path. */
+export const dmCopyOf = (path) => path.match(DM_COPY)?.[1] ?? "";
+
+/** Your own private notes ("Private/...", synced to your private space only) and a DM's copies of the players'. */
+export const isPrivate = (path) => path.startsWith("Private/") || isDmCopy(path);
+
+/** A path without its private prefix: "Private/NPCs/Vex.md" and ".lorekeeper/dm/<id>/NPCs/Vex.md" are "NPCs/Vex.md". */
+export const unprivate = (path) => path.replace(/^Private\//, "").replace(DM_COPY, "");
+
+/**
+ * Who reads your private notes in a campaign (its sharing settings), as every label says it: the server's last word on
+ * the campaign's setting (sync.rs Access), so it's always the truth. "" outside a shared campaign. A campaign on a
+ * server that hasn't said yet (just joined, offline) may let the DM read them, and a `~` note written now goes up once
+ * it connects, so it says so; only the owner changes the setting, which starts off, so their own campaign is the exception.
+ */
+export function privateLabel(sharing) {
+  if (!sharing?.shared) return "";
+  const dmReads = sharing.access ? sharing.access.dmReadsPrivate : !!sharing.room && sharing.role !== "owner";
+  return dmReads ? "Private: you and the DM" : "Private: only you";
+}
+
 // ---------- shared sessions: Sessions/Session N/ holds one file per player (lib.rs start_file) ----------
 
 const SESSION_FOLDER = /^Sessions\/Session \d+$/i;
 const SESSION_PART = /^(Sessions\/Session \d+)(?:\.md|\/[^/]+\.md)$/i;
+/** A private file in a session: yours ("Private/Sessions/Session 4/Sibling 5.md") or a DM's copy of a player's. */
+const PRIVATE_PART = /^(?:Private\/|\.lorekeeper\/dm\/[a-z2-7]{26}\/)(Sessions\/Session \d+)\/[^/]+\.md$/;
 
 /** Whether `path` is a shared session's folder ("Sessions/Session 4"). */
 export const isSessionFolder = (path) => SESSION_FOLDER.test(path);
 
-/** A player's file's author: "Sessions/Session 4/Sibling 5.md" is Sibling 5's; "" for any other path. */
-export const authorOf = (path) => (/^Sessions\/Session \d+\/[^/]+\.md$/i.test(path) ? baseName(path) : "");
+/** A player's file's author: "Sessions/Session 4/Sibling 5.md" (or a private one) is Sibling 5's; "" for any other path. */
+export const authorOf = (path) => (/^Sessions\/Session \d+\/[^/]+\.md$/i.test(path) || PRIVATE_PART.test(path) ? baseName(path) : "");
 
 /**
  * The pages the app shows for the notes on disk (`files`, [{ path, content }]) and the vault's `folders`. A shared session's
  * folder is one page, "Sessions/Session 4", made of its players' files (plus a Session 4.md written next to it); a sync
  * conflict's copy among them is left out (see syncConflicts). Everything else is its own page, the same object.
- * A session page: { path, parts, content }, parts being the files and content their text in one (frontmatter from the
- * first, then each body), so links, backlinks, search and the sessions list work on it like on any page.
+ * A session page: { path, parts, private, content }, parts being the files and content their text in one (frontmatter
+ * from the first, then each body), so links, backlinks, search and the sessions list work on it like on any page.
+ * `private` holds the private files of that session (yours, and a DM's copies of the players'): shown in its timeline
+ * with a lock, never in its content, and still pages of their own.
  */
 export function pages(files, folders = []) {
   const copies = new Set(syncConflicts(files.map((f) => f.path)).map((c) => c.path));
   const ids = new Set(folders.filter(isSessionFolder));
   for (const f of files) {
-    const id = f.path.match(SESSION_PART)?.[1];
+    const id = f.path.match(SESSION_PART)?.[1] ?? f.path.match(PRIVATE_PART)?.[1];
     if (id && f.path !== `${id}.md`) ids.add(id);
   }
   const partOf = (f) => {
@@ -141,9 +173,11 @@ export function pages(files, folders = []) {
   const out = files.filter((f) => !partOf(f));
   for (const id of ids) {
     const parts = files.filter((f) => partOf(f) === id && !copies.has(f.path)).sort((a, b) => naturally(a.path, b.path)); // Session 4.md first
+    const secret = files.filter((f) => f.path.match(PRIVATE_PART)?.[1] === id && !copies.has(f.path)).sort((a, b) => naturally(a.path, b.path));
     out.push({
       path: id,
       parts,
+      private: secret,
       get content() {
         const date = parts.map((p) => splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "date")?.[1]).find(Boolean);
         const head = `---\nsession: ${id.replace(/^.* /, "")}\n${date ? `date: ${date}\n` : ""}---\n`;
@@ -275,7 +309,10 @@ export const keepsPlace = (path) => /^Sessions\/Session \d+(\.md|\/|$)/i.test(pa
 export function moveProblem(from, folder, paths) {
   if (keepsPlace(from)) return SESSIONS_STAY;
   if (/^sessions(\/|$)/i.test(folder) && !/^sessions\//i.test(from)) return "Only sessions go in Sessions/.";
+  if (isDmCopy(from)) return "A player's private note is read-only here.";
   const to = movedPath(from, folder);
+  // Into or out of Private/ goes through Make private / Make shared, which say who will see it.
+  if (isPrivate(from) !== isPrivate(to) || isDmCopy(to)) return isPrivate(from) ? "Use Make shared to share a private page." : "Use Make private to make a page private.";
   if (to !== from && paths.some((p) => p.toLowerCase() === to.toLowerCase())) return `${folder || "The top level"} already has a page named ${baseName(from)}.`;
   return "";
 }

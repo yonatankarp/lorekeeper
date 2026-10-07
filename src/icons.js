@@ -16,6 +16,8 @@ const PATHS = {
   location: `<path d="M3.5 14.5V2.5H5.5V4.5h1.5v-2h2v2h1.5v-2h2v12z"/><path d="M6.8 14.5v-2.8a1.2 1.2 0 0 1 2.4 0v2.8"/>`,
   // round potion flask
   item: `<path d="M6.3 1.5h3.4M7 1.5v4.1a4.5 4.5 0 1 0 2 0V1.5"/><path d="M4 10.5h8"/>`,
+  // padlock: private notes
+  lock: `<rect x="3.5" y="7" width="9" height="7.5" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/><circle cx="8" cy="10.6" r=".9" fill="currentColor"/>`,
   // pennant on a pole
   faction: `<path d="M3.5 14.5v-13M3.5 2.5h9l-2 3 2 3h-9"/>`,
   // closed tome with a clasp

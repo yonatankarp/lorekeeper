@@ -17,9 +17,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sync_protocol::{
-    content_hash, decode_blob, decode_secret, encode_blob, file_id, open, open_member, random_id, seal, seal_member, Change,
-    ClientMessage, CreateRoomResponse, FileContent, InviteInfo, MemberInfo, RedeemResponse, Role, ServerMessage,
-    CREATE_KEY_HEADER, SECRET_LEN,
+    content_hash, decode_blob, decode_secret, encode_blob, file_id, is_id, open, open_member, open_private, private_file_id,
+    random_id, seal, seal_member, Change, ClientMessage, CreateRoomResponse, FileContent, InviteInfo, MemberInfo,
+    PresenceMember, RedeemResponse, Role, ServerMessage, Space, CREATE_KEY_HEADER, SECRET_LEN,
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, protocol::WebSocketConfig, Message};
@@ -30,6 +30,13 @@ use zeroize::Zeroizing;
 pub const DEFAULT_SERVER: &str = "https://lorekeeper.yonatankarp.com";
 /// The one hidden file that syncs: `{"name": ...}`, written by the owner on Share, so joiners learn the name.
 pub const METADATA: &str = ".lorekeeper/campaign.json";
+/// Your private notes: this top-level folder (exactly this name) syncs into your own private space on the server.
+pub const PRIVATE: &str = "Private/";
+/// Other players' private notes, for a DM who may read them: `.lorekeeper/dm/<member id>/<path>`, read-only copies
+/// that never sync back (hidden, so backups and the vault walk skip them too).
+pub const DM_COPIES: &str = ".lorekeeper/dm/";
+/// The players' names for the DM copies' folders: `{"<member id>": "<PC name>"}`.
+pub const DM_NAMES: &str = ".lorekeeper/dm/players.json";
 /// The server's default blob limit (decoded `nonce || ciphertext || tag`).
 const MAX_BLOB: usize = 30 * 1024 * 1024;
 /// Bigger files aren't synced: their content goes into the blob as base64, inside JSON.
@@ -58,17 +65,49 @@ const MAX_PRESENCE: usize = 64;
 
 // ---------- what syncs ----------
 
-/// Whether a path inside the campaign syncs: Markdown pages and images (the same list as the app) with names that
-/// are safe on every system, never hidden files (except [`METADATA`]), the shared Templates/ folder, or sync
-/// conflict copies. Used for local files and for every path that arrives from the network.
+/// Whether a local path syncs (goes up): a shared file (see [`syncs_shared`]) or one of your private notes,
+/// `Private/<path>` with a path that [`syncs_private`].
 pub(crate) fn syncs(rel: &str) -> bool {
+    matches!(place(rel), Some(Place::Shared | Place::Own(_)))
+}
+
+/// Where a local path belongs: the shared files, your private space (the path inside `Private/`), or a DM's copy of
+/// another member's private file (their id and the path inside their `Private/`). None for anything that doesn't sync.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Place<'a> {
+    Shared,
+    Own(&'a str),
+    Copy(&'a str, &'a str),
+}
+
+pub(crate) fn place(rel: &str) -> Option<Place<'_>> {
+    if let Some(inner) = rel.strip_prefix(PRIVATE) {
+        return syncs_private(inner).then_some(Place::Own(inner));
+    }
+    if let Some((member, inner)) = rel.strip_prefix(DM_COPIES).and_then(|r| r.split_once('/')) {
+        return (is_id(member) && syncs_private(inner)).then_some(Place::Copy(member, inner));
+    }
+    syncs_shared(rel).then_some(Place::Shared)
+}
+
+/// A path inside someone's `Private/` that syncs: what a shared path may be, except the metadata file.
+pub(crate) fn syncs_private(inner: &str) -> bool {
+    inner != METADATA && syncs_shared(inner) && inner.len() + DM_COPIES.len() + 27 <= MAX_PATH
+}
+
+/// Whether a shared path syncs: Markdown pages and images (the same list as the app) with names that are safe on every
+/// system, never hidden files (except [`METADATA`]), the shared Templates/ folder, a top-level folder that a
+/// case-insensitive disk takes for `Private/` (so another player can never write into your private notes), or sync
+/// conflict copies. Used for local files and for every shared path that arrives from the network.
+pub(crate) fn syncs_shared(rel: &str) -> bool {
     if rel == METADATA {
         return true;
     }
     let parts: Vec<&str> = rel.split('/').collect();
-    let names_ok = parts.iter().all(|p| p.len() <= 255 && !p.starts_with('.') && crate::restore::safe_part(p, true) && !deceptive(p));
+    let names_ok = parts.iter().all(|p| p.len() <= 255 && !folded(p).starts_with('.') && crate::restore::safe_part(p, true) && !deceptive(p));
     // Templates/ in any case: macOS and Windows would find the real one under "templates/" (APFS even "Templateſ/").
-    if rel.len() > MAX_PATH || !names_ok || folded(parts[0]) == "templates" {
+    // The same goes for Private/.
+    if rel.len() > MAX_PATH || !names_ok || matches!(folded(parts[0]).as_str(), "templates" | "private") {
         return false;
     }
     let name = parts[parts.len() - 1];
@@ -77,8 +116,12 @@ pub(crate) fn syncs(rel: &str) -> bool {
 }
 
 /// A name as case-insensitive file systems compare it, near enough: `TEMPLATES`, `templates` and `Templateſ` agree.
+/// HFS+ also skips some invisible characters when it compares names (the ones Git's `.git` checks skip), so
+/// `Pri<U+200C>vate` is `Private` there: a teammate's shared file under that name would land in your private notes,
+/// and your private file would go back up under it, shared.
 pub(crate) fn folded(name: &str) -> String {
-    name.to_uppercase().to_lowercase()
+    let visible = |c: &char| !matches!(c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}');
+    name.chars().filter(visible).collect::<String>().to_uppercase().to_lowercase()
 }
 
 /// A name that shows as something else (bidi controls reorder it) or that Windows may read as another file's short
@@ -137,7 +180,25 @@ pub(crate) fn folder_name(name: &str) -> Option<String> {
 pub(crate) struct State {
     /// The last seq received in `changes`/`change` (never from an ack: others' earlier writes may still be coming).
     pub seq: u64,
+    /// Local path (`Private/...` and `.lorekeeper/dm/...` included) -> what last synced.
     pub files: BTreeMap<String, Entry>,
+    /// Your member id, from the server's access message; your private files' ids are made with it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub member_id: String,
+    /// You read other members' private notes and have all of them up to `seq` (a DM whose room allows it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dm: bool,
+}
+
+impl State {
+    /// The file id of a local path; None for one that doesn't sync, or a private one before your member id is known.
+    pub(crate) fn id_for(&self, key: &[u8; SECRET_LEN], rel: &str) -> Option<String> {
+        match place(rel)? {
+            Place::Shared => Some(file_id(key, rel)),
+            Place::Own(inner) => is_id(&self.member_id).then(|| private_file_id(key, &self.member_id, inner)),
+            Place::Copy(member, inner) => Some(private_file_id(key, member, inner)),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -161,8 +222,9 @@ const UNSYNCED: &str = "00000000000000000000000000000000000000000000000000000000
 pub(crate) fn load_state(file: &Path, key: &[u8; SECRET_LEN]) -> State {
     let Some(state) = fs::read(file).ok().and_then(|b| serde_json::from_slice::<State>(&b).ok()) else { return State::default() };
     let valid = state.files.len() <= MAX_FILES
+        && (state.member_id.is_empty() || is_id(&state.member_id))
         && state.files.iter().all(|(path, e)| {
-            syncs(path) && e.id == file_id(key, path) && e.hash.len() == 64 && e.hash.bytes().all(|b| b.is_ascii_hexdigit())
+            state.id_for(key, path).as_ref() == Some(&e.id) && e.hash.len() == 64 && e.hash.bytes().all(|b| b.is_ascii_hexdigit())
         });
     if valid { state } else { State::default() }
 }
@@ -191,6 +253,29 @@ pub trait Sink: Send + Sync + 'static {
     fn wrote(&self, path: &Path);
     /// Remote changes landed on disk: refresh what's shown.
     fn changed(&self);
+    /// Your role and the room's private-notes setting, from the server: after each connect and whenever they change.
+    fn access(&self, access: &Access);
+}
+
+/// What the server says about you (its `access` message), for truthful labels and the owner's controls.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    /// Your member id (not a secret: presence shows it to the party), to tell you apart in the players list.
+    pub member_id: String,
+    pub role: Role,
+    pub manage: bool,
+    /// You're the owner and said you're also the DM.
+    #[serde(default)]
+    pub owner_is_dm: bool,
+    pub dm_reads_private: bool,
+}
+
+impl Access {
+    /// You receive other members' private notes (see sync_protocol::Role::reads_private).
+    pub fn reads_private(&self) -> bool {
+        self.role.reads_private(self.owner_is_dm, self.dm_reads_private)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -203,6 +288,8 @@ pub enum Status {
     Offline,
     /// The owner removed this player (or the room is gone): sync stopped for good, local files kept.
     Removed,
+    /// A re-invite made another computer this member: sync stopped here for good, local files kept.
+    Replaced,
     /// Sync stopped and won't retry; `reason` says why.
     Stopped { reason: String },
 }
@@ -252,6 +339,7 @@ enum End {
     Stop,
     Dropped,
     Removed,
+    Replaced,
     Fatal(String),
 }
 
@@ -263,6 +351,7 @@ enum Local {
     File(Vec<u8>, SystemTime),
 }
 
+/// A write in flight, by local path (its id comes from the path, see State::id_for).
 enum Flight {
     Put { path: String, hash: String, len: u64 },
     Delete { path: String },
@@ -319,6 +408,13 @@ struct Core {
     conflicts: usize,
     last_status: Option<Status>,
     saved: Instant,
+    /// What the server said about you on this connection; None until it does. Private files only go up after it
+    /// (a server that sends none doesn't know private spaces and would store them as shared).
+    access: Option<Access>,
+    /// You read others' private notes (this connection's last access message).
+    reads: bool,
+    /// The players' names last written to DM_NAMES.
+    names: BTreeMap<String, String>,
 }
 
 async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<Cmd>) {
@@ -339,10 +435,15 @@ async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<C
             Err(Some(401)) => End::Removed,
             Err(_) => End::Dropped,
         };
+        if matches!(end, End::Removed | End::Replaced) {
+            // Other members' private notes aren't this computer's to keep any more.
+            core.drop_copies(None);
+        }
         core.save();
         match end {
             End::Stop => return,
             End::Removed => return core.report(&Status::Removed),
+            End::Replaced => return core.report(&Status::Replaced),
             End::Fatal(reason) => return core.report(&Status::Stopped { reason }),
             End::Dropped => core.report(&Status::Offline),
         }
@@ -397,6 +498,9 @@ impl Core {
             conflicts: 0,
             last_status: None,
             saved: Instant::now(),
+            access: None,
+            reads: false,
+            names: BTreeMap::new(),
         }
     }
 
@@ -424,7 +528,11 @@ impl Core {
     async fn session(&mut self, mut ws: Ws, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> End {
         // Each connection starts from the state on disk; anything applied twice is caught by the hashes.
         self.seen = self.state.files.values().map(|e| (e.id.clone(), e.seq)).collect();
-        let hello = ClientMessage::Hello { since: self.state.seq, member: self.member.clone() };
+        self.access = None;
+        // Until we know we hold every private note we may read (state.dm), ask for others' from the start: a DM who
+        // gained access while offline gets them all. The server sends none to anyone who may not read them.
+        let full = !self.state.dm;
+        let hello = ClientMessage::Hello { since: self.state.seq, member: self.member.clone(), dm_since: full.then_some(0) };
         if send(&mut ws, &hello).await.is_err() {
             return End::Dropped;
         }
@@ -456,14 +564,24 @@ impl Core {
                         Message::Text(text) => {
                             // Unknown messages are ignored, so a newer server can add some.
                             if let Ok(m) = serde_json::from_str::<ServerMessage>(text.as_str()) {
+                                let replay_end = matches!(m, ServerMessage::Changes { more: false, .. });
                                 if let Err(end) = self.handle(m, &mut s) {
                                     return end;
+                                }
+                                // A full replay (dm_since 0) for someone who reads private notes: they're all here.
+                                if replay_end && full && self.reads && !self.state.dm {
+                                    self.state.dm = true;
+                                    self.dirty = true;
                                 }
                                 s.rescan |= std::mem::take(&mut self.repair);
                             }
                         }
                         Message::Close(frame) => {
-                            return if frame.is_some_and(|f| u16::from(f.code) == 4001) { End::Removed } else { End::Dropped };
+                            return match frame.map(|f| u16::from(f.code)) {
+                                Some(4001) => End::Removed,
+                                Some(4002) => End::Replaced,
+                                _ => End::Dropped,
+                            };
                         }
                         _ => {}
                     }
@@ -530,21 +648,30 @@ impl Core {
                         let name: String = name.chars().filter(|c| !c.is_control()).take(60).collect();
                         if !name.trim().is_empty() {
                             name
-                        } else if m.role == Role::Owner {
-                            "the owner".into()
                         } else {
-                            "a player".into()
+                            match m.role {
+                                Role::Owner => "the owner".into(),
+                                Role::Dm => "the DM".into(),
+                                Role::Player => "a player".into(),
+                            }
                         }
                     })
                     .collect();
                 names.sort_by_key(|n| n.to_lowercase());
                 self.sink.presence(&names);
+                // A player who joined after the DM's last access message names their PC in their hello: presence is
+                // where a DM who reads private notes learns it.
+                if self.reads {
+                    let mut known = self.names.clone();
+                    known.extend(self.decrypted_names(&members).into_iter().filter(|(_, n)| !n.is_empty()));
+                    self.store_names(known).map_err(|_| End::Dropped)?;
+                }
             }
             ServerMessage::Ack { req, seq } => match s.inflight.remove(&req).inspect(|f| {
                 s.retries.remove(f.path());
             }) {
                 Some(Flight::Put { path, hash, len }) => {
-                    let id = file_id(&self.cfg.key, &path);
+                    let Some(id) = self.state.id_for(&self.cfg.key, &path) else { return Ok(()) };
                     if self.seen.get(&id).is_none_or(|&s| s < seq) {
                         self.seen.insert(id.clone(), seq);
                         self.state.files.insert(path, Entry { id, seq, hash, len, gone: false });
@@ -552,7 +679,7 @@ impl Core {
                     }
                 }
                 Some(Flight::Delete { path }) => {
-                    let id = file_id(&self.cfg.key, &path);
+                    let Some(id) = self.state.id_for(&self.cfg.key, &path) else { return Ok(()) };
                     if self.seen.get(&id).is_none_or(|&s| s < seq) {
                         self.seen.insert(id.clone(), seq);
                         self.state.files.insert(path, Entry { id, seq, hash: UNSYNCED.into(), len: 0, gone: true });
@@ -564,8 +691,10 @@ impl Core {
             ServerMessage::Conflict { req, seq, blob } => {
                 if let Some(f) = s.inflight.remove(&req) {
                     let path = f.path().to_string();
-                    let id = file_id(&self.cfg.key, &path);
-                    self.apply(Change { id: id.clone(), seq, blob }, false)?;
+                    let Some(id) = self.state.id_for(&self.cfg.key, &path) else { return Ok(()) };
+                    // A conflict is about our own write: a private one's current version is in our own space.
+                    let author = matches!(place(&path), Some(Place::Own(_))).then(|| self.state.member_id.clone());
+                    self.apply(Change { id: id.clone(), seq, blob, author }, false)?;
                     // Whatever that version was (even one not from the party, or one already seen), the next push
                     // builds on it.
                     match self.state.files.get_mut(&path) {
@@ -613,8 +742,141 @@ impl Core {
             }
             // An error without a request (a refused hello): try again later.
             ServerMessage::Error { req: None, .. } => return Err(End::Dropped),
+            ServerMessage::Access { member_id, role, manage, owner_is_dm, dm_reads_private, members } => {
+                self.on_access(Access { member_id, role, manage, owner_is_dm, dm_reads_private }, members)?;
+            }
             ServerMessage::Pong => {}
         }
+        Ok(())
+    }
+
+    /// The server's access message: who you are (your private files' ids depend on it), whether you read others'
+    /// private notes (copies you may no longer read are deleted at once), and who the members are.
+    fn on_access(&mut self, access: Access, members: Vec<PresenceMember>) -> Result<(), End> {
+        // Untrusted: a malformed id is ignored with everything in the message.
+        if !is_id(&access.member_id) {
+            return Ok(());
+        }
+        if self.state.member_id != access.member_id {
+            // Another identity than the one this state was made with: its private entries (and any copies) don't
+            // belong to it. The files stay; yours go up again under the new id.
+            if !self.state.member_id.is_empty() {
+                self.state.files.retain(|p, _| matches!(place(p), Some(Place::Shared)));
+                self.drop_copies(None);
+            }
+            self.state.member_id = access.member_id.clone();
+            self.dirty = true;
+        }
+        self.reads = access.reads_private();
+        if self.reads {
+            let ids: HashSet<String> = members.iter().take(MAX_PRESENCE).filter(|m| is_id(&m.member_id)).map(|m| m.member_id.clone()).collect();
+            self.drop_copies(Some(&ids));
+            self.write_names(&members).map_err(|_| End::Dropped)?;
+        } else {
+            self.drop_copies(None);
+            if self.state.dm {
+                self.state.dm = false;
+                self.dirty = true;
+            }
+        }
+        if self.access.as_ref() != Some(&access) {
+            self.sink.access(&access);
+        }
+        self.access = Some(access);
+        Ok(())
+    }
+
+    /// Deletes the DM copies of members not in `keep` (all of them for None), and forgets them, so they come again
+    /// if access returns. Never through a symlink.
+    fn drop_copies(&mut self, keep: Option<&HashSet<String>>) {
+        let gone = |p: &str| match place(p) {
+            Some(Place::Copy(member, _)) => keep.is_none_or(|k| !k.contains(member)),
+            _ => false,
+        };
+        let dropped: Vec<String> = self.state.files.keys().filter(|p| gone(p)).cloned().collect();
+        for p in &dropped {
+            if let Some(e) = self.state.files.remove(p) {
+                self.seen.remove(&e.id);
+            }
+            self.dirty = true;
+        }
+        let root = DM_COPIES.trim_end_matches('/');
+        let folders = match keep {
+            None => vec![root.to_string()],
+            Some(keep) => {
+                let Ok(Some(dir)) = self.real_dir(root) else { return };
+                let names = fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok());
+                names.filter(|n| is_id(n) && !keep.contains(n)).map(|n| format!("{root}/{n}")).collect()
+            }
+        };
+        for folder in folders {
+            if let Ok(Some(dir)) = self.real_dir(&folder) {
+                self.sink.wrote(&dir);
+                if fs::remove_dir_all(&dir).is_ok() {
+                    self.touched = true;
+                }
+            }
+        }
+        if keep.is_none() {
+            self.names.clear();
+            // None left: the next connection asks for every private note again, should access come back.
+            if self.state.dm {
+                self.state.dm = false;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// `rel` as a real folder under the campaign, no symlink on the way; None when it isn't one.
+    fn real_dir(&self, rel: &str) -> io::Result<Option<PathBuf>> {
+        let mut path = self.root.clone();
+        for part in rel.split('/') {
+            path.push(part);
+            match fs::symlink_metadata(&path) {
+                Ok(m) if m.is_dir() => {}
+                Ok(_) => return Ok(None),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Some(path))
+    }
+
+    /// Writes the members' PC names (decrypted, as presence shows them) for the DM copies' folders, when they changed.
+    fn write_names(&mut self, members: &[PresenceMember]) -> io::Result<()> {
+        // Keep a name already known when the server only has the empty display id a fresh join starts with.
+        let mut names = self.decrypted_names(members);
+        for (id, name) in names.iter_mut().filter(|(_, n)| n.is_empty()) {
+            *name = self.names.get(id).cloned().unwrap_or_default();
+        }
+        self.store_names(names)
+    }
+
+    /// Other members' PC names, decrypted (untrusted: at most MAX_PRESENCE, valid ids, short and without controls).
+    fn decrypted_names(&self, members: &[PresenceMember]) -> BTreeMap<String, String> {
+        members
+            .iter()
+            .take(MAX_PRESENCE)
+            .filter(|m| is_id(&m.member_id) && m.member_id != self.state.member_id && m.member.len() <= 512)
+            .map(|m| {
+                let name = open_member(&self.cfg.key, &self.cfg.room, &m.member).unwrap_or_default();
+                (m.member_id.clone(), name.chars().filter(|c| !c.is_control()).take(60).collect())
+            })
+            .collect()
+    }
+
+    /// Writes DM_NAMES when the names changed.
+    fn store_names(&mut self, names: BTreeMap<String, String>) -> io::Result<()> {
+        if names == self.names || names.len() > MAX_PRESENCE {
+            return Ok(());
+        }
+        let json = serde_json::to_vec(&names).expect("names serialize");
+        match self.write_file(DM_NAMES, &json) {
+            Ok(_) => {}
+            Err(Fail::Io(e)) => return Err(e),
+            Err(Fail::Fatal(_)) => return Err(io::ErrorKind::Other.into()),
+        }
+        self.names = names;
         Ok(())
     }
 
@@ -686,15 +948,24 @@ impl Core {
         if lost_metadata {
             self.warn("The campaign folder looks incomplete, so deletions aren't synced.");
         } else {
-            out.extend(self.state.files.iter().filter(|(p, e)| !e.gone && !disk.contains_key(*p)).map(|(p, _)| p.clone()));
+            // DM copies aren't on the disk list (they never go up): their absence is no deletion.
+            let pushed = |p: &str| matches!(place(p), Some(Place::Shared | Place::Own(_)));
+            out.extend(self.state.files.iter().filter(|(p, e)| !e.gone && !disk.contains_key(*p) && pushed(p)).map(|(p, _)| p.clone()));
         }
         Ok(out)
     }
 
     /// The message for one queued path, worked out now (the file may have changed since the scan).
     fn prepare(&mut self, path: &str, req: u64) -> Option<(ClientMessage, Flight)> {
+        // What goes into the blob, and where: a private file only once this connection's server said who we are.
+        let (inner, space) = match place(path)? {
+            Place::Shared => (path, Space::Shared),
+            Place::Own(inner) if self.access.is_some() => (inner, Space::Private),
+            _ => return None,
+        };
+        let id = self.state.id_for(&self.cfg.key, path)?;
         let entry = self.state.files.get(path);
-        let (id, base) = (file_id(&self.cfg.key, path), entry.map_or(0, |e| e.seq));
+        let base = entry.map_or(0, |e| e.seq);
         match self.read_local(path) {
             Ok(Local::File(content, modified)) => {
                 let hash = content_hash(&content);
@@ -703,22 +974,22 @@ impl Core {
                 }
                 let len = content.len() as u64;
                 let modified = modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-                let file = FileContent { path: path.to_string(), content, modified, deleted: false };
+                let file = FileContent { path: inner.to_string(), content, modified, deleted: false };
                 let sealed = seal(&self.cfg.key, &self.cfg.room, &id, &file);
                 if sealed.len() > MAX_BLOB {
                     self.skipped.insert((path.to_string(), hash));
                     self.warn("A file is over the sync size limit (about 22 MB) and stays on this computer only.");
                     return None;
                 }
-                let msg = ClientMessage::Put { req, id, base, blob: encode_blob(&sealed) };
+                let msg = ClientMessage::Put { req, id, base, blob: encode_blob(&sealed), space };
                 Some((msg, Flight::Put { path: path.to_string(), hash, len }))
             }
             // Deleted here: an encrypted tombstone, never the server's own delete (which anyone with a token
             // could send, so other players ignore it).
             Ok(Local::Missing) if entry.is_some_and(|e| !e.gone) && self.root.is_dir() && path != METADATA => {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-                let blob = encode_blob(&seal(&self.cfg.key, &self.cfg.room, &id, &FileContent::tombstone(path, now)));
-                Some((ClientMessage::Put { req, id, base, blob }, Flight::Delete { path: path.to_string() }))
+                let blob = encode_blob(&seal(&self.cfg.key, &self.cfg.room, &id, &FileContent::tombstone(inner, now)));
+                Some((ClientMessage::Put { req, id, base, blob, space }, Flight::Delete { path: path.to_string() }))
             }
             _ => None,
         }
@@ -732,10 +1003,10 @@ impl Core {
             // An id the state doesn't know needs nothing when its version isn't the party's, and isn't remembered,
             // so a server can't grow memory with made-up ids.
             let mut remember = true;
-            let result = match c.blob.as_deref().map(|blob| self.open_blob(&c.id, blob)) {
-                Some(Some(file)) if !file.deleted => self.remote_put(file, &c.id, c.seq),
+            let result = match c.blob.as_deref().map(|blob| self.open_blob(&c.id, blob, c.author.as_deref())) {
+                Some(Some((rel, file))) if !file.deleted => self.remote_put(&rel, file, &c.id, c.seq),
                 // The metadata file is never deleted: joiners need it, and its absence pauses deletions.
-                Some(Some(file)) if file.path != METADATA => self.remote_delete(&file.path, &c.id, c.seq),
+                Some(Some((rel, _))) if rel != METADATA => self.remote_delete(&rel, &c.id, c.seq),
                 // Not sealed by the party: a server-side delete (anyone with a token can send one) or a blob that
                 // doesn't open. Local files stay as they are, and yours goes back up over it.
                 untrusted => {
@@ -778,45 +1049,62 @@ impl Core {
         Ok(())
     }
 
-    /// Decrypts a change and checks it: its id must be its path's, and the path must be one that syncs. Anything
-    /// else is skipped with a warning that names no file.
-    fn open_blob(&mut self, id: &str, blob: &str) -> Option<FileContent> {
+    /// Decrypts a change and checks it: its id must be its path's (for a private file, made with its author's member
+    /// id), and the path must be one that syncs. Returns where it goes here: a shared path, `Private/<path>` for your
+    /// own private file, or `.lorekeeper/dm/<author>/<path>` for another member's when you read them (anyone else's is
+    /// dropped: a server must not send it). Anything else is skipped with a warning that names no file.
+    fn open_blob(&mut self, id: &str, blob: &str, author: Option<&str>) -> Option<(String, FileContent)> {
+        let mine = author.is_some_and(|a| a == self.state.member_id && self.access.is_some());
+        if author.is_some() && !mine && !self.reads {
+            return None;
+        }
         let Some(bytes) = (blob.len() <= MAX_FRAME).then(|| decode_blob(blob).ok()).flatten() else {
             self.warn("Skipped a change that couldn't be read.");
             return None;
         };
-        // open() also checks that the path inside is safe and is the one the id was made from.
-        let Ok(file) = open(&self.cfg.key, &self.cfg.room, id, &bytes) else {
+        // open() and open_private() also check that the path inside is safe and is the one the id was made from.
+        let opened = match author {
+            None => open(&self.cfg.key, &self.cfg.room, id, &bytes),
+            Some(a) => open_private(&self.cfg.key, &self.cfg.room, a, id, &bytes),
+        };
+        let Ok(file) = opened else {
             self.warn("Skipped a change that couldn't be decrypted; it didn't come from anyone in the party.");
             return None;
         };
-        if !syncs(&file.path) {
-            self.warn("Skipped a file of a kind Lorekeeper doesn't sync.");
-            return None;
-        }
-        Some(file)
+        let rel = match author {
+            None if syncs_shared(&file.path) => file.path.clone(),
+            Some(_) if mine && syncs_private(&file.path) => format!("{PRIVATE}{}", file.path),
+            Some(a) if syncs_private(&file.path) => format!("{DM_COPIES}{a}/{}", file.path),
+            _ => {
+                self.warn("Skipped a file of a kind Lorekeeper doesn't sync.");
+                return None;
+            }
+        };
+        Some((rel, file))
     }
 
-    fn remote_put(&mut self, file: FileContent, id: &str, seq: u64) -> Result<(), Fail> {
+    fn remote_put(&mut self, rel: &str, file: FileContent, id: &str, seq: u64) -> Result<(), Fail> {
         let _guard = crate::WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A DM copy is read-only here: always the author's latest, never a conflict.
+        let copy = matches!(place(rel), Some(Place::Copy(..)));
         let hash = content_hash(&file.content);
         let len = file.content.len() as u64;
         let entry = Entry { id: id.to_string(), seq, hash: hash.clone(), len, gone: false };
-        let synced_hash = self.state.files.get(&file.path).filter(|e| !e.gone).map(|e| e.hash.clone());
-        let local_unchanged = match self.read_local(&file.path)? {
+        let synced_hash = self.state.files.get(rel).filter(|e| !e.gone).map(|e| e.hash.clone());
+        let local_unchanged = match self.read_local(rel)? {
             Local::NotRegular => {
                 self.warn("Skipped a change to something that isn't a plain file here.");
                 return Ok(());
             }
             Local::File(bytes, _) if content_hash(&bytes) == hash => {
-                self.state.files.insert(file.path, entry);
+                self.state.files.insert(rel.to_string(), entry);
                 return Ok(());
             }
             Local::Missing => true,
-            Local::File(bytes, _) => synced_hash.as_deref() == Some(content_hash(&bytes).as_str()),
-            Local::TooBig => false,
+            Local::File(bytes, _) => copy || synced_hash.as_deref() == Some(content_hash(&bytes).as_str()),
+            Local::TooBig => copy,
         };
-        let new_file = !self.state.files.contains_key(&file.path);
+        let new_file = !self.state.files.contains_key(rel);
         if new_file && self.state.files.len() >= MAX_FILES {
             return Err(Fail::Fatal("The campaign has more files than sync handles (20,000).".into()));
         }
@@ -826,7 +1114,7 @@ impl Core {
             return Err(Fail::Fatal("The campaign is bigger than sync handles (1 GB).".into()));
         }
         if local_unchanged {
-            if !self.write_file(&file.path, &file.content)? {
+            if !self.write_file(rel, &file.content)? {
                 self.warn("Skipped a change to something that isn't a plain file here.");
                 return Ok(());
             }
@@ -836,19 +1124,26 @@ impl Core {
             if self.conflicts > MAX_CONFLICTS {
                 return Err(Fail::Fatal("Too many sync conflicts at once; sync stopped to be safe.".into()));
             }
-            self.write_conflict_copy(&file.path, &file.content)?;
+            self.write_conflict_copy(rel, &file.content)?;
         }
-        self.state.files.insert(file.path, entry);
+        self.state.files.insert(rel.to_string(), entry);
         Ok(())
     }
 
-    /// Another player deleted a file (an encrypted tombstone).
+    /// Another player deleted a file (an encrypted tombstone). A DM copy just goes; another file goes to `.trash`.
     fn remote_delete(&mut self, path: &str, id: &str, seq: u64) -> Result<(), Fail> {
         let _guard = crate::WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let synced_hash = self.state.files.get(path).filter(|e| !e.gone).map(|e| e.hash.clone());
+        let copy = matches!(place(path), Some(Place::Copy(..)));
         // Only an unchanged plain file goes; one changed here stays (a conflict) and goes up again over the tombstone.
         if let Local::File(bytes, _) = self.read_local(path)? {
-            if synced_hash.as_deref() == Some(content_hash(&bytes).as_str()) {
+            if copy {
+                if let Some(target) = self.target(path)? {
+                    self.sink.wrote(&target);
+                    fs::remove_file(target)?;
+                    self.touched = true;
+                }
+            } else if synced_hash.as_deref() == Some(content_hash(&bytes).as_str()) {
                 self.trash(path)?;
             }
         }
@@ -1035,7 +1330,10 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, (u64, SystemTime)>)
         let (Ok(kind), Some(name)) = (entry.file_type(), entry.file_name().to_str().map(str::to_owned)) else { continue };
         let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
         if kind.is_dir() {
-            let wanted = rel == ".lorekeeper" || (!name.starts_with('.') && !(prefix.is_empty() && folded(&name) == "templates"));
+            // Into .lorekeeper/ (for campaign.json) but none of its folders (the DM copies), never Templates/ or
+            // another spelling of Private/.
+            let top = prefix.is_empty() && (folded(&name) == "templates" || (folded(&name) == "private" && name != "Private"));
+            let wanted = rel == ".lorekeeper" || (prefix != ".lorekeeper" && !name.starts_with('.') && !top);
             if wanted && out.len() <= MAX_FILES {
                 unsafe_names += walk(&entry.path(), &rel, out);
             }
@@ -1072,6 +1370,18 @@ fn open_no_follow(path: &Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
+/// Deletes a campaign's copies of other members' private notes (when you leave it), never through a symlink.
+pub(crate) fn drop_dm_copies(root: &Path) {
+    let mut path = root.to_path_buf();
+    for part in DM_COPIES.trim_end_matches('/').split('/') {
+        path.push(part);
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            return;
+        }
+    }
+    let _ = fs::remove_dir_all(path);
+}
+
 /// Joining: reads the replay just until the campaign's metadata file and returns its name (None when it isn't
 /// there or can't be read in time). Nothing is written.
 pub async fn fetch_name(server: &str, room: &str, key: &[u8; SECRET_LEN], token: &str) -> Option<String> {
@@ -1086,7 +1396,7 @@ pub async fn fetch_name(server: &str, room: &str, key: &[u8; SECRET_LEN], token:
     };
     let core_connect = async {
         let mut ws = connect(&cfg).await.ok()?;
-        send(&mut ws, &ClientMessage::Hello { since: 0, member: String::new() }).await.ok()?;
+        send(&mut ws, &ClientMessage::Hello { since: 0, member: String::new(), dm_since: None }).await.ok()?;
         let id = file_id(key, METADATA);
         while let Some(Ok(msg)) = ws.next().await {
             let Message::Text(text) = msg else { continue };
@@ -1134,7 +1444,10 @@ impl std::fmt::Display for ApiError {
         let text = match (self.status, self.code.as_str()) {
             (0, _) => "Can't reach the sync server. Check your internet connection and try again.",
             (_, "unauthorized") => "The sync server doesn't accept this campaign's sign-in anymore.",
-            (_, "owner_only") => "Only the player who shared this campaign can do that.",
+            (_, "owner_only") => "Only the campaign's owner can do that.",
+            (_, "not_allowed") => "Only the campaign's owner, or a DM the owner lets manage players, can do that.",
+            (_, "cannot_change_owner") => "The campaign's owner stays the owner.",
+            (_, "cannot_reinvite_owner") => "The owner can't be re-invited: the owner's sign-in stays on the computer that shared the campaign.",
             (_, "create_key_required") => "This sync server needs its creation key to share a campaign.",
             (_, "invite_not_found") => "This invite link isn't valid anymore (it may have been cancelled). Ask for a new one.",
             (_, "invite_used") => "This invite link was already used. Ask for a new one.",
@@ -1165,6 +1478,13 @@ fn api(
                 req = req.header("Authorization", a);
             }
             req.call()
+        }
+        "PATCH" => {
+            let mut req = AGENT.patch(url);
+            if let Some(a) = &auth {
+                req = req.header("Authorization", a);
+            }
+            req.send_json(body.unwrap_or(Value::Null))
         }
         _ => {
             let mut req = AGENT.post(url);
@@ -1204,12 +1524,41 @@ pub fn create_room(server: &str, create_key: Option<&str>) -> Result<CreateRoomR
     Ok(r)
 }
 
-pub fn create_invite(server: &str, room: &str, token: &str) -> Result<InviteInfo, ApiError> {
-    let r: InviteInfo = parse(api("POST", &format!("{server}/v1/rooms/{room}/invites"), Some(token), None, None)?)?;
-    if !sync_protocol::is_id(&r.invite) {
+/// A one-time invite for a new player or DM (`manage`: the DM may manage members; only the owner can grant it).
+pub fn create_invite(server: &str, room: &str, token: &str, role: Role, manage: bool) -> Result<InviteInfo, ApiError> {
+    let body = serde_json::json!({ "role": role, "manage": manage });
+    let r: InviteInfo = parse(api("POST", &format!("{server}/v1/rooms/{room}/invites"), Some(token), None, Some(body))?)?;
+    if !is_id(&r.invite) {
         return Err(ApiError { status: 502, code: "bad_reply".into() });
     }
     Ok(r)
+}
+
+/// An invite that moves member `member_id` (role, private notes) to whichever computer redeems it.
+pub fn reinvite(server: &str, room: &str, token: &str, member_id: &str) -> Result<InviteInfo, ApiError> {
+    let r: InviteInfo = parse(api("POST", &format!("{server}/v1/rooms/{room}/members/{member_id}/reinvite"), Some(token), None, None)?)?;
+    if !is_id(&r.invite) {
+        return Err(ApiError { status: 502, code: "bad_reply".into() });
+    }
+    Ok(r)
+}
+
+/// The owner changes a member's role and a DM's manage flag.
+pub fn update_member(server: &str, room: &str, token: &str, member_id: &str, role: Role, manage: bool) -> Result<(), ApiError> {
+    let body = serde_json::json!({ "role": role, "manage": manage });
+    api("PATCH", &format!("{server}/v1/rooms/{room}/members/{member_id}"), Some(token), None, Some(body)).map(|_| ())
+}
+
+/// The owner says they're also the campaign's DM (on their own member row), or that they aren't.
+pub fn set_owner_is_dm(server: &str, room: &str, token: &str, owner_id: &str, on: bool) -> Result<(), ApiError> {
+    let body = serde_json::json!({ "owner_is_dm": on });
+    api("PATCH", &format!("{server}/v1/rooms/{room}/members/{owner_id}"), Some(token), None, Some(body)).map(|_| ())
+}
+
+/// The owner lets DMs read private notes, or stops it.
+pub fn set_dm_reads_private(server: &str, room: &str, token: &str, on: bool) -> Result<(), ApiError> {
+    let body = serde_json::json!({ "dm_reads_private": on });
+    api("PATCH", &format!("{server}/v1/rooms/{room}/settings"), Some(token), None, Some(body)).map(|_| ())
 }
 
 pub fn list_invites(server: &str, room: &str, token: &str) -> Result<Vec<InviteInfo>, ApiError> {

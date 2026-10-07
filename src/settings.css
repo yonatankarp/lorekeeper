@@ -230,6 +230,15 @@ dialog label.party-switch { display: flex; align-items: center; gap: 8px; margin
 #party-shared-help { margin: 0 0 12px; }
 #players-dialog h3 { margin: 16px 0 4px; font-size: 15px; }
 .players-make { justify-content: flex-start; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+/* Invite as / Can manage players sit on the invite button's line. */
+dialog label.party-inline { display: flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; }
+/* A player's name, then (wrapping under it when narrow) the role picker, Re-invite and Remove. */
+#player-list li { flex-wrap: wrap; justify-content: flex-end; }
+#player-list li > span { flex: 1 1 12em; }
+.sync-list li select { width: auto; }
+.sync-list li button { white-space: nowrap; }
+#party-role { margin: 0 0 8px; }
+#party-private-help { margin: 0 0 8px; }
 dialog textarea {
   width: 100%;
   box-sizing: border-box;

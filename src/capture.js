@@ -1,4 +1,6 @@
 import { applyTheme } from "./theme.js";
+import { privateNote } from "./notes.js";
+import { privateLabel } from "./vault.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -9,15 +11,25 @@ const rest = document.getElementById("rest");
 const hint = document.getElementById("hint");
 let names = [], query = null, matches = [], pick = 0, saving = false;
 let editing = null; // the last note's text while ↑ has it in the box to fix
+let settings = {}; // for who reads private notes in the open campaign
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const dismiss = () => { input.value = ""; edit(null); suggest(); invoke("dismiss", { restoreFocus: true }); };
 
+const privateText = () => privateLabel(settings.sharing?.[settings.vaultPath]);
+
 // ↑ in the empty box brings back the last note to fix: Enter rewrites it in place, Esc lets it go.
 function edit(text) {
   editing = text;
-  hint.hidden = text === null;
+  showHint();
   if (text !== null) { input.value = text; suggest(); }
+}
+
+// The corner hint: fixing the last note, or (a note starting with ~ in a shared campaign) who will read it.
+function showHint() {
+  const label = privateNote(input.value).private ? privateText() : "";
+  hint.textContent = editing !== null ? "Editing last note - Esc to cancel" : label;
+  hint.hidden = editing === null && !label;
 }
 
 // A page name being typed at the end of the box: "@Mir" or an unclosed "[[Mir".
@@ -65,7 +77,10 @@ async function save(startNew = false) {
   render();
   try {
     // Fixing the last note keeps it where it is, so ⌘Enter only starts a new session for a new note.
-    const done = old === null ? `Saved to ${await invoke("save_note", { text: draft, startNew })}` : await invoke("fix_note", { old, text: draft });
+    // A private note says who reads it (lib.rs saves it to your Private/ file).
+    const label = privateNote(draft).private ? privateText() : "";
+    const saved = old === null ? `Saved to ${await invoke("save_note", { text: draft, startNew })}` : await invoke("fix_note", { old, text: draft });
+    const done = label ? `${saved} (${label})` : saved;
     input.value = `✓ ${done}`;
     await wait(700);
     dismiss();
@@ -111,7 +126,7 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   document.execCommand(e.shiftKey ? "redo" : "undo");
 });
-input.addEventListener("input", suggest);
+input.addEventListener("input", () => { suggest(); showHint(); });
 input.addEventListener("click", suggest);
 input.addEventListener("keyup", (e) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) suggest(); });
 window.addEventListener("focus", () => {
@@ -130,5 +145,12 @@ window.addEventListener("focus", () => invoke("session_status").then((s) => {
   if (s) stale.textContent = `Last note was ${ago(s.idleHours)} ago. ${mod}Enter saves to a new Session ${s.next}.`;
 }));
 
-invoke("get_settings").then((s) => applyTheme(s.theme));
-listen("settings-changed", (e) => applyTheme(e.payload.theme));
+// In a shared campaign the placeholder offers ~ for a private note.
+function applySettings(s) {
+  settings = s;
+  applyTheme(s.theme);
+  input.placeholder = `Note…   @npc  #loot  !quest  ?mystery  "quote${privateText() ? "  ~private" : ""}`;
+  showHint();
+}
+invoke("get_settings").then(applySettings);
+listen("settings-changed", (e) => applySettings(e.payload));

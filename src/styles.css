@@ -391,6 +391,13 @@ main { display: flex; flex-direction: column; min-width: 0; height: 100vh; backg
   background: var(--accent-soft);
   border-bottom: 1px solid var(--line);
 }
+/* The private-notes setting changed: shown once (see showNotice in app.js). */
+#notice { display: flex; align-items: center; gap: 10px; padding: 8px 20px; background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+/* Private notes: a padlock next to the page, the note or the folder, with the label as its tooltip. */
+.lock { color: var(--muted); white-space: nowrap; }
+.lock .icon { margin: 0 0.2em; vertical-align: -0.1em; }
+.private-label { color: var(--muted); font: 14px var(--font-ui); margin-left: 0.4em; }
+.new-private { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 #scroll { flex: 1; overflow: auto; display: flex; flex-direction: column; }
 #view, #connections, #backlinks { width: 100%; max-width: 780px; margin: 0 auto; padding: 8px 32px; }
 #view { padding-top: 20px; overflow-wrap: break-word; font: 16px/1.6 var(--font-body); }

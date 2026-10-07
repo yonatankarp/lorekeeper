@@ -99,12 +99,12 @@ fn a_hostile_server_cant_grow_memory_or_flood_the_windows() {
     let mut push = Push::default();
     for seq in 1..=1000 {
         let blob = (seq % 2 == 0).then(|| encode_blob(&[1u8; 64]));
-        assert!(core.handle(ServerMessage::Change(Change { id: random_id(), seq, blob }), &mut push).is_ok());
+        assert!(core.handle(ServerMessage::Change(Change { id: random_id(), seq, blob, author: None }), &mut push).is_ok());
     }
     assert!(core.seen.is_empty(), "{} ids remembered", core.seen.len());
     assert!(core.state.files.is_empty());
     assert_eq!(core.state.seq, 1000);
-    let member = |name: &str| PresenceMember { member_id: random_id(), member: seal_member(&key, &room, name), role: Role::Member };
+    let member = |name: &str| PresenceMember { member_id: random_id(), member: seal_member(&key, &room, name), role: Role::Player };
     let mut members: Vec<PresenceMember> = (0..5000).map(|i| member(&format!("P{i}"))).collect();
     members.insert(0, PresenceMember { member: "A".repeat(100_000), ..member("") });
     assert!(core.handle(ServerMessage::Presence { members }, &mut push).is_ok());
@@ -144,13 +144,13 @@ fn a_damaged_or_foreign_state_file_means_a_fresh_catch_up() {
     let file = dir.join("room.json");
     let key = [3u8; 32];
     let entry = |path: &str| Entry { id: file_id(&key, path), seq: 4, hash: content_hash(b"x"), len: 1, gone: false };
-    let good = State { seq: 9, files: [("NPCs/Vex.md".to_string(), entry("NPCs/Vex.md"))].into() };
+    let good = State { seq: 9, files: [("NPCs/Vex.md".to_string(), entry("NPCs/Vex.md"))].into(), ..State::default() };
     save_state(&file, &good).unwrap();
     assert_eq!(load_state(&file, &key), good);
     assert_eq!(load_state(&file, &[4u8; 32]), State::default(), "ids made with another key");
     fs::write(&file, "{not json").unwrap();
     assert_eq!(load_state(&file, &key), State::default());
-    let evil = State { seq: 9, files: [("../escape.md".to_string(), entry("../escape.md"))].into() };
+    let evil = State { seq: 9, files: [("../escape.md".to_string(), entry("../escape.md"))].into(), ..State::default() };
     fs::write(&file, serde_json::to_vec(&evil).unwrap()).unwrap();
     assert_eq!(load_state(&file, &key), State::default(), "a path that doesn't sync");
     assert_eq!(load_state(&dir.join("missing.json"), &key), State::default());
@@ -203,6 +203,7 @@ struct Rec {
     statuses: Mutex<Vec<Status>>,
     presence: Mutex<Vec<String>>,
     warnings: Mutex<Vec<String>>,
+    access: Mutex<Option<Access>>,
 }
 
 impl Sink for Rec {
@@ -217,6 +218,9 @@ impl Sink for Rec {
     }
     fn wrote(&self, _: &Path) {}
     fn changed(&self) {}
+    fn access(&self, a: &Access) {
+        *self.access.lock().unwrap() = Some(a.clone());
+    }
 }
 
 impl Rec {
@@ -341,7 +345,7 @@ async fn two_players_sync_through_the_server() {
 
     // Invite: the link carries the key in its fragment; the player redeems it for a token of their own.
     let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
-    let invite = blocking(move || create_invite(&u, &r, &t)).await.unwrap();
+    let invite = blocking(move || create_invite(&u, &r, &t, Role::Player, false)).await.unwrap();
     let link = Invite { server: url.clone(), room: room.room.clone(), invite: invite.invite.clone(), key: room.key }.link();
     let parsed = Invite::parse(&link).unwrap();
     assert_eq!(parsed.key, room.key);
@@ -430,7 +434,7 @@ async fn two_players_sync_through_the_server() {
 
     // A rogue member (or a compromised server) sends hostile changes: nothing lands, and sync goes on.
     let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
-    let rogue_invite = blocking(move || create_invite(&u, &r, &t)).await.unwrap().invite;
+    let rogue_invite = blocking(move || create_invite(&u, &r, &t, Role::Player, false)).await.unwrap().invite;
     let (u, r) = (url.clone(), room.room.clone());
     let rogue_token = blocking(move || redeem(&u, &r, &rogue_invite, "")).await.unwrap().token;
     rogue_puts(&room, &rogue_token).await;
@@ -528,7 +532,7 @@ async fn a_big_image_syncs() {
     let room = Room { server: url.clone(), room: created.room.clone(), key: random_secret() };
     let owner = start(&room, &a, &base.join("a.json"), &created.owner_token, "");
     let (u, r, t) = (url.clone(), room.room.clone(), created.owner_token.clone());
-    let invite = blocking(move || create_invite(&u, &r, &t)).await.unwrap().invite;
+    let invite = blocking(move || create_invite(&u, &r, &t, Role::Player, false)).await.unwrap().invite;
     let (u, r) = (url.clone(), room.room.clone());
     let token = blocking(move || redeem(&u, &r, &invite, "")).await.unwrap().token;
     let member = start(&room, &b, &base.join("b.json"), &token, "");
@@ -595,7 +599,7 @@ async fn put_sealed(room: &Room, token: &str, files: &[(&str, &str)]) {
     req.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
     let send = |msg: ClientMessage| Message::Text(serde_json::to_string(&msg).unwrap().into());
-    ws.send(send(ClientMessage::Hello { since: 0, member: String::new() })).await.unwrap();
+    ws.send(send(ClientMessage::Hello { since: 0, member: String::new(), dm_since: None })).await.unwrap();
     let mut seqs = HashMap::new();
     while let Some(Ok(msg)) = ws.next().await {
         let Message::Text(t) = msg else { continue };
@@ -610,7 +614,7 @@ async fn put_sealed(room: &Room, token: &str, files: &[(&str, &str)]) {
         let id = file_id(&room.key, path);
         let file = FileContent { path: path.to_string(), content: text.as_bytes().to_vec(), ..Default::default() };
         let blob = encode_blob(&seal(&room.key, &room.room, &id, &file));
-        ws.send(send(ClientMessage::Put { req: req as u64, base: seqs.get(&id).copied().unwrap_or(0), id, blob })).await.unwrap();
+        ws.send(send(ClientMessage::Put { req: req as u64, base: seqs.get(&id).copied().unwrap_or(0), id, blob, space: Space::Shared })).await.unwrap();
     }
     let last = files.len() as u64 - 1;
     while let Some(Ok(msg)) = ws.next().await {
@@ -632,7 +636,7 @@ async fn rogue_puts(room: &Room, token: &str) {
     let config = WebSocketConfig::default().max_message_size(Some(MAX_FRAME)).max_frame_size(Some(MAX_FRAME));
     let (mut ws, _) = tokio_tungstenite::connect_async_with_config(req, Some(config), true).await.unwrap();
     let send = |msg: ClientMessage| Message::Text(serde_json::to_string(&msg).unwrap().into());
-    ws.send(send(ClientMessage::Hello { since: 0, member: String::new() })).await.unwrap();
+    ws.send(send(ClientMessage::Hello { since: 0, member: String::new(), dm_since: None })).await.unwrap();
     // The current version of every file, to aim the server-side delete and the garbage overwrite.
     let mut seqs = HashMap::new();
     while let Some(Ok(msg)) = ws.next().await {
@@ -666,11 +670,11 @@ async fn rogue_puts(room: &Room, token: &str) {
     let good = file_id(&key, "NPCs/Good.md");
     puts.push((good.clone(), sealed(&good, "NPCs/Good.md", "fine")));
     let vex = file_id(&key, "NPCs/Vex.md");
-    ws.send(send(ClientMessage::Delete { req: 99, base: seqs[&vex], id: vex })).await.unwrap();
+    ws.send(send(ClientMessage::Delete { req: 99, base: seqs[&vex], id: vex, space: Space::Shared })).await.unwrap();
     let last = puts.len() as u64 - 1;
     for (req, (id, blob)) in puts.into_iter().enumerate() {
         let base = seqs.get(&id).copied().unwrap_or(0);
-        ws.send(send(ClientMessage::Put { req: req as u64, id, base, blob })).await.unwrap();
+        ws.send(send(ClientMessage::Put { req: req as u64, id, base, blob, space: Space::Shared })).await.unwrap();
     }
     // Wait for the last ack so the writes are stored before the socket goes.
     while let Some(Ok(msg)) = ws.next().await {
@@ -683,4 +687,204 @@ async fn rogue_puts(room: &Room, token: &str) {
         }
     }
     let _ = ws.close(None).await;
+}
+
+// ---------- private notes ----------
+
+/// Private/ in exactly that spelling is yours and syncs to your private space; another spelling of it never syncs, and
+/// no shared path from the network can land in it. A DM's copies under .lorekeeper/dm/<member id>/ never go up.
+#[test]
+fn private_paths_and_dm_copies() {
+    let id = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+    assert_eq!(place("Private/NPCs/Vex.md"), Some(Place::Own("NPCs/Vex.md")));
+    assert_eq!(place("Private/Sessions/Session 4/Sibling 5.md"), Some(Place::Own("Sessions/Session 4/Sibling 5.md")));
+    assert!(syncs("Private/NPCs/Vex.md") && syncs("Private/Attachments/map.png"));
+    for bad in ["private/NPCs/Vex.md", "PRIVATE/NPCs/Vex.md", "Prıvate/NPCs/Vex.md", "Private/.lorekeeper/campaign.json", "Private/Templates/x.md", "Private/../x.md", "Private/"] {
+        assert!(!syncs(bad), "{bad}");
+    }
+    // A teammate's shared file can never be written into your Private/ (in any spelling).
+    for theirs in ["Private/NPCs/Vex.md", "private/NPCs/Vex.md", "PrivatE/x.md", "Pri\u{200c}vate/x.md", "\u{feff}Private/x.md", "Priv\u{206a}ate/x.md", "Templat\u{200d}es/x.md", "\u{feff}.lorekeeper/dm/aaaaaaaaaaaaaaaaaaaaaaaaaa/x.md"] {
+        assert!(!syncs_shared(theirs), "{theirs}");
+    }
+    assert!(syncs_shared("NPCs/Private.md") && syncs_shared("Lore/Private/x.md"));
+    let copy = format!(".lorekeeper/dm/{id}/NPCs/Vex.md");
+    assert_eq!(place(&copy), Some(Place::Copy(id, "NPCs/Vex.md")));
+    assert!(!syncs(&copy), "copies never go up");
+    for bad in [".lorekeeper/dm/notanid/NPCs/Vex.md".to_string(), format!(".lorekeeper/dm/{id}/.lorekeeper/campaign.json"), format!(".lorekeeper/dm/{id}")] {
+        assert_eq!(place(&bad), None, "{bad}");
+    }
+    // Ids: shared by path, private by your member id, copies by their author's.
+    let key = [3u8; 32];
+    let state = State { member_id: id.into(), ..State::default() };
+    assert_eq!(state.id_for(&key, "NPCs/Vex.md"), Some(file_id(&key, "NPCs/Vex.md")));
+    assert_eq!(state.id_for(&key, "Private/NPCs/Vex.md"), Some(private_file_id(&key, id, "NPCs/Vex.md")));
+    assert_eq!(state.id_for(&key, &copy), Some(private_file_id(&key, id, "NPCs/Vex.md")));
+    assert_eq!(State::default().id_for(&key, "Private/NPCs/Vex.md"), None, "not before the server says who you are");
+    // A state file with private entries needs the member id they were made with.
+    let dir = temp("private-state");
+    let entry = Entry { id: private_file_id(&key, id, "NPCs/Vex.md"), seq: 2, hash: content_hash(b"x"), len: 1, gone: false };
+    let good = State { seq: 2, files: [("Private/NPCs/Vex.md".to_string(), entry)].into(), member_id: id.into(), dm: false };
+    save_state(&dir.join("s.json"), &good).unwrap();
+    assert_eq!(load_state(&dir.join("s.json"), &key), good);
+    save_state(&dir.join("s.json"), &State { member_id: "baaaaaaaaaaaaaaaaaaaaaaaaa".into(), ..good }).unwrap();
+    assert_eq!(load_state(&dir.join("s.json"), &key), State::default(), "ids made for another member");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The first file under `dir` (hidden folders, .trash and all) whose bytes contain `needle`.
+fn holding(dir: &Path, needle: &str) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).into_iter().flatten().flatten() {
+            let meta = fs::symlink_metadata(e.path()).unwrap();
+            if meta.is_dir() {
+                stack.push(e.path());
+            } else if meta.is_file() && fs::read(e.path()).unwrap().windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                return Some(e.path());
+            }
+        }
+    }
+    None
+}
+
+/// Owner, DM and two players on the real server: a player's private notes (one written through the quick note's `~`)
+/// reach no one else; the DM gets read-only copies only while the owner allows it, and loses them when that ends;
+/// a re-invite brings the player's private notes to their new computer and signs out the old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn private_notes_stay_private_and_follow_a_reinvite() {
+    let base = temp("private");
+    let db = base.with_extension("db");
+    let _cleanup = Cleanup(vec![base.clone(), db.clone()]);
+    let dirs = ["owner", "dm", "player", "other", "laptop"].map(|d| base.join(d));
+    for d in &dirs {
+        fs::create_dir_all(d).unwrap();
+    }
+    let [owner_dir, dm_dir, p_dir, q_dir, laptop_dir] = dirs.clone();
+    let (_server, url) = start_server(&db).await;
+    fs::create_dir_all(owner_dir.join(".lorekeeper")).unwrap();
+    fs::write(owner_dir.join(METADATA), r#"{"name":"Strahd"}"#).unwrap();
+    let u = url.clone();
+    let created = blocking(move || create_room(&u, Some(CREATE_KEY))).await.unwrap();
+    let room = Room { server: url.clone(), room: created.room.clone(), key: random_secret() };
+    let owner_token = created.owner_token.clone();
+    let owner = start(&room, &owner_dir, &base.join("owner.json"), &owner_token, "Ireena");
+    until("the owner's upload", || owner.rec.last() == Some(Status::Synced)).await;
+    let join = |role: Role, name: &'static str| {
+        let (u, r, t, key) = (url.clone(), room.room.clone(), owner_token.clone(), room.key);
+        blocking(move || {
+            let invite = create_invite(&u, &r, &t, role, false).unwrap().invite;
+            redeem(&u, &r, &invite, &seal_member(&key, &r, name)).unwrap().token
+        })
+    };
+    let (dm_token, p_token, q_token) = (join(Role::Dm, "Strahd").await, join(Role::Player, "Syloth").await, join(Role::Player, "Lorelei").await);
+    let dm = start(&room, &dm_dir, &base.join("dm.json"), &dm_token, "Strahd");
+    let p = start(&room, &p_dir, &base.join("p.json"), &p_token, "Syloth");
+    let q = start(&room, &q_dir, &base.join("q.json"), &q_token, "Lorelei");
+    until("everyone's in", || [&dm, &p, &q].iter().all(|x| x.rec.last() == Some(Status::Synced) && x.rec.access.lock().unwrap().is_some())).await;
+    let p_id = p.rec.access.lock().unwrap().clone().unwrap().member_id;
+    assert_eq!(dm.rec.access.lock().unwrap().clone().unwrap().role, Role::Dm);
+
+    // Syloth's private notes: one from the quick note box (~), one page; then a shared page as a marker.
+    crate::append_note(&p_dir, Some("Syloth"), "~@Halia lies about the mine").unwrap();
+    p.write("Private/NPCs/Halia.md", "Halia is the cult leader");
+    p.write("NPCs/Halia.md", "# Halia\nthe innkeeper");
+    until("the shared page reaches everyone", || [&owner, &dm, &q].iter().all(|x| x.read("NPCs/Halia.md").is_some())).await;
+    until("the private notes are on the server", || {
+        let state = load_state(&p.state_file, &room.key);
+        ["Private/NPCs/Halia.md", "Private/Sessions/Session 1/Syloth.md"].iter().all(|f| state.files.get(*f).is_some_and(|e| e.hash != UNSYNCED))
+    })
+    .await;
+    for peer in [&owner, &dm, &q] {
+        for secret in ["cult leader", "lies about the mine"] {
+            assert_eq!(holding(&peer.root, secret), None, "{secret}");
+        }
+    }
+
+    // The owner lets the DM read private notes: the DM gets read-only copies, grouped by player, with the players'
+    // names. The owner (a player here, who hasn't said they're the DM) gets nothing.
+    let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
+    blocking(move || set_dm_reads_private(&u, &r, &t, true)).await.unwrap();
+    let copy = format!(".lorekeeper/dm/{p_id}/NPCs/Halia.md");
+    let session_copy = format!(".lorekeeper/dm/{p_id}/Sessions/Session 1/Syloth.md");
+    let has_copies = |peer: &Peer| {
+        peer.read(&copy).as_deref() == Some("Halia is the cult leader") && peer.read(&session_copy).is_some_and(|t| t.contains("@Halia lies about the mine"))
+    };
+    until("the DM's copies", || has_copies(&dm)).await;
+    assert!(dm.read(DM_NAMES).unwrap().contains("Syloth"));
+    until("the owner hears of the setting", || owner.rec.access.lock().unwrap().as_ref().is_some_and(|a| a.dm_reads_private)).await;
+    assert_eq!(holding(&owner.root, "cult leader"), None, "being the owner reads nothing");
+    // The owner says they're the DM: copies; says they aren't: the copies go again.
+    let owner_id = owner.rec.access.lock().unwrap().clone().unwrap().member_id;
+    for on in [true, false] {
+        let (u, r, t, id) = (url.clone(), room.room.clone(), owner_token.clone(), owner_id.clone());
+        blocking(move || set_owner_is_dm(&u, &r, &t, &id, on)).await.unwrap();
+        if on {
+            until("the owner's copies as the DM", || has_copies(&owner)).await;
+        } else {
+            until("the owner's copies are gone", || !owner_dir.join(".lorekeeper/dm").exists()).await;
+        }
+    }
+    assert_eq!(holding(&owner.root, "cult leader"), None);
+    // A player who joins now redeems without a name, as the app does, and names their PC in hello: the DM learns it.
+    let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
+    let late_token = blocking(move || {
+        let invite = create_invite(&u, &r, &t, Role::Player, false).unwrap().invite;
+        redeem(&u, &r, &invite, "").unwrap().token
+    })
+    .await;
+    fs::create_dir_all(base.join("late")).unwrap();
+    let late = start(&room, &base.join("late"),&base.join("late.json"), &late_token, "Ezmerelda");
+    until("the DM knows the new player's name", || dm.read(DM_NAMES).is_some_and(|n| n.contains("Ezmerelda") && n.contains("Syloth"))).await;
+    late.stop().await;
+    until("players hear of the setting", || q.rec.access.lock().unwrap().as_ref().is_some_and(|a| a.dm_reads_private)).await;
+    assert!(p.rec.access.lock().unwrap().as_ref().unwrap().dm_reads_private);
+    // A copy is read-only: the DM's edit never goes back, and the player's next version replaces it.
+    fs::write(dm_dir.join(&copy), "the DM was here").unwrap();
+    dm.engine.poke();
+    p.write("NPCs/Marker.md", "marker");
+    until("the marker", || dm.read("NPCs/Marker.md").is_some()).await;
+    assert_eq!(p.read("Private/NPCs/Halia.md").as_deref(), Some("Halia is the cult leader"));
+    p.write("Private/NPCs/Halia.md", "Halia is the cult leader, and Vex knows");
+    until("the copy follows the player", || dm.read(&copy).as_deref() == Some("Halia is the cult leader, and Vex knows")).await;
+    assert!(dm.conflict_copies(&format!(".lorekeeper/dm/{p_id}/NPCs")).is_empty());
+    assert_eq!(holding(&q.root, "cult leader"), None, "players never");
+
+    // Off again: the copies go from the DM's and the owner's computers.
+    let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
+    blocking(move || set_dm_reads_private(&u, &r, &t, false)).await.unwrap();
+    until("the copies are gone", || !dm_dir.join(".lorekeeper/dm").exists() && !owner_dir.join(".lorekeeper/dm").exists()).await;
+    p.write("Private/NPCs/Halia.md", "Halia is the cult leader; Vex knows; so does Ireena");
+    p.write("NPCs/Marker.md", "marker 2");
+    until("the second marker", || dm.read("NPCs/Marker.md").as_deref() == Some("marker 2") && q.read("NPCs/Marker.md").as_deref() == Some("marker 2")).await;
+    for (who, peer) in [("dm", &dm), ("owner", &owner), ("other", &q)] {
+        assert_eq!(holding(&peer.root, "cult leader"), None, "{who}");
+        assert_eq!(holding(&peer.root, "lies about the mine"), None, "{who}");
+        let state = fs::read_to_string(&peer.state_file).unwrap();
+        assert!(!state.contains(".lorekeeper/dm") && !state.contains("Private/"), "{who}'s state names no private file");
+    }
+
+    // A re-invite: Syloth's new laptop becomes Syloth, with their private notes; the old computer is signed out.
+    let (u, r, t, id) = (url.clone(), room.room.clone(), owner_token.clone(), p_id.clone());
+    let new_token = blocking(move || {
+        let invite = reinvite(&u, &r, &t, &id).unwrap();
+        assert_eq!(invite.member_id.as_deref(), Some(id.as_str()));
+        redeem(&u, &r, &invite.invite, "").unwrap().token
+    })
+    .await;
+    until("the old computer is signed out", || p.rec.last() == Some(Status::Replaced)).await;
+    let laptop = start(&room, &laptop_dir, &base.join("laptop.json"), &new_token, "Syloth");
+    until("the private notes on the new computer", || {
+        laptop.read("Private/NPCs/Halia.md").as_deref() == Some("Halia is the cult leader; Vex knows; so does Ireena")
+            && laptop.read("Private/Sessions/Session 1/Syloth.md").is_some_and(|t| t.contains("@Halia lies about the mine"))
+    })
+    .await;
+    assert_eq!(laptop.rec.access.lock().unwrap().clone().unwrap().member_id, p_id);
+    assert_eq!(p.read("Private/NPCs/Halia.md").as_deref(), Some("Halia is the cult leader; Vex knows; so does Ireena"), "the old files stay");
+    laptop.write("Private/NPCs/Vex.md", "written on the laptop");
+    until("synced from the laptop", || load_state(&laptop.state_file, &room.key).files.get("Private/NPCs/Vex.md").is_some_and(|e| e.hash != UNSYNCED)).await;
+    assert_eq!(holding(&q.root, "written on the laptop"), None);
+    for peer in [laptop, dm, q, owner] {
+        peer.stop().await;
+    }
+    tokio::time::timeout(Duration::from_secs(5), p.task).await.expect("a replaced engine stops").unwrap();
 }

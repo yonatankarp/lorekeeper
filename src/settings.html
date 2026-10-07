@@ -351,7 +351,7 @@
     <!-- The Party dialog: Share walks through I play (and the creation key when the server asks), then invites and players. -->
     <dialog id="players-dialog" aria-labelledby="players-title">
       <h2 id="players-title">Party</h2>
-      <p class="hint" id="party-intro">Everyone sees each other's notes in every session. Notes are encrypted on your computer before they're sent, so the sync server can't read them.</p>
+      <p class="hint" id="party-intro">Everyone sees each other's notes in every session, except the ones they keep private. Notes are encrypted on your computer before they're sent, so the sync server can't read them.</p>
       <p id="party-sync" role="status"></p>
       <label>I play
         <select id="party-me"></select></label>
@@ -361,8 +361,30 @@
           <input type="password" id="party-key-input" spellcheck="false" autocomplete="off" aria-describedby="party-key-help" /></label>
         <p class="hint" id="party-key-help">This server asks for a creation key before you can share. Ask whoever runs it. Lorekeeper remembers it in your system's password storage.</p>
       </div>
+      <!-- Who reads private notes: the owner decides; everyone else sees their role and the setting (sync.rs Access). -->
+      <div id="party-private" hidden>
+        <h3>Private notes</h3>
+        <p class="hint" id="party-role"></p>
+        <div id="party-private-owner">
+          <label>Private notes visible to
+            <select id="party-private-select" aria-describedby="party-private-help">
+              <option value="no">the player only</option>
+              <option value="yes">the player and the DM</option>
+            </select></label>
+          <label class="party-switch"><input type="checkbox" role="switch" id="party-owner-dm" aria-describedby="party-private-help" />
+            I'm the DM</label>
+          <p class="hint" id="party-private-help">Pages in a player's Private folder, and notes they start with ~, go only to their own computers, or also to the DM when you choose that. Turn on I'm the DM only if you run the game: then you read them too.</p>
+        </div>
+      </div>
       <div id="party-invites" hidden>
         <div class="dialog-actions players-make">
+          <label class="party-inline">Invite as
+            <select id="invite-role">
+              <option value="player">Player</option>
+              <option value="dm">DM</option>
+            </select></label>
+          <label class="party-switch party-inline" id="invite-manage-row" hidden><input type="checkbox" role="switch" id="invite-manage" />
+            Can manage players</label>
           <button type="button" class="ghost" id="invite-one">Invite a player</button>
         </div>
         <div id="invite-links" hidden>
@@ -370,12 +392,13 @@
           <div class="dialog-actions">
             <button type="button" class="ghost" id="invite-copy">Copy</button>
           </div>
-          <p class="hint">The link lets one player join, once, within 7 days. Send it to them privately: it holds the campaign's key. Make a new one for each player.</p>
+          <p class="hint" id="invite-hint">The link lets one player join, once, within 7 days. Send it to them privately: it holds the campaign's key. Make a new one for each player.</p>
         </div>
         <h3>Pending invites</h3>
         <ul class="sync-list" id="invite-list"></ul>
         <h3>Players</h3>
         <ul class="sync-list" id="player-list"></ul>
+        <p class="hint">Re-invite moves a player to a new computer: whoever opens the link becomes that player, with their role and private notes, and their old computer stops syncing. Send it only to them.</p>
       </div>
       <div id="party-pause" hidden>
         <label class="party-switch"><input type="checkbox" role="switch" id="party-shared" aria-describedby="party-shared-help" />

@@ -3,8 +3,52 @@ import test from "node:test";
 import {
   backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
-  authorOf, isSessionFolder, pages, pcPath, syncConflicts,
+  authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel,
 } from "./vault.js";
+
+test("private notes: your own in Private/, a DM's read-only copies of the players' in .lorekeeper/dm/", () => {
+  const id = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const copy = `.lorekeeper/dm/${id}/NPCs/Vex.md`;
+  assert.ok(isPrivate("Private/NPCs/Vex.md") && isPrivate(copy));
+  assert.ok(!isPrivate("NPCs/Private.md") && !isPrivate("private/NPCs/Vex.md") && !isPrivate(".lorekeeper/dm/x/NPCs/Vex.md"));
+  assert.ok(isDmCopy(copy) && !isDmCopy("Private/NPCs/Vex.md"));
+  assert.equal(dmCopyOf(copy), id);
+  assert.equal(dmCopyOf("NPCs/Vex.md"), "");
+  assert.equal(unprivate(copy), "NPCs/Vex.md");
+  assert.equal(unprivate("Private/Sessions/Session 4/Arn.md"), "Sessions/Session 4/Arn.md");
+  assert.equal(authorOf("Private/Sessions/Session 4/Arn.md"), "Arn");
+  assert.equal(authorOf(`.lorekeeper/dm/${id}/Sessions/Session 4/Syloth.md`), "Syloth");
+  assert.equal(authorOf("Private/NPCs/Arn.md"), "");
+});
+
+test("private labels say who reads your private notes, as the server last said", () => {
+  assert.equal(privateLabel(undefined), "");
+  assert.equal(privateLabel({ shared: false, access: { dmReadsPrivate: true } }), "", "a campaign of your own");
+  assert.equal(privateLabel({ shared: true }), "Private: only you", "not on a server yet");
+  assert.equal(privateLabel({ shared: true, room: "r" }), "Private: you and the DM", "on a server that hasn't said who reads them yet");
+  assert.equal(privateLabel({ shared: true, room: "r", role: "owner" }), "Private: only you", "the owner's setting starts off");
+  assert.equal(privateLabel({ shared: true, access: { role: "player", dmReadsPrivate: false } }), "Private: only you");
+  assert.equal(privateLabel({ shared: true, access: { role: "player", dmReadsPrivate: true } }), "Private: you and the DM");
+});
+
+test("a session page shows its private files in its timeline, never in its content, and they stay pages", () => {
+  const id = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const files = [
+    { path: "Sessions/Session 4/Arn.md", content: "---\nsession: 4\n---\n- 20:00 we arrive" },
+    { path: "Private/Sessions/Session 4/Arn.md", content: "- 20:01 Vex is lying" },
+    { path: `.lorekeeper/dm/${id}/Sessions/Session 4/Syloth.md`, content: "- 20:02 I stole the gem" },
+    { path: "Private/Sessions/Session 5/Arn.md", content: "- 21:00 alone so far" },
+    { path: "Private/NPCs/Vex.md", content: "# Vex" },
+  ];
+  const all = pages(files);
+  const s4 = all.find((p) => p.path === "Sessions/Session 4");
+  assert.deepEqual(s4.parts.map((p) => p.path), ["Sessions/Session 4/Arn.md"]);
+  assert.deepEqual(s4.private.map((p) => p.path), [`.lorekeeper/dm/${id}/Sessions/Session 4/Syloth.md`, "Private/Sessions/Session 4/Arn.md"]);
+  assert.ok(!s4.content.includes("Vex is lying") && !s4.content.includes("stole"), "not searchable as the shared page");
+  assert.ok(all.some((p) => p.path === "Private/Sessions/Session 4/Arn.md"), "your private file is a page of its own");
+  assert.ok(all.some((p) => p.path === "Sessions/Session 5" && p.parts.length === 0 && p.private.length === 1), "a session only you wrote in yet");
+  assert.ok(all.some((p) => p.path === "Private/NPCs/Vex.md"));
+});
 
 const notes = [
   { path: "Sessions/Session 2.md", content: "# Session 2\n- 20:15 @[[Mirela]] again\n- 20:30 went to [[Locations/Phandalin|town]]" },
@@ -153,6 +197,11 @@ test("moving a page keeps plain links, updates path links, and never takes over 
   assert.equal(movedPath("NPCs/Vex.md", ""), "Vex.md");
   assert.equal(moveProblem("Lore/Gods.md", "Archive/Old", paths), "");
   assert.equal(moveProblem("Sessions/Prep.md", "", paths), "");
+  // Move never crosses the private line: that's Make private / Make shared, which ask first.
+  assert.equal(moveProblem("Private/NPCs/Spy.md", "NPCs", paths), "Use Make shared to share a private page.");
+  assert.equal(moveProblem("NPCs/Spy.md", "Private/NPCs", paths), "Use Make private to make a page private.");
+  assert.equal(moveProblem("Private/NPCs/Spy.md", "Private/Lore", paths), "");
+  assert.equal(moveProblem(".lorekeeper/dm/abcdefghijklmnopqrstuvwxyz/NPCs/Spy.md", "NPCs", paths), "A player's private note is read-only here.");
   assert.match(moveProblem("NPCs/Vex.md", "Archive/Old", paths), /already has a page named Vex/);
   assert.match(moveProblem("Lore/Gods.md", "Sessions", paths), /Only sessions/);
   for (const session of ["Sessions/Session 3.md", "Sessions/Session 4", "Sessions/Session 4/Sibling 5.md"]) {

@@ -32,10 +32,12 @@
         <span id="status" role="status"></span>
         <button id="toggle" class="ghost" title="Edit / preview (⌘E)">Edit</button>
         <button id="obsidian" class="ghost" title="Open this page in Obsidian">Obsidian</button>
+        <button id="privacy" class="ghost" hidden></button>
         <button id="rename" class="ghost" title="Rename this page (F2)" disabled>Rename</button>
         <button id="move" class="ghost" title="Move this page to another folder (or drag it onto a folder in the sidebar)" disabled>Move</button>
         <button id="delete" class="ghost icon-button" aria-label="Move page to the Trash" title="Move to the Trash (⌘⌫)" disabled></button>
       </header>
+      <div id="notice" role="status" hidden><span id="notice-text"></span> <button id="notice-ok" class="ghost">OK</button></div>
       <div id="conflict" role="alert" hidden>
         This page changed outside the app while you were editing.
         <button id="take-theirs" class="ghost">Load their version</button>
@@ -66,6 +68,7 @@
         </fieldset>
         <button type="button" id="new-ddb" class="ghost" hidden>Import from D&amp;D Beyond…</button>
         <label>Name <input id="new-name" aria-required="true" autocomplete="off" /></label>
+        <label id="new-private-row" class="new-private" hidden><input type="checkbox" role="switch" id="new-private" /> <span id="new-private-text">Private</span></label>
         <p id="new-error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" id="new-cancel" class="ghost">Cancel</button>

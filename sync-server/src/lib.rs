@@ -17,7 +17,7 @@ use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use sync_protocol::{
     decode_blob, decode_secret, encode_blob, encode_secret, is_id, random_id, random_secret, token_hash, Change,
-    ChangesResponse, CreateRoomResponse, ErrorResponse, InviteInfo, RedeemRequest, RedeemResponse, Role,
-    CREATE_KEY_HEADER, NONCE_LEN, TAG_LEN,
+    ChangesResponse, CreateRoomResponse, ErrorResponse, InviteInfo, InviteRequest, MemberUpdate, RedeemRequest,
+    RedeemResponse, Role, RoomSettings, CREATE_KEY_HEADER, NONCE_LEN, TAG_LEN,
 };
 use tokio::sync::watch;
 
@@ -259,12 +259,21 @@ fn allow_read(state: &AppState, caller: &Caller) -> Result<(), ApiError> {
     ok.then_some(()).ok_or(ApiError::RATE_LIMITED)
 }
 
-/// Who is calling: an owner or member token of the room.
+/// Who is calling: a token of the room. `role` and `manage` are as of the call; what a member may read is decided in
+/// the database instead, on every read (db::changes, db::access).
 #[derive(Clone, Debug)]
 pub(crate) struct Caller {
     room: String,
     member_id: String,
     role: Role,
+    manage: bool,
+}
+
+impl Caller {
+    /// The owner, or a DM the owner lets manage members.
+    fn manages(&self) -> bool {
+        self.role == Role::Owner || (self.role == Role::Dm && self.manage)
+    }
 }
 
 /// Checks a token against every token of the room in constant time. Unknown rooms, revoked and
@@ -278,14 +287,14 @@ async fn authenticate(state: &AppState, room: &str, token: Option<&str>) -> Resu
     let owned = room.to_string();
     let rows = state.db(move |c| db::room_tokens(c, &owned)).await?;
     let mut found = None;
-    let dummy = (vec![0u8; 32], String::new(), Role::Member);
-    for (stored, member_id, role) in rows.iter().chain(rows.is_empty().then_some(&dummy)) {
+    let dummy = (vec![0u8; 32], String::new(), Role::Player, false);
+    for (stored, member_id, role, manage) in rows.iter().chain(rows.is_empty().then_some(&dummy)) {
         if bool::from(stored.as_slice().ct_eq(&hash)) {
-            found = Some((member_id.clone(), *role));
+            found = Some((member_id.clone(), *role, *manage));
         }
     }
-    let (member_id, role) = found.filter(|(id, _)| !id.is_empty()).ok_or(ApiError::UNAUTHORIZED)?;
-    Ok(Caller { room: room.to_string(), member_id, role })
+    let (member_id, role, manage) = found.filter(|(id, ..)| !id.is_empty()).ok_or(ApiError::UNAUTHORIZED)?;
+    Ok(Caller { room: room.to_string(), member_id, role, manage })
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -313,10 +322,40 @@ impl FromRequestParts<AppState> for Owner {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         let caller = Caller::from_request_parts(parts, state).await?;
         if caller.role != Role::Owner {
-            return Err(ApiError(StatusCode::FORBIDDEN, "owner_only"));
+            return Err(OWNER_ONLY);
         }
         Ok(Owner(caller))
     }
+}
+
+/// A caller who manages members: the owner, or a DM with `manage`.
+pub(crate) struct Manager(Caller);
+
+impl FromRequestParts<AppState> for Manager {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let caller = Caller::from_request_parts(parts, state).await?;
+        if !caller.manages() {
+            return Err(ApiError(StatusCode::FORBIDDEN, "not_allowed"));
+        }
+        Ok(Manager(caller))
+    }
+}
+
+const OWNER_ONLY: ApiError = ApiError(StatusCode::FORBIDDEN, "owner_only");
+const NOT_FOUND: ApiError = ApiError(StatusCode::NOT_FOUND, "not_found");
+
+/// Whether `caller` (who manages) may remove or re-invite `target`: the owner may anyone but themselves, a manager
+/// only members who don't manage. The owner as target is refused with `owner_error`.
+fn may_handle(caller: &Caller, target: &db::Member, owner_error: &'static str) -> Result<(), ApiError> {
+    if target.role == Role::Owner {
+        return Err(ApiError(StatusCode::BAD_REQUEST, owner_error));
+    }
+    if caller.role != Role::Owner && target.manage {
+        return Err(OWNER_ONLY);
+    }
+    Ok(())
 }
 
 pub(crate) enum Outcome {
@@ -325,10 +364,13 @@ pub(crate) enum Outcome {
 }
 
 /// The one write path (WebSocket put and delete): rate limit, validation, limits, then the
-/// conditional write; wakes the room's live sockets.
+/// conditional write; wakes the room's live sockets. `owner` is "" for the shared files, else the writer's own
+/// member id (their private space): the socket picks it from the writer's token, never from the message.
 pub(crate) async fn write(
     state: &AppState,
     room: &str,
+    writer: &str,
+    owner: &str,
     id: &str,
     base: u64,
     blob: Option<&str>,
@@ -357,8 +399,8 @@ pub(crate) async fn write(
         }
     };
     let limits = db::Limits { max_room_bytes: cfg.max_room_bytes, max_files: cfg.max_files };
-    let (r, i) = (room.to_string(), id.to_string());
-    let written = state.db(move |c| db::write(c, &r, &i, base, blob.as_deref(), &limits)).await?;
+    let (r, w, o, i) = (room.to_string(), writer.to_string(), owner.to_string(), id.to_string());
+    let written = state.db(move |c| db::write(c, &r, &w, &o, &i, base, blob.as_deref(), &limits)).await?;
     match written {
         db::Written::Ack(seq) => {
             live::notify(state, room, seq);
@@ -367,17 +409,31 @@ pub(crate) async fn write(
         db::Written::Conflict(seq, blob) => Ok(Outcome::Conflict(seq, blob.map(|b| encode_blob(&b)))),
         db::Written::RoomFull => Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "room_full")),
         db::Written::TooManyFiles => Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "too_many_files")),
+        db::Written::Gone => Err(ApiError::UNAUTHORIZED),
     }
 }
 
-/// One page of changes after `since` (see [`db::changes`]).
-pub(crate) async fn changes_page(state: &AppState, room: &str, since: u64) -> Result<ChangesResponse, ApiError> {
+/// One page of the changes `viewer` may see after `since` (others' private files after `dm_since`); see
+/// [`db::changes`], where visibility is decided.
+pub(crate) async fn changes_page(
+    state: &AppState,
+    room: &str,
+    viewer: &str,
+    since: u64,
+    dm_since: u64,
+) -> Result<ChangesResponse, ApiError> {
     // SQLite integers stop at i64::MAX; no seq is ever above it.
-    let (r, since) = (room.to_string(), since.min(i64::MAX as u64));
-    let (seq, rows, more) = state.db(move |c| db::changes(c, &r, since, PAGE_BYTES)).await?;
+    let max = i64::MAX as u64;
+    let (r, v, since, dm_since) = (room.to_string(), viewer.to_string(), since.min(max), dm_since.min(max));
+    let (seq, rows, more) = state.db(move |c| db::changes(c, &r, &v, since, dm_since, PAGE_BYTES)).await?;
     let changes = rows
         .into_iter()
-        .map(|(id, seq, blob)| Change { id, seq, blob: blob.map(|b| encode_blob(&b)) })
+        .map(|(id, seq, blob, owner)| Change {
+            id,
+            seq,
+            blob: blob.map(|b| encode_blob(&b)),
+            author: (!owner.is_empty()).then_some(owner),
+        })
         .collect();
     Ok(ChangesResponse { seq, changes, more })
 }
@@ -394,7 +450,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/rooms/{room}/invites/{invite}", delete(revoke_invite))
         .route("/v1/rooms/{room}/invites/{invite}/redeem", post(redeem))
         .route("/v1/rooms/{room}/members", get(members))
-        .route("/v1/rooms/{room}/members/{member_id}", delete(remove_member))
+        .route("/v1/rooms/{room}/members/{member_id}", delete(remove_member).patch(update_member))
+        .route("/v1/rooms/{room}/members/{member_id}/reinvite", post(reinvite))
+        .route("/v1/rooms/{room}/settings", patch(update_settings))
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
         .with_state(state)
 }
@@ -437,43 +495,111 @@ async fn changes(
 ) -> Result<Json<ChangesResponse>, ApiError> {
     let Query(Since { since }) = query.map_err(|_| ApiError(StatusCode::BAD_REQUEST, "bad_request"))?;
     allow_read(&state, &caller)?;
-    Ok(Json(changes_page(&state, &caller.room, since).await?))
+    Ok(Json(changes_page(&state, &caller.room, &caller.member_id, since, since).await?))
 }
 
-async fn create_invite(State(state): State<AppState>, Owner(caller): Owner) -> Result<Response, ApiError> {
-    let invite = random_id();
-    let expires = now_ms() + i64::from(state.0.config.invite_days) * 86_400_000;
-    let (room, inv) = (caller.room, invite.clone());
+/// A JSON body, or the default for an empty one.
+fn body_or_default<T: serde::de::DeserializeOwned + Default>(body: &Bytes) -> Result<T, ApiError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(T::default());
+    }
+    serde_json::from_slice(body).map_err(|_| ApiError(StatusCode::BAD_REQUEST, "bad_request"))
+}
+
+/// Stores a new invite (`member_id` None, if the room has a seat for one) or a re-invite.
+async fn add_invite(state: &AppState, room: String, mut info: InviteInfo) -> Result<Response, ApiError> {
+    info.expires = now_ms() + i64::from(state.0.config.invite_days) * 86_400_000;
+    let stored = info.clone();
     let created = state
         .db(move |c| {
-            if db::seats(c, &room)? >= MAX_SEATS {
+            if stored.member_id.is_none() && db::seats(c, &room)? >= MAX_SEATS {
                 return Ok(false);
             }
-            db::create_invite(c, &room, &inv, expires)?;
+            db::create_invite(c, &room, &stored)?;
             Ok(true)
         })
         .await?;
     if !created {
         return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "too_many_members"));
     }
-    Ok((StatusCode::CREATED, Json(InviteInfo { invite, expires })).into_response())
+    Ok((StatusCode::CREATED, Json(info)).into_response())
 }
 
-async fn list_invites(State(state): State<AppState>, Owner(caller): Owner) -> Result<Json<Vec<InviteInfo>>, ApiError> {
-    Ok(Json(state.db(move |c| db::pending_invites(c, &caller.room)).await?))
+/// Invites a player or a DM. Managers can invite both, but only the owner can let a DM manage.
+async fn create_invite(State(state): State<AppState>, Manager(caller): Manager, body: Bytes) -> Result<Response, ApiError> {
+    let req: InviteRequest = body_or_default(&body)?;
+    if req.role == Role::Owner || (req.manage && req.role != Role::Dm) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "bad_request"));
+    }
+    if req.manage && caller.role != Role::Owner {
+        return Err(OWNER_ONLY);
+    }
+    let info = InviteInfo { invite: random_id(), expires: 0, role: req.role, manage: req.manage, member_id: None };
+    add_invite(&state, caller.room, info).await
 }
 
+/// An invite that hands an existing member's identity to whoever redeems it (their new computer): see db::redeem.
+async fn reinvite(
+    State(state): State<AppState>,
+    Manager(caller): Manager,
+    Path((_, member_id)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    if !is_id(&member_id) {
+        return Err(NOT_FOUND);
+    }
+    let (room, id) = (caller.room.clone(), member_id.clone());
+    let target = state.db(move |c| db::member(c, &room, &id)).await?.ok_or(NOT_FOUND)?;
+    may_handle(&caller, &target, "cannot_reinvite_owner")?;
+    let info = InviteInfo { invite: random_id(), expires: 0, role: target.role, manage: target.manage, member_id: Some(member_id) };
+    add_invite(&state, caller.room, info).await
+}
+
+/// Pending invites. A manager doesn't see one that grants manage or re-invites someone who manages: they hold the room
+/// key, so an invite they can see is one they could redeem themselves.
+async fn list_invites(State(state): State<AppState>, Manager(caller): Manager) -> Result<Json<Vec<InviteInfo>>, ApiError> {
+    let owner = caller.role == Role::Owner;
+    let list = state
+        .db(move |c| {
+            let mut out = Vec::new();
+            for i in db::pending_invites(c, &caller.room)? {
+                if owner || !(i.manage || invite_target_manages(c, &caller.room, &i.member_id)?) {
+                    out.push(i);
+                }
+            }
+            Ok(out)
+        })
+        .await?;
+    Ok(Json(list))
+}
+
+/// Whether a re-invite's member manages (false for an invite for someone new).
+fn invite_target_manages(c: &Connection, room: &str, target: &Option<String>) -> rusqlite::Result<bool> {
+    match target {
+        Some(id) => Ok(db::member(c, room, id)?.is_some_and(|m| m.manage)),
+        None => Ok(false),
+    }
+}
+
+/// Cancels a pending invite. A manager can't cancel one that grants manage or re-invites someone who manages.
 async fn revoke_invite(
     State(state): State<AppState>,
-    Owner(caller): Owner,
+    Manager(caller): Manager,
     Path((_, invite)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let found = state.db(move |c| db::revoke_invite(c, &caller.room, &invite)).await?;
-    if found {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(ApiError(StatusCode::NOT_FOUND, "invite_not_found"))
-    }
+    let owner = caller.role == Role::Owner;
+    state
+        .db(move |c| {
+            let Some((_, manage, target)) = db::invite(c, &caller.room, &invite)? else {
+                return Ok(Err(ApiError(StatusCode::NOT_FOUND, "invite_not_found")));
+            };
+            if !owner && (manage || invite_target_manages(c, &caller.room, &target)?) {
+                return Ok(Err(OWNER_ONLY));
+            }
+            db::revoke_invite(c, &caller.room, &invite)?;
+            Ok(Ok(()))
+        })
+        .await??;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn redeem(
@@ -499,9 +625,18 @@ async fn redeem(
     let token = random_secret();
     let hash = token_hash(&token);
     let member_id = random_id();
-    let result = state.db(move |c| db::redeem(c, &room, &invite, &hash, &member_id, &req.member)).await?;
+    let r = room.clone();
+    let result = state.db(move |c| db::redeem(c, &r, &invite, &hash, &member_id, &req.member)).await?;
+    let created = || (StatusCode::CREATED, Json(RedeemResponse { token: encode_secret(&token) })).into_response();
     match result {
-        db::Redeemed::Yes => Ok((StatusCode::CREATED, Json(RedeemResponse { token: encode_secret(&token) })).into_response()),
+        db::Redeemed::Joined => {
+            live::access_changed(&state, &room); // DMs who read private notes learn of the new member
+            Ok(created())
+        }
+        db::Redeemed::Replaced(member_id) => {
+            live::kick(&state, &room, &member_id, live::REPLACED); // the member's old computer is signed out at once
+            Ok(created())
+        }
         db::Redeemed::NotFound => Err(not_found),
         db::Redeemed::Used => Err(ApiError(StatusCode::GONE, "invite_used")),
         db::Redeemed::Expired => Err(ApiError(StatusCode::GONE, "invite_expired")),
@@ -510,25 +645,62 @@ async fn redeem(
 
 async fn members(
     State(state): State<AppState>,
-    Owner(caller): Owner,
+    Manager(caller): Manager,
 ) -> Result<Json<Vec<sync_protocol::MemberInfo>>, ApiError> {
     Ok(Json(state.db(move |c| db::members(c, &caller.room)).await?))
 }
 
+/// Removes a member and deletes their private notes from the server. A manager may remove members who don't manage.
 async fn remove_member(
+    State(state): State<AppState>,
+    Manager(caller): Manager,
+    Path((_, member_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let (room, id, by) = (caller.room.clone(), member_id.clone(), caller.clone());
+    state
+        .db(move |c| {
+            let Some(target) = db::member(c, &room, &id)? else { return Ok(Err(NOT_FOUND)) };
+            if let Err(e) = may_handle(&by, &target, "cannot_remove_owner") {
+                return Ok(Err(e));
+            }
+            db::remove_member(c, &room, &id)?;
+            Ok(Ok(()))
+        })
+        .await??;
+    live::kick(&state, &caller.room, &member_id, live::REVOKED);
+    live::access_changed(&state, &caller.room); // DMs drop their copies of the member's private notes
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The owner changes a member's role or a DM's `manage` flag, or says on their own row that they're also the DM; the
+/// member's sockets learn it at once.
+async fn update_member(
     State(state): State<AppState>,
     Owner(caller): Owner,
     Path((_, member_id)): Path<(String, String)>,
+    body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    let (room, id) = (caller.room.clone(), member_id.clone());
-    match state.db(move |c| db::remove_member(c, &room, &id)).await? {
-        db::Removed::Yes => {
-            live::kick(&state, &caller.room, &member_id);
+    let req: MemberUpdate = serde_json::from_slice(&body).map_err(|_| ApiError(StatusCode::BAD_REQUEST, "bad_request"))?;
+    let room = caller.room.clone();
+    match state.db(move |c| db::update_member(c, &room, &member_id, &req)).await? {
+        db::Updated::Yes => {
+            live::access_changed(&state, &caller.room);
             Ok(StatusCode::NO_CONTENT)
         }
-        db::Removed::Owner => Err(ApiError(StatusCode::BAD_REQUEST, "cannot_remove_owner")),
-        db::Removed::NotFound => Err(ApiError(StatusCode::NOT_FOUND, "not_found")),
+        db::Updated::Owner => Err(ApiError(StatusCode::BAD_REQUEST, "cannot_change_owner")),
+        db::Updated::NotFound => Err(NOT_FOUND),
+        db::Updated::Invalid => Err(ApiError(StatusCode::BAD_REQUEST, "bad_request")),
     }
+}
+
+/// The owner turns `dm_reads_private` on or off. Every socket learns it, and DMs start or stop receiving private notes
+/// at once (db::changes reads the setting for every page it sends).
+async fn update_settings(State(state): State<AppState>, Owner(caller): Owner, body: Bytes) -> Result<Json<RoomSettings>, ApiError> {
+    let req: RoomSettings = serde_json::from_slice(&body).map_err(|_| ApiError(StatusCode::BAD_REQUEST, "bad_request"))?;
+    let room = caller.room.clone();
+    state.db(move |c| db::set_dm_reads_private(c, &room, req.dm_reads_private)).await?;
+    live::access_changed(&state, &caller.room);
+    Ok(Json(req))
 }
 
 fn escape(s: &str) -> String {

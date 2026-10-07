@@ -24,6 +24,7 @@ pub const WS_PROTOCOL: &str = "lorekeeper";
 pub const WS_TOKEN_PROTOCOL_PREFIX: &str = "token.";
 
 const FILE_ID_CONTEXT: &[u8] = b"lorekeeper file id v1";
+const PRIVATE_FILE_ID_CONTEXT: &[u8] = b"lorekeeper private file id v1";
 
 /// Lowercase RFC 4648 base32 without padding.
 static BASE32: LazyLock<Encoding> = LazyLock::new(|| {
@@ -99,6 +100,18 @@ pub fn token_hash(token: &[u8; SECRET_LEN]) -> [u8; 32] {
 pub fn file_id(key: &[u8; SECRET_LEN], path: &str) -> String {
     let mut h = blake3::Hasher::new_keyed(key);
     h.update(FILE_ID_CONTEXT);
+    h.update(path.as_bytes());
+    BASE32.encode(&h.finalize().as_bytes()[..ID_LEN])
+}
+
+/// A private file's id: keyed BLAKE3 of its own context string, the author's member id (26 characters) and the
+/// path inside their `Private/` folder, first 16 bytes, base32. The context differs from [`file_id`]'s at byte 12,
+/// so no private id is ever a shared one, and the member id makes two players' identical private paths different
+/// ids, so the server can link them neither to each other nor to a shared page.
+pub fn private_file_id(key: &[u8; SECRET_LEN], member_id: &str, path: &str) -> String {
+    let mut h = blake3::Hasher::new_keyed(key);
+    h.update(PRIVATE_FILE_ID_CONTEXT);
+    h.update(member_id.as_bytes());
     h.update(path.as_bytes());
     BASE32.encode(&h.finalize().as_bytes()[..ID_LEN])
 }
@@ -199,6 +212,18 @@ pub fn open(key: &[u8; SECRET_LEN], room: &str, id: &str, blob: &[u8]) -> Result
     let json = open_raw(key, &associated_data(room, id), blob)?;
     let file: FileContent = serde_json::from_slice(&json).map_err(|_| Error::Decrypt)?;
     if !is_safe_path(&file.path) || file_id(key, &file.path) != id {
+        return Err(Error::Decrypt);
+    }
+    Ok(file)
+}
+
+/// [`open`] for a file in `member_id`'s private space: the path inside (relative to their `Private/` folder) must be
+/// safe and be the one `id` was derived from with [`private_file_id`] for that member. A shared blob, or one moved to
+/// another member's space, doesn't open.
+pub fn open_private(key: &[u8; SECRET_LEN], room: &str, member_id: &str, id: &str, blob: &[u8]) -> Result<FileContent, Error> {
+    let json = open_raw(key, &associated_data(room, id), blob)?;
+    let file: FileContent = serde_json::from_slice(&json).map_err(|_| Error::Decrypt)?;
+    if !is_id(member_id) || !is_safe_path(&file.path) || private_file_id(key, member_id, &file.path) != id {
         return Err(Error::Decrypt);
     }
     Ok(file)
@@ -367,11 +392,41 @@ fn parse_authority(authority: &str) -> Result<&str, Error> {
 
 // ---- HTTP API (v1) ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A member's role. Exactly one owner (the room's creator); `dm` and `player` come from the invite they redeemed and
+/// can be changed by the owner. Rooms from before roles had `member`, which reads as `player`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Owner,
-    Member,
+    Dm,
+    #[default]
+    #[serde(alias = "member")]
+    Player,
+}
+
+impl Role {
+    /// Whether this member receives other members' private notes: only while the room's `dm_reads_private` is on, and
+    /// only a DM, or the owner when they said they're also the DM (`owner_is_dm`, theirs alone to set). Being the owner
+    /// alone reads nothing; players never do. The server's delivery and the app's labels both follow this one rule.
+    pub fn reads_private(self, owner_is_dm: bool, dm_reads_private: bool) -> bool {
+        dm_reads_private && (self == Role::Dm || (self == Role::Owner && owner_is_dm))
+    }
+}
+
+/// Where a write goes: the room's shared files, or the writer's own private space (`Private/` in their campaign
+/// folder), which the server delivers only to that member's devices and, when the room allows, to DMs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Space {
+    #[default]
+    Shared,
+    Private,
+}
+
+impl Space {
+    fn is_shared(&self) -> bool {
+        *self == Space::Shared
+    }
 }
 
 /// `POST /v1/rooms` answer.
@@ -381,12 +436,50 @@ pub struct CreateRoomResponse {
     pub owner_token: String,
 }
 
-/// `POST /v1/rooms/{room}/invites` answer, and an item of `GET /v1/rooms/{room}/invites`.
+/// `POST /v1/rooms/{room}/invites` body (optional: none means a player).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InviteRequest {
+    #[serde(default)]
+    pub role: Role,
+    /// Only for a DM, and only the owner may grant it: the DM can then invite players and DMs, list and cancel
+    /// invites, and remove or re-invite members (never the owner or another manager).
+    #[serde(default)]
+    pub manage: bool,
+}
+
+/// `POST /v1/rooms/{room}/invites` and `.../members/{member_id}/reinvite` answer, and an item of
+/// `GET /v1/rooms/{room}/invites`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InviteInfo {
     pub invite: String,
     /// Unix milliseconds.
     pub expires: i64,
+    #[serde(default)]
+    pub role: Role,
+    #[serde(default)]
+    pub manage: bool,
+    /// A re-invite: the member whose identity (role and private notes) redeeming it hands over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_id: Option<String>,
+}
+
+/// `PATCH /v1/rooms/{room}/members/{member_id}` body (owner only); a missing field stays as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MemberUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manage: Option<bool>,
+    /// Only on the owner's own row: "I'm also the DM".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_is_dm: Option<bool>,
+}
+
+/// `PATCH /v1/rooms/{room}/settings` body and answer (owner only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RoomSettings {
+    /// DMs (and the owner) receive every member's private notes; off by default.
+    pub dm_reads_private: bool,
 }
 
 /// `POST /v1/rooms/{room}/invites/{invite}/redeem` body.
@@ -407,17 +500,25 @@ pub struct MemberInfo {
     pub member_id: String,
     pub member: String,
     pub role: Role,
+    #[serde(default)]
+    pub manage: bool,
+    /// The owner said they're also the campaign's DM (see [`Role::reads_private`]); false for everyone else.
+    #[serde(default)]
+    pub owner_is_dm: bool,
     /// Unix milliseconds.
     pub created: i64,
     pub last_seen: Option<i64>,
 }
 
-/// One file's latest version; `blob` is `None` for a deleted file (tombstone).
+/// One file's latest version; `blob` is `None` for a deleted file (tombstone). `author` is set for a private file:
+/// the member whose private space it is in (open it with [`open_private`] for that member).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change {
     pub id: String,
     pub seq: u64,
     pub blob: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
 }
 
 /// `GET /v1/rooms/{room}/changes?since=N` answer.
@@ -439,10 +540,31 @@ pub struct ErrorResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ClientMessage {
-    /// First message: replays changes after `since`, then streams live.
-    Hello { since: u64, member: String },
-    Put { req: u64, id: String, base: u64, blob: String },
-    Delete { req: u64, id: String, base: u64 },
+    /// First message: replays changes after `since`, then streams live. Other members' private files (sent only to
+    /// those who read them) replay after `dm_since` instead when it's given, so a DM who just gained access gets
+    /// all of them.
+    Hello {
+        since: u64,
+        member: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dm_since: Option<u64>,
+    },
+    /// A write into the shared files or the writer's own private space; nothing can name anyone else's.
+    Put {
+        req: u64,
+        id: String,
+        base: u64,
+        blob: String,
+        #[serde(default, skip_serializing_if = "Space::is_shared")]
+        space: Space,
+    },
+    Delete {
+        req: u64,
+        id: String,
+        base: u64,
+        #[serde(default, skip_serializing_if = "Space::is_shared")]
+        space: Space,
+    },
     Ping,
 }
 
@@ -463,6 +585,20 @@ pub enum ServerMessage {
     Presence { members: Vec<PresenceMember> },
     Ack { req: u64, seq: u64 },
     Conflict { req: u64, seq: u64, blob: Option<String> },
+    /// Who this connection is and what it may read: after `hello` (before the replay) and whenever any of it changes.
+    /// `members` lists the room's members (ids, display ids, roles) only when this member reads others' private
+    /// notes (see [`Role::reads_private`]), so the app can drop its copies of anyone no longer there.
+    Access {
+        member_id: String,
+        role: Role,
+        manage: bool,
+        /// The owner said they're also the DM (always false for anyone else).
+        #[serde(default)]
+        owner_is_dm: bool,
+        dm_reads_private: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        members: Vec<PresenceMember>,
+    },
     Pong,
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -765,8 +901,10 @@ mod tests {
     #[test]
     fn wire_types_match_the_doc() {
         let json = |v: &ServerMessage| serde_json::to_string(v).unwrap();
-        let change = Change { id: "i".into(), seq: 3, blob: None };
+        let change = Change { id: "i".into(), seq: 3, blob: None, author: None };
         assert_eq!(json(&ServerMessage::Change(change.clone())), r#"{"type":"change","id":"i","seq":3,"blob":null}"#);
+        let private = Change { author: Some("m".into()), ..change.clone() };
+        assert_eq!(json(&ServerMessage::Change(private)), r#"{"type":"change","id":"i","seq":3,"blob":null,"author":"m"}"#);
         assert_eq!(json(&ServerMessage::Ack { req: 1, seq: 2 }), r#"{"type":"ack","req":1,"seq":2}"#);
         assert_eq!(json(&ServerMessage::Pong), r#"{"type":"pong"}"#);
         assert_eq!(json(&ServerMessage::Error { req: None, error: "x".into() }), r#"{"type":"error","error":"x"}"#);
@@ -779,15 +917,82 @@ mod tests {
             json(&ServerMessage::Changes { seq: 3, changes: vec![change], more: false }),
             r#"{"type":"changes","seq":3,"changes":[{"id":"i","seq":3,"blob":null}],"more":false}"#
         );
+        let access = ServerMessage::Access { member_id: "m".into(), role: Role::Dm, manage: true, owner_is_dm: false, dm_reads_private: false, members: vec![] };
+        assert_eq!(json(&access), r#"{"type":"access","member_id":"m","role":"dm","manage":true,"owner_is_dm":false,"dm_reads_private":false}"#);
         let parse = |s: &str| serde_json::from_str::<ClientMessage>(s).unwrap();
-        assert_eq!(parse(r#"{"type":"hello","since":0,"member":"x"}"#), ClientMessage::Hello { since: 0, member: "x".into() });
+        assert_eq!(parse(r#"{"type":"hello","since":0,"member":"x"}"#), ClientMessage::Hello { since: 0, member: "x".into(), dm_since: None });
+        assert_eq!(parse(r#"{"type":"hello","since":5,"member":"","dm_since":0}"#), ClientMessage::Hello { since: 5, member: "".into(), dm_since: Some(0) });
         assert_eq!(parse(r#"{"type":"ping"}"#), ClientMessage::Ping);
+        let put = ClientMessage::Put { req: 1, id: "i".into(), base: 0, blob: "AA==".into(), space: Space::Shared };
+        assert_eq!(parse(r#"{"type":"put","req":1,"id":"i","base":0,"blob":"AA=="}"#), put);
+        assert_eq!(serde_json::to_string(&put).unwrap(), r#"{"type":"put","req":1,"id":"i","base":0,"blob":"AA=="}"#, "shared is left out");
         assert_eq!(
-            parse(r#"{"type":"put","req":1,"id":"i","base":0,"blob":"AA=="}"#),
-            ClientMessage::Put { req: 1, id: "i".into(), base: 0, blob: "AA==".into() }
+            parse(r#"{"type":"put","req":1,"id":"i","base":0,"blob":"AA==","space":"private"}"#),
+            ClientMessage::Put { req: 1, id: "i".into(), base: 0, blob: "AA==".into(), space: Space::Private }
         );
-        assert_eq!(parse(r#"{"type":"delete","req":1,"id":"i","base":2}"#), ClientMessage::Delete { req: 1, id: "i".into(), base: 2 });
+        assert_eq!(parse(r#"{"type":"delete","req":1,"id":"i","base":2}"#), ClientMessage::Delete { req: 1, id: "i".into(), base: 2, space: Space::Shared });
+        assert!(serde_json::from_str::<ClientMessage>(r#"{"type":"put","req":1,"id":"i","base":0,"blob":"AA==","space":"theirs"}"#).is_err());
         assert!(serde_json::from_str::<ClientMessage>(r#"{"type":"shout"}"#).is_err());
-        assert_eq!(serde_json::to_string(&Role::Member).unwrap(), r#""member""#);
+        // Roles: rooms from before roles said "member", which is a player now.
+        assert_eq!(serde_json::to_string(&Role::Player).unwrap(), r#""player""#);
+        assert_eq!(serde_json::from_str::<Role>(r#""member""#).unwrap(), Role::Player);
+        assert_eq!(serde_json::from_str::<Role>(r#""dm""#).unwrap(), Role::Dm);
+        assert_eq!(serde_json::from_str::<InviteRequest>("{}").unwrap(), InviteRequest { role: Role::Player, manage: false });
+        let old: InviteInfo = serde_json::from_str(r#"{"invite":"i","expires":1}"#).unwrap();
+        assert_eq!((old.role, old.manage, old.member_id), (Role::Player, false, None));
+        assert_eq!(serde_json::to_string(&MemberUpdate { role: Some(Role::Dm), ..Default::default() }).unwrap(), r#"{"role":"dm"}"#);
+        assert_eq!(serde_json::from_str::<MemberUpdate>(r#"{"owner_is_dm":true}"#).unwrap().owner_is_dm, Some(true));
+        assert_eq!(serde_json::to_string(&RoomSettings { dm_reads_private: true }).unwrap(), r#"{"dm_reads_private":true}"#);
+    }
+
+    #[test]
+    fn only_dms_read_private_notes_and_only_when_allowed() {
+        for role in [Role::Owner, Role::Dm, Role::Player] {
+            for flag in [false, true] {
+                assert!(!role.reads_private(flag, false), "{role:?} with the setting off");
+            }
+        }
+        assert!(Role::Dm.reads_private(false, true));
+        assert!(!Role::Owner.reads_private(false, true), "being the owner alone reads nothing");
+        assert!(Role::Owner.reads_private(true, true), "an owner who's also the DM");
+        assert!(!Role::Player.reads_private(true, true));
+    }
+
+    #[test]
+    fn private_file_id_known_answer() {
+        // Frozen: changing this breaks every synced private note.
+        let member = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let path = "Sessions/Session 4/Sibling 5.md";
+        assert_eq!(private_file_id(&KEY, member, path), PRIVATE_FILE_ID_KAT);
+        assert!(is_id(PRIVATE_FILE_ID_KAT));
+        // Never the shared id of the same path, nor of "Private/<path>", nor another member's.
+        assert_ne!(private_file_id(&KEY, member, path), file_id(&KEY, path));
+        assert_ne!(private_file_id(&KEY, member, path), file_id(&KEY, &format!("Private/{path}")));
+        assert_ne!(private_file_id(&KEY, member, path), private_file_id(&KEY, "baaaaaaaaaaaaaaaaaaaaaaaaa", path));
+        assert_ne!(private_file_id(&[8u8; 32], member, path), PRIVATE_FILE_ID_KAT);
+    }
+    const PRIVATE_FILE_ID_KAT: &str = "tlbg3wauz42hmvskw635gnxcv4";
+
+    #[test]
+    fn private_blobs_open_only_for_their_author_and_space() {
+        let room = random_id();
+        let (me, other) = (random_id(), random_id());
+        let file = file();
+        let id = private_file_id(&KEY, &me, &file.path);
+        let blob = seal(&KEY, &room, &id, &file);
+        assert_eq!(open_private(&KEY, &room, &me, &id, &blob), Ok(file.clone()));
+        // Relabelled as another member's, or passed off as a shared file: it doesn't open.
+        assert_eq!(open_private(&KEY, &room, &other, &id, &blob), Err(Error::Decrypt));
+        assert_eq!(open(&KEY, &room, &id, &blob), Err(Error::Decrypt));
+        // A shared blob doesn't open as private either.
+        let shared_id = file_id(&KEY, &file.path);
+        let shared = seal(&KEY, &room, &shared_id, &file);
+        assert_eq!(open_private(&KEY, &room, &me, &shared_id, &shared), Err(Error::Decrypt));
+        // An author that isn't a member id, and unsafe paths, are refused.
+        assert_eq!(open_private(&KEY, &room, "../x", &id, &blob), Err(Error::Decrypt));
+        let evil = FileContent { path: "../escape.md".into(), ..Default::default() };
+        let evil_id = private_file_id(&KEY, &me, &evil.path);
+        assert_eq!(open_private(&KEY, &room, &me, &evil_id, &seal(&KEY, &room, &evil_id, &evil)), Err(Error::Decrypt));
+        assert_eq!(open_private(&[8u8; 32], &room, &me, &id, &blob), Err(Error::Decrypt), "wrong key");
     }
 }

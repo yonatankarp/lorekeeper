@@ -16,7 +16,7 @@ use sync_protocol::{decode_secret, encode_secret, is_id, open_member, random_sec
 use tauri::{AppHandle, Emitter};
 use zeroize::Zeroizing;
 
-use crate::sync::{self, Status};
+use crate::sync::{self, Access, Status};
 use crate::{author, config_dir, current_settings, emit_changed, library_dir, off_main, store_settings, watch, Settings, Sharing};
 
 // ---------- the server and the keychain ----------
@@ -192,9 +192,9 @@ impl sync::Sink for AppSink {
     fn status(&self, status: &Status) {
         let mut status = status.clone();
         let mut left = None;
-        if status == Status::Removed {
+        if matches!(status, Status::Removed | Status::Replaced) {
             let mut s = current_settings(&self.app);
-            match leave(&mut s, &self.path) {
+            match leave(&mut s, &self.path, status == Status::Replaced) {
                 Some(room) => left = Some((s, room)),
                 None => status = Status::Stopped { reason: OWNER_REFUSED.into() },
             }
@@ -202,7 +202,7 @@ impl sync::Sink for AppSink {
         let status = &status;
         update(&self.app, &self.path, |s| {
             s.status = Some(status.clone());
-            if matches!(status, Status::Offline | Status::Removed | Status::Stopped { .. }) {
+            if matches!(status, Status::Offline | Status::Removed | Status::Replaced | Status::Stopped { .. }) {
                 s.online.clear();
             }
             if *status == Status::Synced {
@@ -231,42 +231,70 @@ impl sync::Sink for AppSink {
     fn changed(&self) {
         emit_changed(&self.app);
     }
+
+    fn access(&self, access: &Access) {
+        let mut s = current_settings(&self.app);
+        if note_access(&mut s, &self.path, access) {
+            let _ = store_settings(&self.app, &s);
+        }
+    }
+}
+
+/// Keeps what the server said about you in the campaign's settings; true when that changed anything. A change of the
+/// private-notes setting raises the one-time notice for everyone but the owner (who made it).
+fn note_access(s: &mut Settings, path: &str, access: &Access) -> bool {
+    let Some(sh) = s.sharing.get_mut(path) else { return false };
+    if sh.access.as_ref() == Some(access) {
+        return false;
+    }
+    let was = sh.access.as_ref().map(|a| a.dm_reads_private);
+    if was.is_some_and(|was| was != access.dm_reads_private) && access.role != Role::Owner {
+        sh.private_notice = true;
+    }
+    sh.access = Some(access.clone());
+    true
 }
 
 const OWNER_REFUSED: &str =
     "The sync server doesn't accept this campaign's owner sign-in anymore. The campaign's key stays on this computer.";
 
-/// The server refused the campaign's token (or closed with "removed"). A member was removed by the owner: the
-/// campaign stops syncing for good (its files stay) and Some(room) is to be forgotten. An owner can't be removed, so
-/// for them it's a server problem (or a hostile one): None, and their secrets stay, the only way to invite or remove
-/// players.
-fn leave(s: &mut Settings, path: &str) -> Option<String> {
+/// The server refused the campaign's token (or closed with "removed" or "replaced"). A member was removed by the owner,
+/// or `replaced` by a re-invite redeemed on another computer: the campaign stops syncing here for good (its files stay)
+/// and Some(room) is to be forgotten. An owner can't be removed, so for them it's a server problem (or a hostile one):
+/// None, and their secrets stay, the only way to invite or remove players.
+fn leave(s: &mut Settings, path: &str, replaced: bool) -> Option<String> {
     let sh = s.sharing.get_mut(path).filter(|sh| sh.role != "owner")?;
     sh.removed = true;
+    sh.replaced = replaced;
     Some(std::mem::take(&mut sh.room))
 }
 
 /// Keeps the webview from changing a campaign's room (only Share and Join set it), and leaves the room of a joined
 /// campaign you remove from Lorekeeper. The owner's secrets stay: they're the only way to invite or remove players.
 pub(crate) fn guard_settings(app: &AppHandle, old: &Settings, new: &mut Settings) {
-    for room in guard(old, new) {
+    for (path, room) in guard(old, new) {
         let app = app.clone();
-        std::thread::spawn(move || forget_room(&app, &room));
+        std::thread::spawn(move || {
+            forget_room(&app, &room);
+            sync::drop_dm_copies(Path::new(&path)); // other members' private notes aren't yours to keep
+        });
     }
 }
 
-/// See guard_settings; returns the rooms to forget. A save from a window that hadn't heard of a campaign yet (no
-/// sharing entry for it) can't drop or leave it: its entry and its place in the list come back.
-fn guard(old: &Settings, new: &mut Settings) -> Vec<String> {
+/// See guard_settings; returns the (campaign, room) pairs to forget. A save from a window that hadn't heard of a
+/// campaign yet (no sharing entry for it) can't drop or leave it: its entry and its place in the list come back.
+/// Only the engine sets what the server said (access); a window can only clear the notice it raised.
+fn guard(old: &Settings, new: &mut Settings) -> Vec<(String, String)> {
     for (path, sh) in new.sharing.iter_mut() {
         let o = old.sharing.get(path).cloned().unwrap_or_default();
-        (sh.server, sh.room, sh.role, sh.removed) = (o.server, o.room, o.role, o.removed);
+        (sh.server, sh.room, sh.role, sh.removed, sh.replaced, sh.access) = (o.server, o.room, o.role, o.removed, o.replaced, o.access);
+        sh.private_notice &= o.private_notice;
     }
     let mut forget = Vec::new();
     let dropped: Vec<&String> = old.campaigns.iter().filter(|p| !new.campaigns.contains(p)).collect();
     for path in dropped {
         match new.sharing.get_mut(path) {
-            Some(sh) if sh.role == "member" && !sh.room.is_empty() => forget.push(std::mem::take(&mut sh.room)),
+            Some(sh) if sh.role == "member" && !sh.room.is_empty() => forget.push((path.clone(), std::mem::take(&mut sh.room))),
             Some(_) => {}
             None if old.sharing.get(path).is_some_and(|sh| !sh.room.is_empty()) => new.campaigns.push(path.clone()),
             None => {}
@@ -308,10 +336,32 @@ fn campaign(app: &AppHandle, path: &str) -> Result<(Settings, Sharing), String> 
 fn owned(app: &AppHandle, path: &str) -> Result<(String, String, Secrets), String> {
     let (_, sh) = campaign(app, path)?;
     if sh.role != "owner" || sh.room.is_empty() {
-        return Err("Only the player who shared this campaign can do that.".into());
+        return Err("Only the campaign's owner can do that.".into());
     }
     let secrets = load_room(&sh.room)?;
     Ok((sh.server, sh.room, secrets))
+}
+
+/// A campaign whose members you manage (you own it, or the server says you're a DM who manages): (server, room,
+/// token, whether you're the owner). The server checks every request again.
+fn managed(app: &AppHandle, path: &str) -> Result<(String, String, Secrets, bool), String> {
+    let (_, sh) = campaign(app, path)?;
+    let owner = sh.role == "owner";
+    let manages = owner || sh.access.as_ref().is_some_and(|a| a.role == Role::Dm && a.manage);
+    if !manages || sh.room.is_empty() || sh.removed {
+        return Err("Only the campaign's owner, or a DM the owner lets manage players, can do that.".into());
+    }
+    let secrets = load_room(&sh.room)?;
+    Ok((sh.server, sh.room, secrets, owner))
+}
+
+/// "player" or "dm" from a window.
+fn role_from(role: &str) -> Result<Role, String> {
+    match role {
+        "player" => Ok(Role::Player),
+        "dm" => Ok(Role::Dm),
+        _ => Err("A player or a DM.".into()),
+    }
 }
 
 /// Share: makes the campaign's room on the sync server, keeps its key, writes the campaign's name for joiners, and
@@ -358,17 +408,19 @@ pub(crate) async fn sync_share(app: AppHandle, path: String, create_key: Option<
     store_settings(&app, &s)
 }
 
-/// Invite a player (or several): one-time links, each made now and shown once. The key is in the part after #.
+/// Invite players or DMs (`manage`: a DM who may manage players; the owner's to grant): one-time links, each made now
+/// and shown once. The key is in the part after #.
 #[tauri::command]
-pub(crate) async fn sync_invite(app: AppHandle, path: String, count: u32) -> Result<Vec<String>, String> {
+pub(crate) async fn sync_invite(app: AppHandle, path: String, count: u32, role: String, manage: bool) -> Result<Vec<String>, String> {
     if !(1..=10).contains(&count) {
         return Err("Make between 1 and 10 invites at a time.".into());
     }
-    let (server, room, (key, token)) = owned(&app, &path)?;
+    let role = role_from(&role)?;
+    let (server, room, (key, token), _) = managed(&app, &path)?;
     off_main(move || {
         let mut links = Vec::new();
         for _ in 0..count {
-            let invite = sync::create_invite(&server, &room, &token).map_err(|e| e.to_string())?;
+            let invite = sync::create_invite(&server, &room, &token, role, manage && role == Role::Dm).map_err(|e| e.to_string())?;
             links.push(Invite { server: server.clone(), room: room.clone(), invite: invite.invite, key: *key }.link());
         }
         Ok(links)
@@ -376,18 +428,93 @@ pub(crate) async fn sync_invite(app: AppHandle, path: String, count: u32) -> Res
     .await
 }
 
+/// Re-invite a member onto a new computer: a one-time link that makes whoever redeems it that member (role and
+/// private notes), signing out their old computer.
+#[tauri::command]
+pub(crate) async fn sync_reinvite(app: AppHandle, path: String, member_id: String) -> Result<String, String> {
+    if !is_id(&member_id) {
+        return Err("That isn't a player.".into());
+    }
+    let (server, room, (key, token), _) = managed(&app, &path)?;
+    off_main(move || {
+        let invite = sync::reinvite(&server, &room, &token, &member_id).map_err(|e| e.to_string())?;
+        Ok(Invite { server, room, invite: invite.invite, key: *key }.link())
+    })
+    .await
+}
+
+/// The owner makes a member a player or a DM (`manage`: a DM who may manage players).
+#[tauri::command]
+pub(crate) async fn sync_set_role(app: AppHandle, path: String, member_id: String, role: String, manage: bool) -> Result<(), String> {
+    if !is_id(&member_id) {
+        return Err("That isn't a player.".into());
+    }
+    let role = role_from(&role)?;
+    let (server, room, (_, token)) = owned(&app, &path)?;
+    off_main(move || sync::update_member(&server, &room, &token, &member_id, role, manage && role == Role::Dm).map_err(|e| e.to_string())).await
+}
+
+/// The owner decides who reads private notes: the player only, or the player and the DM. Kept in the campaign's
+/// settings at once, so the owner's own labels are right before the server's next word.
+#[tauri::command]
+pub(crate) async fn sync_set_dm_reads(app: AppHandle, path: String, on: bool) -> Result<(), String> {
+    let (server, room, (_, token)) = owned(&app, &path)?;
+    off_main(move || sync::set_dm_reads_private(&server, &room, &token, on).map_err(|e| e.to_string())).await?;
+    let mut s = current_settings(&app);
+    if let Some(sh) = s.sharing.get_mut(&path) {
+        let access = Access { dm_reads_private: on, ..sh.access.clone().unwrap_or(Access { role: Role::Owner, ..Access::default() }) };
+        if note_access(&mut s, &path, &access) {
+            store_settings(&app, &s)?;
+        }
+    }
+    Ok(())
+}
+
+/// The owner says they're also the campaign's DM (then they read private notes as a DM does, when the campaign allows
+/// it), or that they aren't. Needs the member id the server gave this computer, so the campaign must have connected.
+#[tauri::command]
+pub(crate) async fn sync_set_owner_dm(app: AppHandle, path: String, on: bool) -> Result<(), String> {
+    let me = campaign(&app, &path)?.1.access.map(|a| a.member_id).filter(|id| is_id(id));
+    let me = me.ok_or("Open the campaign once so it connects to the sync server, then try again.")?;
+    let (server, room, (_, token)) = owned(&app, &path)?;
+    off_main(move || sync::set_owner_is_dm(&server, &room, &token, &me, on).map_err(|e| e.to_string())).await?;
+    let mut s = current_settings(&app);
+    if let Some(access) = s.sharing.get(&path).and_then(|sh| sh.access.clone()) {
+        if note_access(&mut s, &path, &Access { owner_is_dm: on, ..access }) {
+            store_settings(&app, &s)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingInvite {
     invite: String,
     expires: i64,
+    role: &'static str,
+    manage: bool,
+    /// A re-invite of an existing member.
+    reinvite: bool,
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::Owner => "owner",
+        Role::Dm => "dm",
+        Role::Player => "player",
+    }
 }
 
 #[tauri::command]
 pub(crate) async fn sync_invites(app: AppHandle, path: String) -> Result<Vec<PendingInvite>, String> {
-    let (server, room, (_, token)) = owned(&app, &path)?;
+    let (server, room, (_, token), _) = managed(&app, &path)?;
     let list = off_main(move || sync::list_invites(&server, &room, &token).map_err(|e| e.to_string())).await?;
-    Ok(list.into_iter().filter(|i| is_id(&i.invite)).map(|i| PendingInvite { invite: i.invite, expires: i.expires }).collect())
+    Ok(list
+        .into_iter()
+        .filter(|i| is_id(&i.invite))
+        .map(|i| PendingInvite { invite: i.invite, expires: i.expires, role: role_name(i.role), manage: i.manage, reinvite: i.member_id.is_some() })
+        .collect())
 }
 
 #[tauri::command]
@@ -395,7 +522,7 @@ pub(crate) async fn sync_cancel_invite(app: AppHandle, path: String, invite: Str
     if !is_id(&invite) {
         return Err("That isn't an invite.".into());
     }
-    let (server, room, (_, token)) = owned(&app, &path)?;
+    let (server, room, (_, token), _) = managed(&app, &path)?;
     off_main(move || sync::cancel_invite(&server, &room, &token, &invite).map_err(|e| e.to_string())).await
 }
 
@@ -406,13 +533,21 @@ pub(crate) struct Player {
     /// Their PC's name, decrypted; "" when they haven't picked one yet.
     name: String,
     owner: bool,
+    /// "owner", "dm" or "player".
+    role: &'static str,
+    manage: bool,
+    /// The owner said they're also the DM.
+    owner_is_dm: bool,
+    /// It's you (as the server told this computer).
+    you: bool,
     created: i64,
     last_seen: Option<i64>,
 }
 
 #[tauri::command]
 pub(crate) async fn sync_members(app: AppHandle, path: String) -> Result<Vec<Player>, String> {
-    let (server, room, (key, token)) = owned(&app, &path)?;
+    let me = campaign(&app, &path)?.1.access.map(|a| a.member_id).unwrap_or_default();
+    let (server, room, (key, token), _) = managed(&app, &path)?;
     let list = off_main({
         let room = room.clone();
         move || sync::members(&server, &room, &token).map_err(|e| e.to_string())
@@ -424,6 +559,10 @@ pub(crate) async fn sync_members(app: AppHandle, path: String) -> Result<Vec<Pla
         .map(|m| Player {
             name: open_member(&key, &room, &m.member).unwrap_or_default().chars().filter(|c| !c.is_control()).take(60).collect(),
             owner: m.role == Role::Owner,
+            role: role_name(m.role),
+            manage: m.manage,
+            owner_is_dm: m.owner_is_dm,
+            you: m.member_id == me || (me.is_empty() && m.role == Role::Owner),
             member_id: m.member_id,
             created: m.created,
             last_seen: m.last_seen,
@@ -436,7 +575,7 @@ pub(crate) async fn sync_remove_member(app: AppHandle, path: String, member_id: 
     if !is_id(&member_id) {
         return Err("That isn't a player.".into());
     }
-    let (server, room, (_, token)) = owned(&app, &path)?;
+    let (server, room, (_, token), _) = managed(&app, &path)?;
     off_main(move || sync::remove_member(&server, &room, &token, &member_id).map_err(|e| e.to_string())).await
 }
 
@@ -526,7 +665,7 @@ mod tests {
 
         // Removing a joined campaign leaves its room; removing your own keeps it (the owner token can't be replaced).
         let mut new = Settings { campaigns: vec!["/c".into()], ..old.clone() };
-        assert_eq!(guard(&old, &mut new), ["roomb"]);
+        assert_eq!(guard(&old, &mut new), [("/b".to_string(), "roomb".to_string())]);
         assert_eq!(new.sharing["/b"].room, "");
         assert_eq!(new.sharing["/a"].room, "rooma");
 
@@ -544,11 +683,40 @@ mod tests {
             sharing: [("/a".into(), synced("owner", "rooma")), ("/b".into(), synced("member", "roomb"))].into(),
             ..Settings::default()
         };
-        assert_eq!(leave(&mut s, "/a"), None, "a server can't remove the owner: nothing is forgotten");
+        assert_eq!(leave(&mut s, "/a", false), None, "a server can't remove the owner: nothing is forgotten");
         assert_eq!(s.sharing["/a"], synced("owner", "rooma"));
-        assert_eq!(leave(&mut s, "/b").as_deref(), Some("roomb"));
-        assert_eq!(s.sharing["/b"], Sharing { removed: true, ..synced("member", "") });
-        assert_eq!(leave(&mut s, "/missing"), None);
+        assert_eq!(leave(&mut s, "/b", true).as_deref(), Some("roomb"));
+        assert_eq!(s.sharing["/b"], Sharing { removed: true, replaced: true, ..synced("member", "") });
+        assert_eq!(leave(&mut s, "/missing", false), None);
+    }
+
+    /// What the server says about you is the engine's to set: a window can't claim a role, manage or the setting,
+    /// and can only clear the notice. A change of the setting raises the notice for members, not for the owner.
+    #[test]
+    fn access_comes_from_the_server_only() {
+        let access = |role, on| Access { member_id: "m".into(), role, manage: false, owner_is_dm: false, dm_reads_private: on };
+        let mut s = Settings { sharing: [("/a".into(), synced("member", "rooma")), ("/o".into(), synced("owner", "roomo"))].into(), ..Settings::default() };
+        assert!(note_access(&mut s, "/a", &access(Role::Player, false)));
+        assert!(!note_access(&mut s, "/a", &access(Role::Player, false)), "unchanged");
+        assert!(!s.sharing["/a"].private_notice, "the first word isn't a change");
+        assert!(note_access(&mut s, "/a", &access(Role::Player, true)));
+        assert!(s.sharing["/a"].private_notice);
+        note_access(&mut s, "/o", &access(Role::Owner, false));
+        note_access(&mut s, "/o", &access(Role::Owner, true));
+        assert!(!s.sharing["/o"].private_notice, "the owner made the change");
+
+        let old = s.clone();
+        let mut new = s.clone();
+        let forged = Access { role: Role::Dm, manage: true, ..access(Role::Dm, false) };
+        new.sharing.get_mut("/a").unwrap().access = Some(forged);
+        new.sharing.get_mut("/o").unwrap().private_notice = true;
+        new.sharing.get_mut("/a").unwrap().replaced = true;
+        guard(&old, &mut new);
+        assert_eq!(new.sharing["/a"].access, Some(access(Role::Player, true)));
+        assert!(!new.sharing["/a"].replaced && !new.sharing["/o"].private_notice);
+        new.sharing.get_mut("/a").unwrap().private_notice = false;
+        guard(&old, &mut new);
+        assert!(!new.sharing["/a"].private_notice, "a window clears the notice");
     }
 
     #[test]
