@@ -1177,8 +1177,10 @@ $("tree").addEventListener("dragstart", (e) => {
   e.dataTransfer.setData("application/x-lorekeeper-page", dragged); // not text: dropped in the editor, it inserts nothing
   e.dataTransfer.effectAllowed = "move";
 });
+// A file from outside isn't a page: a drag the tree lost track of (re-rendered mid-drag) never moves one for it.
+const pageDrag = (e) => dragged && !e.dataTransfer.types.includes("Files");
 $("tree").addEventListener("dragover", (e) => {
-  if (!dragged) return;
+  if (!pageDrag(e)) return;
   e.preventDefault(); // a refused folder still takes the drop, to say why
   const folder = dropFolder(e.target);
   const same = folder === dirOf(dragged);
@@ -1192,7 +1194,7 @@ document.addEventListener("dragend", () => {
 });
 $("tree").addEventListener("drop", async (e) => {
   const from = dragged;
-  if (!from) return;
+  if (!pageDrag(e)) return;
   e.preventDefault();
   dragged = null;
   markDrop(null);

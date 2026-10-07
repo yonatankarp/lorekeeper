@@ -1143,13 +1143,11 @@ fn rename_note(root: &Path, from: &str, to: &str) -> Result<(), String> {
     if session(from) || session(to) {
         return Err("Sessions keep their \"Session N\" names in Sessions/, so hotkey notes find the current one.".into());
     }
-    // A page moved into Sessions/ would read as a session. Templates/ may be the Lorekeeper folder's, not the campaign's,
-    // and never syncs (any case), so a shared page moved there would look deleted to the party.
-    let under = |rel: &str, dir: &str| rel.to_lowercase().starts_with(&format!("{dir}/"));
-    if under(to, "sessions") && !under(from, "sessions") {
-        return Err("Only sessions go in Sessions/.".into());
-    }
-    if under(from, "templates") || under(to, "templates") {
+    // Templates/ may be the Lorekeeper folder's, not the campaign's, and never syncs (any case), so a shared page moved
+    // there would look deleted to the party. (Moving pages into Sessions/ is refused in the window, not here: undoing a
+    // move out of Sessions/ moves the page back in.)
+    let templates = |rel: &str| rel.to_lowercase().starts_with("templates/");
+    if templates(from) || templates(to) {
         return Err("Templates stay in Templates/.".into());
     }
     let _guard = WRITE_LOCK.lock().unwrap();
@@ -2217,7 +2215,7 @@ mod tests {
         assert!(rename_note(&dir, "NPCs/Vex.md", "Lore/Vex.md").unwrap_err().contains("already exists"));
         assert_eq!(fs::read_to_string(dir.join("Lore/Vex.md")).unwrap(), "lore");
         for (from, to) in [
-            ("NPCs/Mira.md", "Sessions/Mira.md"), ("NPCs/Mira.md", "Sessions/Session 4/Mira.md"), ("NPCs/Mira.md", "Templates/Mira.md"),
+            ("NPCs/Mira.md", "Sessions/Session 4/Mira.md"), ("NPCs/Mira.md", "Templates/Mira.md"),
             ("NPCs/Mira.md", "templates/Mira.md"), ("Templates/NPC.md", "NPCs/NPC.md"), ("Sessions/Session 3.md", "Lore/Session 3.md"),
             ("NPCs/Mira.md", "../Mira.md"),
         ] {
@@ -2228,6 +2226,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join("Lore/Mira.md")).unwrap(), "m");
         rename_note(&dir, "Sessions/Prep.md", "Prep.md").unwrap(); // a page that isn't a session can leave Sessions/
         assert_eq!(fs::read_to_string(dir.join("Prep.md")).unwrap(), "p");
+        rename_note(&dir, "Prep.md", "Sessions/Prep.md").unwrap(); // and undo moves it back
         fs::remove_dir_all(&dir).unwrap();
     }
 
