@@ -159,6 +159,66 @@ fn a_damaged_or_foreign_state_file_means_a_fresh_catch_up() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+fn mtime_ms(path: &Path) -> u128 {
+    fs::metadata(path).unwrap().modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_millis()
+}
+
+#[test]
+fn a_downloaded_file_gets_its_authors_time_never_one_in_the_future() {
+    let at = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+    assert_eq!(written_at(1_700_000_000_123), Some(at));
+    assert_eq!(written_at(0), None, "no time: the download's");
+    assert_eq!(written_at(-5), None);
+    let future = SystemTime::now() + Duration::from_secs(3600);
+    let ms = future.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+    assert!(written_at(ms).unwrap() <= SystemTime::now(), "a skewed clock can't keep a session going");
+    assert!(written_at(i64::MAX).is_none_or(|t| t <= SystemTime::now()), "no overflow");
+}
+
+/// Downloads keep their author's (older) time, which must not change how local edits are found: by hash, with the
+/// scan's (size, time) cache never mistaking a new version for the old one.
+#[test]
+fn downloads_with_their_authors_time_still_tell_local_edits_apart() {
+    let dir = temp("times");
+    let key = [6u8; 32];
+    let cfg = Config {
+        root: dir.clone(),
+        state_file: dir.join(".state.json"),
+        server: "https://sync.invalid".into(),
+        room: random_id(),
+        key: Zeroizing::new(key),
+        token: Zeroizing::new("t".into()),
+        name: "Me".into(),
+        nested: Vec::new(),
+    };
+    let mut core = Core::new(cfg, Arc::new(Rec::default()), dir.canonicalize().unwrap());
+    let rel = "NPCs/Vex.md";
+    let (id, path) = (file_id(&key, rel), dir.join(rel));
+    let old = SystemTime::now() - Duration::from_secs(3 * 24 * 3600);
+    let ms = old.duration_since(UNIX_EPOCH).unwrap().as_millis();
+    let theirs = |text: &str| FileContent { path: rel.into(), content: text.into(), modified: ms as i64, deleted: false };
+
+    assert!(core.remote_put(rel, theirs("version one"), &id, 1).is_ok());
+    assert_eq!(mtime_ms(&path), ms);
+    assert!(core.scan().is_ok_and(|v| v.is_empty()), "a download isn't a local change");
+    // The next version has the same size and the same time, the scan cache's key: it's hashed again.
+    assert!(core.remote_put(rel, theirs("version two"), &id, 2).is_ok());
+    assert_eq!((fs::read_to_string(&path).unwrap().as_str(), mtime_ms(&path)), ("version two", ms));
+    assert!(core.scan().is_ok_and(|v| v.is_empty()), "the new version isn't taken for a local edit");
+
+    // A local edit of the same size is one, and the next version from the party is then a conflict copy with its
+    // author's time; yours stays as it is.
+    fs::write(&path, "version tri").unwrap();
+    let edited = mtime_ms(&path);
+    assert!(core.scan().is_ok_and(|v| v == [rel]), "a local edit");
+    assert!(core.remote_put(rel, theirs("version 4"), &id, 3).is_ok());
+    assert_eq!((fs::read_to_string(&path).unwrap().as_str(), mtime_ms(&path)), ("version tri", edited));
+    let copy = fs::read_dir(dir.join("NPCs")).unwrap().flatten().map(|e| e.path()).find(|p| *p != path).unwrap();
+    assert!(is_conflict_copy(&copy.file_name().unwrap().to_string_lossy()));
+    assert_eq!((fs::read_to_string(&copy).unwrap().as_str(), mtime_ms(&copy)), ("version 4", ms));
+    fs::remove_dir_all(dir).unwrap();
+}
+
 // ---------- end to end ----------
 
 const CREATE_KEY: &str = "test-create-key-0123456789abcdefghijklmnop";
@@ -561,6 +621,55 @@ async fn a_big_image_syncs() {
     let token = blocking(move || redeem(&u, &r, &invite, "")).await.unwrap().token;
     let member = start(&room, &b, &base.join("b.json"), &token, "");
     until("the big image arrives", || fs::read(b.join("Attachments/map.png")).is_ok_and(|m| m == map)).await;
+    member.stop().await;
+    owner.stop().await;
+}
+
+/// A player who joins gets every note with the time its author last changed it, not the download's: an old session
+/// isn't "still going" on their computer, so their notes and the owner's go to the same next session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn joining_keeps_when_notes_were_written_so_the_party_stays_in_one_session() {
+    let base = temp("joined-times");
+    let db = base.with_extension("db");
+    let _cleanup = Cleanup(vec![base.clone(), db.clone()]);
+    let (_server, url) = start_server(&db).await;
+    let (a, b) = (base.join("a"), base.join("b"));
+    fs::create_dir_all(&b).unwrap();
+    // The owner's campaign from before sharing: Session 3, played three days ago, as one file.
+    let old = SystemTime::now() - Duration::from_secs(3 * 24 * 3600);
+    for (rel, text) in [(METADATA, r#"{"name":"Strahd"}"#), ("Sessions/Session 3.md", "# Session 3\n- the party rests\n")] {
+        fs::create_dir_all(a.join(rel).parent().unwrap()).unwrap();
+        fs::write(a.join(rel), text).unwrap();
+        fs::File::options().write(true).open(a.join(rel)).unwrap().set_modified(old).unwrap();
+    }
+    let u = url.clone();
+    let created = blocking(move || create_room(&u, Some(CREATE_KEY))).await.unwrap();
+    let room = Room { server: url.clone(), room: created.room.clone(), key: random_secret() };
+    let owner = start(&room, &a, &base.join("a.json"), &created.owner_token, "Lorelei");
+    until("the owner's first upload", || owner.rec.last() == Some(Status::Synced)).await;
+    let (u, r, t) = (url.clone(), room.room.clone(), created.owner_token.clone());
+    let invite = blocking(move || create_invite(&u, &r, &t, Role::Player, false)).await.unwrap().invite;
+    let (u, r) = (url.clone(), room.room.clone());
+    let token = blocking(move || redeem(&u, &r, &invite, "")).await.unwrap().token;
+    let member = start(&room, &b, &base.join("b.json"), &token, "Syloth");
+    until("the download", || member.rec.last() == Some(Status::Synced)).await;
+
+    let session = "Sessions/Session 3.md";
+    assert_eq!(member.read(session), owner.read(session));
+    assert_eq!(mtime_ms(&b.join(session)), mtime_ms(&a.join(session)), "the author's time, not the download's");
+    assert_eq!(mtime_ms(&b.join(METADATA)), mtime_ms(&a.join(METADATA)));
+    // Both take the next session for their notes, rather than the player continuing the old one.
+    assert_eq!(crate::shared_session(&a).unwrap(), 4);
+    assert_eq!(crate::shared_session(&b).unwrap(), 4);
+
+    // A note written now is a session that's going on both computers.
+    owner.write("Sessions/Session 4/Lorelei.md", "- 20:01 we meet Vex");
+    until("the owner's note", || member.read("Sessions/Session 4/Lorelei.md").is_some()).await;
+    assert!(crate::going(&b.join("Sessions/Session 4"), SystemTime::now()));
+    assert_eq!(crate::shared_session(&b).unwrap(), 4);
+    // An edit to a download with an old time still goes up.
+    member.write(session, "# Session 3\n- the party rests, then leaves\n");
+    until("the player's edit", || owner.read(session).as_deref() == Some("# Session 3\n- the party rests, then leaves\n")).await;
     member.stop().await;
     owner.stop().await;
 }
