@@ -1333,16 +1333,27 @@ document.addEventListener("keydown", (e) => {
   run(name);
 });
 
+/**
+ * A native menu from plain item options. An item with an action becomes its own MenuItem (CheckMenuItem) first:
+ * Menu.new drops the items it builds from plain options as soon as it returns, and their action handlers with them
+ * (tauri 2.12 menu/mod.rs), so a click on one did nothing.
+ */
+async function nativeMenu({ items }) {
+  const { Menu, MenuItem, CheckMenuItem } = window.__TAURI__.menu;
+  const keep = async (i) => i.action ? ("checked" in i ? CheckMenuItem : MenuItem).new(i)
+    : i.items ? { ...i, items: await Promise.all(i.items.map(keep)) } : i;
+  return Menu.new({ items: await Promise.all(items.map(keep)) });
+}
+
 /** The native menu bar: app-wide on macOS (replacing Tauri's default one), the main window's own menu bar elsewhere. */
 async function buildMenu() {
-  const Menu = window.__TAURI__.menu?.Menu;
-  if (!Menu) return;
+  if (!window.__TAURI__.menu) return;
   const sep = { item: "Separator" };
   const linuxOk = ["Separator", "Cut", "Copy", "Paste", "SelectAll"]; // GTK greys out the other predefined items
   const predefined = (...names) => names.filter((n) => !linux || linuxOk.includes(n)).map((item) => ({ item }));
   const item = (text, name, accelerator) => ({ text, accelerator, action: () => run(name, "menu") });
   const version = await window.__TAURI__.app?.getVersion().catch(() => undefined);
-  const menu = await Menu.new({
+  const menu = await nativeMenu({
     items: [
       { text: "Lorekeeper", items: [
         { item: { About: { name: "Lorekeeper", version } } },
@@ -1388,10 +1399,9 @@ function copyLink(path) {
 }
 
 $("sidebar").addEventListener("contextmenu", (e) => {
-  const Menu = window.__TAURI__.menu?.Menu;
   const file = e.target.closest(".file")?.dataset.path;
   const folder = e.target.closest("summary")?.parentElement.dataset.folder;
-  if (!Menu || (file === undefined && folder === undefined)) return;
+  if (!window.__TAURI__.menu || (file === undefined && folder === undefined)) return;
   e.preventDefault();
   const reveal = mac ? "Show Vault in Finder" : windows ? "Show Vault in Explorer" : "Open Vault Folder";
   const items = file !== undefined
@@ -1407,8 +1417,9 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { text: "Delete…", action: () => deletePage(file) },
       ]
     : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];
-  // ponytail: one small menu resource per right-click is never closed; call close() after popup if that ever matters.
-  Menu.new({ items }).then((m) => m.popup()).catch(say);
+  // ponytail: each right-click's menu and items stay open (closing them once popup() returns could drop a click still on
+  // its way, see nativeMenu): a few small resources each time. Close the previous menu's on the next right-click if that matters.
+  nativeMenu({ items }).then((m) => m.popup()).catch(say);
 });
 
 if (mac) {
@@ -1474,12 +1485,11 @@ async function switchCampaign(path) {
 }
 
 $("campaign").addEventListener("click", () => {
-  const Menu = window.__TAURI__.menu?.Menu;
-  if (!Menu) return;
+  if (!window.__TAURI__.menu) return;
   const items = (settings.campaigns ?? []).map((path) =>
     ({ text: campaignName(path), checked: path === settings.vaultPath, action: () => switchCampaign(path) }));
   const manage = { text: "Add or Remove Campaigns…", action: () => run("settings", "menu") };
-  Menu.new({ items: [...items, { item: "Separator" }, manage] }).then((m) => m.popup()).catch(say);
+  nativeMenu({ items: [...items, { item: "Separator" }, manage] }).then((m) => m.popup()).catch(say);
 });
 // From the tray menu and from Settings after adding a campaign.
 listen("switch-campaign", (e) => switchCampaign(e.payload));
