@@ -4,7 +4,7 @@ import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
-  pcPath, questStatus, recentlyMentioned, renameLinks, moveProblem, movedPath, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
+  pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -406,7 +406,7 @@ function render() {
   $("back").disabled = nav.find(-1, alive, current) < 0;
   $("forward").disabled = nav.find(1, alive, current) < 0;
   $("delete").disabled = !n || !!n.parts; // a shared session is everyone's notes
-  $("rename").disabled = $("move").disabled = !n || !!n.parts;
+  $("rename").disabled = $("move").disabled = !n || keepsPlace(current);
   $("backlinks").hidden = !n;
   $("connections").hidden = true; // until it has pages to show
   $("toggle").hidden = !n;
@@ -975,7 +975,8 @@ async function restore(path, content) {
 }
 
 async function deletePage(path) {
-  if (!path || !note(path) || modal()) return;
+  if (modal()) return say("Close the open dialog first.");
+  if (!note(path)) return say("Open a page to move it to the Trash.");
   if (note(path).parts) return say("A shared session holds everyone's notes. Delete your own notes from its Timeline instead.");
   if (!(await confirmDelete(path))) return;
   const name = baseName(path);
@@ -1076,7 +1077,9 @@ const dirOf = (path) => path.split("/").slice(0, -1).join("/");
 
 /** The Rename dialog, which also moves: `move` opens it as Move, with the folder list focused. */
 function openRenameDialog(path, move = false) {
-  if (!path || !note(path) || note(path).parts || modal()) return; // sessions keep their names (lib.rs rename_note)
+  if (modal()) return say("Close the open dialog first.");
+  if (!note(path)) return say(`Open a page to ${move ? "move" : "rename"} it.`);
+  if (keepsPlace(path)) return say(SESSIONS_STAY);
   renaming = path;
   $("rename-title").textContent = move ? "Move page" : "Rename page";
   $("rename-confirm").textContent = move ? "Move" : "Rename";
@@ -1411,16 +1414,25 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
-        { item: "Separator" },
-        { text: "Rename…", action: () => openRenameDialog(file) },
-        { text: "Move to…", action: () => openRenameDialog(file, true) },
-        { text: "Delete…", action: () => deletePage(file) },
+        // Only what works for this page: sessions keep their name and folder, a shared one holds everyone's notes.
+        ...(note(file)?.parts ? [] : [
+          { item: "Separator" },
+          ...(keepsPlace(file) ? [] : [
+            { text: "Rename…", action: () => openRenameDialog(file) },
+            { text: "Move to…", action: () => openRenameDialog(file, true) },
+          ]),
+          { text: "Delete…", action: () => deletePage(file) },
+        ]),
       ]
     : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];
   // ponytail: each right-click's menu and items stay open (closing them once popup() returns could drop a click still on
   // its way, see nativeMenu): a few small resources each time. Close the previous menu's on the next right-click if that matters.
   nativeMenu({ items }).then((m) => m.popup()).catch(say);
 });
+
+// The webview's own menu (Reload, Back, Print, Inspect…) is for web pages: only text keeps it, for Cut, Copy, Paste and
+// spelling. The sidebar's pages and folders get the app's menu above.
+document.addEventListener("contextmenu", (e) => e.target.closest?.("#editor, textarea, input:not([type=checkbox], [type=radio])") || e.preventDefault());
 
 if (mac) {
   // The title bar overlays the page (tauri.conf.json): the sidebar's top strip and the header move the window.

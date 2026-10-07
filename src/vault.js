@@ -263,12 +263,17 @@ export function badName(name) {
 /** Where page `path` goes when moved into `folder` ("" is the top level). */
 export const movedPath = (path, folder) => `${folder ? `${folder}/` : ""}${path.split("/").pop()}`;
 
+/** Why a session can't be renamed or moved (rename_note in lib.rs). */
+export const SESSIONS_STAY = 'Sessions keep their "Session N" names in Sessions/, so hotkey notes find the current one.';
+/** Whether page `path` is a session ("Sessions/Session 4.md", a shared one's folder or a file in it): see SESSIONS_STAY. */
+export const keepsPlace = (path) => /^Sessions\/Session \d+(\.md|\/|$)/i.test(path);
+
 /**
  * Why page `from` can't move into `folder` ("" is the top level), or "" when it can (`paths`: the vault's pages). The
  * same rules as rename_note in lib.rs, checked before a drop so the reason can be told without trying.
  */
 export function moveProblem(from, folder, paths) {
-  if (/^Sessions\/Session \d+(\.md|\/|$)/i.test(from)) return 'Sessions keep their "Session N" names in Sessions/, so hotkey notes find the current one.';
+  if (keepsPlace(from)) return SESSIONS_STAY;
   if (/^sessions(\/|$)/i.test(folder) && !/^sessions\//i.test(from)) return "Only sessions go in Sessions/.";
   const to = movedPath(from, folder);
   if (to !== from && paths.some((p) => p.toLowerCase() === to.toLowerCase())) return `${folder || "The top level"} already has a page named ${baseName(from)}.`;
