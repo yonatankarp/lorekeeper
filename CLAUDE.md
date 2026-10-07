@@ -29,6 +29,7 @@ Follow "CI and releases" in `docs/DEVELOPMENT.md`, then update the website for t
 1. Move the `SOON` entries that shipped into `FEATURES` in `scripts/build-site.mjs`. Set `NEXT` to the following version, or empty `SOON`.
 2. Remove "coming in …" from the `FAQ`, and add the new features to the meta description if they're worth it.
 3. Update `docs/GUIDE.md` and the release notes in `RELEASE_NOTES.md`.
+4. If the release changes how the app looks, retake `docs/screenshots/light.jpg` and `dark.jpg` (the home page, its link preview and the README use them). They're 1120×740 macOS window captures of the real app with a demo campaign's Home open, in the Light and Dark themes. Retake them only for a release that's out, never for work on main.
 
 ## Commits
 
