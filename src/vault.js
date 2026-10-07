@@ -29,8 +29,11 @@ export function resolve(target, paths) {
   return hits.sort((a, b) => a.length - b.length || naturally(a, b))[0] ?? null;
 }
 
-/** Nested { name, path, dirs, files } from folder paths and note paths. Sessions/ lists newest first. */
-export function buildTree(folders, paths) {
+/**
+ * Nested { name, path, dirs, files } from folder paths and note paths, each note in the folder `at` its path says.
+ * Sessions/ lists newest first.
+ */
+export function buildTree(folders, paths, at = (p) => p) {
   const root = { name: "", path: "", dirs: [], files: [] };
   const dirAt = (path) => {
     let node = root;
@@ -45,7 +48,7 @@ export function buildTree(folders, paths) {
     return node;
   };
   folders.forEach(dirAt);
-  for (const p of paths) dirAt(p.split("/").slice(0, -1).join("/")).files.push(p);
+  for (const p of paths) dirAt(at(p).split("/").slice(0, -1).join("/")).files.push(p);
   const sort = (node) => {
     node.dirs.sort((a, b) => naturally(a.name, b.name)).forEach(sort);
     const order = node.path === "Sessions" ? -1 : 1;
@@ -55,9 +58,8 @@ export function buildTree(folders, paths) {
   return root;
 }
 
-/** Notes linking to `path`, each with the lines that contain the link. */
-export function backlinks(path, notes) {
-  const paths = notes.map((n) => n.path);
+/** Notes linking to `path`, each with the lines that contain the link (resolved against `paths`, by default the notes'). */
+export function backlinks(path, notes, paths = notes.map((n) => n.path)) {
   const result = [];
   for (const note of notes) {
     if (note.path === path) continue;
@@ -124,6 +126,30 @@ export const isPrivate = (path) => path.startsWith("Private/") || isDmCopy(path)
 
 /** A path without its private prefix: "Private/NPCs/Vex.md" and ".lorekeeper/dm/<id>/NPCs/Vex.md" are "NPCs/Vex.md". */
 export const unprivate = (path) => path.replace(/^Private\//, "").replace(DM_COPY, "");
+
+/**
+ * The lines of private notes (`notes`: the vault's pages) that [[link]] to page `path`: your `~` session notes and private
+ * pages, and a DM's copies of the players'. [{ path, lines }] like backlinks. They show on the page for you only, never in
+ * its Linked from, and never on the map (graph.js leaves Private/ out).
+ */
+export const privateMentions = (path, notes) => backlinks(path, notes.filter((n) => isPrivate(n.path)), notes.map((n) => n.path));
+
+/** Where a private page or folder shows in the sidebar: its usual place ("Private/NPCs" is NPCs, Private/ the top level). */
+export const shownAt = (path) => (path === "Private" ? "" : path.replace(/^Private\//, ""));
+
+/** The folder a page put in sidebar folder `folder` goes to: a private page stays in Private/, a shared one out of it. */
+export function moveTarget(page, folder) {
+  const f = shownAt(folder);
+  return page.startsWith("Private/") ? (f ? `Private/${f}` : "Private") : f;
+}
+
+/**
+ * The sidebar's tree (buildTree, `paths` without a DM's copies): your private pages in their usual folders, each by its
+ * own path ("Private/NPCs/Vex.md" in NPCs, next to a shared Vex), a folder only in Private/ under its own name, no
+ * Private group, and no private session files: their session's page shows them.
+ */
+export const sidebarTree = (folders, paths) =>
+  buildTree(folders.map(shownAt).filter((f) => !isSessionFolder(f)), paths.filter((p) => !/^Private\/Sessions\/Session \d+\/[^/]+\.md$/i.test(p)), shownAt);
 
 /**
  * Who reads your private notes in a campaign (its sharing settings), as every label says it: the server's last word on

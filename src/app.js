@@ -1,11 +1,11 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
-import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
+import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, splitPrivate, stripLinks, timeline, toHtml } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  DM, dmCopyOf, isDmCopy, isPrivate, myPc, privateLabel, startView, unprivate,
+  DM, dmCopyOf, isDmCopy, isPrivate, moveTarget, myPc, privateLabel, privateMentions, shownAt, sidebarTree, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -36,6 +36,7 @@ let base = ""; // file content the editor started from, for conflict-safe saves
 let editing = false;
 let saveTimer = null;
 let saving = null; // in-flight save promise
+let held = false; // unsaved while the cursor is still on a ~ line, or after its move failed (see save): the editor keeps it
 let inConflict = false;
 const closedFolders = new Set();
 const KINDS = { npc: "NPC", loot: "Loot", quest: "Quest", mystery: "Mystery", quote: "Quote" }; // a note's badge; symbols: NOTE_PREFIXES
@@ -74,7 +75,7 @@ const myPrivateFile = (path) => (me() ? `Private/${path}/${baseName(me())}.md` :
 const isSession = (path) => path?.startsWith("Sessions/");
 const alive = (path) => path === null || !!note(path); // Home, or a page still in the vault
 const modal = () => !!document.querySelector("dialog[open]");
-const dirty = () => saveTimer !== null || saving !== null;
+const dirty = () => saveTimer !== null || saving !== null || held;
 const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD
 
 /** The Markdown editor, created the first time it's needed. */
@@ -102,7 +103,7 @@ async function loadVault() {
   const folders = v.folders.filter((f) => !internal(f));
   vault = {
     ...v, files, notes: pages(files, folders),
-    folders: folders.filter((f) => !isSessionFolder(f) && !images(f)), // a session folder shows as the session's page
+    folders: folders.filter((f) => !isSessionFolder(f) && !images(shownAt(f))), // a session folder shows as the session's page
     conflicts: syncConflicts([...folders, ...files.map((n) => n.path), ...(v.images ?? [])]),
   };
 }
@@ -213,10 +214,12 @@ function treeHtml(node, names = {}) {
     .map((d) => {
       const n = d.files.length;
       const count = n ? `<span class="sr-only">, </span>${n}<span class="sr-only"> page${n === 1 ? "" : "s"}</span>` : "";
-      const empty = `<button type="button" class="folder-new" data-folder="${escape(d.path)}">+ New ${escape(typeFor(d.path) || "page")}</button>`;
-      // Your Private/ folder, and each player's folder of private notes on a DM's computer: a padlock and who reads them.
-      const lock = d.path === "Private" || names[d.path] ? lockHtml(`${d.path}/`) : "";
-      return `<details data-folder="${escape(d.path)}"${closedFolders.has(d.path) ? "" : " open"}>
+      // A folder that's only in Private/ (shown under its own name, see sidebarTree) is that one: New page there starts private.
+      const real = !vault.folders.includes(d.path) && vault.folders.includes(`Private/${d.path}`) ? `Private/${d.path}` : d.path;
+      const empty = `<button type="button" class="folder-new" data-folder="${escape(real)}">+ New ${escape(typeFor(d.path) || "page")}</button>`;
+      // A private-only folder, and each player's folder of private notes on a DM's computer: a padlock and who reads them.
+      const lock = real !== d.path || names[d.path] ? lockHtml(`${real}/`) : "";
+      return `<details data-folder="${escape(real)}"${closedFolders.has(real) ? "" : " open"}>
         <summary>${lock}${escape(names[d.path] ?? d.name)}<span class="count">${count}</span></summary>
         <div class="children">${treeHtml(d) || empty}</div></details>`;
     })
@@ -226,8 +229,12 @@ function treeHtml(node, names = {}) {
       // Finished quests: dimmed, with a check or a cross, and the outcome in the accessible name.
       const status = p.startsWith("Quests/") ? questStatus(note(p)?.content ?? "") : "";
       const ended = status === "done" || status === "failed";
+      // A private page, and a session that has only private notes so far: a padlock and who reads them (a DM's copies
+      // have theirs on their player's folder).
+      const only = note(p)?.parts?.length === 0 && note(p).private?.[0]?.path;
+      const lock = isDmCopy(p) ? "" : isPrivate(p) ? lockHtml(p) : only ? lockHtml(only) : "";
       return `<button draggable="true" class="file${p === current ? " active" : ""}${ended ? " quest-ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
-        `${ended ? icon(status) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
+        `${lock}${ended ? icon(status) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
     })
     .join("");
   return dirs + files;
@@ -236,7 +243,7 @@ function treeHtml(node, names = {}) {
 function renderTree() {
   const scroll = $("tree").scrollTop;
   const all = paths();
-  let html = treeHtml(buildTree(vault.folders, all.filter((p) => !isDmCopy(p))));
+  let html = treeHtml(sidebarTree(vault.folders, all.filter((p) => !isDmCopy(p))));
   // A DM's copies of the players' private notes: one group, a folder per player, read-only.
   const copies = all.filter(isDmCopy);
   const players = buildTree([], copies).dirs[0]?.dirs[0];
@@ -338,6 +345,31 @@ function sessionHtml(n) {
     ? `<div class="journal">${toHtml({ ...session, title: "" }, inlineLink, (item) => lockHtml(item.path))}</div>` +
       `<p class="session-note">A recap of the session, grouped by kind. Click Edit to see every line.</p>`
     : timelineHtml(items, n.parts ? (item) => mine.includes(item.path) : () => true));
+}
+
+/** Whether page `path` shows the private notes that link it: a shared page, not a session, in a shared campaign. */
+const showsMentions = (path) => !!privateLabel(sharing()) && !isPrivate(path) && !isSession(path);
+
+/** A line of a private note that links the open page, with a padlock and its source ("Session 1, 20:14", a private page), which opens it. */
+function mentionHtml(src, line) {
+  const [, time = "", rest] = line.match(/^(?:[-*+] )?(?:(\d{1,2}:\d{2}) )?(.*)$/);
+  const session = unprivate(src).match(/^Sessions\/Session \d+/i)?.[0];
+  const where = session ? `${baseName(session)}${time ? `, ${time}` : ""}` : baseName(src);
+  const target = (session && [session, `${session}.md`].find(note)) || src; // the session's page, else the note itself
+  const label = isDmCopy(src) ? `${playerName(dmCopyOf(src))}, ${where}` : where;
+  return `<li>${lockHtml(src)}<a data-path="${escape(target)}" href="#">${escape(label)}</a>: ${inlineLinks(rest.replace(/^[@#!?]\s*/, ""))}</li>`;
+}
+
+/**
+ * The private notes that link shared page `path`, at its bottom, for you only (and the DM, as the label says): rendered
+ * from their own files, never merged into the page's content, which the map, backlinks and search read. Nothing when none do.
+ */
+function mentionsHtml(path) {
+  if (!showsMentions(path)) return "";
+  const items = privateMentions(path, vault.notes).flatMap((m) => m.lines.map((l) => mentionHtml(m.path, l)));
+  return items.length ? `<section class="private-mentions" aria-labelledby="private-mentions-title">
+    <h2 id="private-mentions-title"><span class="lock" aria-hidden="true">${icon("lock")}</span>Private notes</h2>
+    <p class="private-mentions-who">${escape(ownLabel())}</p><ul>${items.join("")}</ul></section>` : "";
 }
 
 // ---------- home ----------
@@ -487,7 +519,7 @@ function render() {
   }
   if (!editing) {
     const { props, body } = splitFrontmatter(n.content);
-    setView(isSession(current) ? sessionHtml(n) : propsHtml(props, current) + marked.parse(body));
+    setView(isSession(current) ? sessionHtml(n) : propsHtml(props, current) + marked.parse(body) + mentionsHtml(current));
   }
   const near = graph && neighbourhood(graph, current);
   if (near?.nodes.length > 1) {
@@ -497,7 +529,8 @@ function render() {
     canvas.setAttribute("aria-label", `${baseName(current)} is linked with ${others.join(", ")}`);
     drawGraph(canvas, near, { focus: current, onOpen: open });
   }
-  const links = backlinks(current, vault.notes);
+  // Private notes that link a page showing them are listed there instead (mentionsHtml).
+  const links = backlinks(current, showsMentions(current) ? vault.notes.filter((b) => !isPrivate(b.path)) : vault.notes);
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length
     ? `<ul>${links
         .map((b) => `<li><a data-path="${escape(b.path)}" href="#">${escape(baseName(b.path))}</a>
@@ -509,6 +542,7 @@ function render() {
 /** Shows a page (null: Home), saving pending edits first. A new visit goes into history; `to` is Back / Forward's index. */
 async function open(path, { edit = false, to } = {}) {
   await flush();
+  if (held) return; // ~ lines that couldn't be moved stay in the editor; save says why
   if (to === undefined) nav.visit(path);
   else nav.go(to);
   current = path;
@@ -545,18 +579,52 @@ function scheduleSave() {
   }, 600);
 }
 
+/** Saves pending typing now, a ~ line still being typed included (see save). */
 async function flush() {
-  if (saveTimer) {
+  await saving;
+  if (saveTimer || held) {
     clearTimeout(saveTimer);
     saveTimer = null;
-    saving = save().finally(() => (saving = null));
+    saving = save(true).finally(() => (saving = null));
   }
   await saving;
 }
 
-async function save() {
+/** The session number of shared session file `path` ("Sessions/Session 4/Sibling 5.md" or "Sessions/Session 4.md"), else null. */
+const sessionNumber = (path) => Number(path.match(/^Sessions\/Session (\d+)(?:\.md$|\/)/i)?.[1]) || null;
+
+/**
+ * The `~` lines in the editor's text for shared file `path` (splitPrivate), in a shared campaign once you picked a
+ * character; null otherwise, and in your private files, where a `~` stays as typed (as in a campaign of your own).
+ */
+const privateLines = (path, content) =>
+  me() && !isPrivate(path) ? splitPrivate(content, sessionNumber(path) ? "" : current, paths()) : null;
+
+/**
+ * Saves the editor's text. Lines typed with a ~ go to your private notes first, then leave the editor: a shared file
+ * never gets them, even briefly. While the cursor is still on one, nothing is saved (`held`, so a pause mid-line never
+ * sends half of it and leaves the rest to be typed into the shared page), until the cursor leaves it or `final`
+ * (flush: Done, another page, quitting).
+ */
+async function save(final = false) {
   const path = editPath();
-  const content = ed().getValue();
+  let content = ed().getValue();
+  held = !final && !!privateLines(path, ed().cursorLine())?.private.length;
+  if (held) return;
+  let moved = 0;
+  for (let split; (split = privateLines(path, content))?.private.length; content = ed().getValue()) {
+    try {
+      await invoke("save_private_lines", { session: sessionNumber(path), lines: split.private });
+    } catch (err) {
+      held = true; // nothing is saved, and the editor stays open with it (open, Done)
+      return say(`Not saved: couldn't move your ~ notes to your private notes: ${err}`);
+    }
+    moved += split.private.length;
+    // Typing during the write stays; the loop then checks it for ~ lines too.
+    const now = ed().getValue(), left = now.split("\n");
+    for (const line of now === content ? [] : split.taken) if (left.includes(line)) left.splice(left.indexOf(line), 1);
+    ed().setValue(now === content ? split.shared : left.join("\n"));
+  }
   try {
     const written = await invoke("save_file", { path, content, base });
     base = written;
@@ -565,7 +633,7 @@ async function save() {
     if (path.startsWith("Quests/")) renderTree(); // a changed status moves the check mark
     // Notes added by the hotkeys while editing were kept on disk; show them in the editor too.
     if (written !== content && written.startsWith(content) && path === editPath()) ed().append(written.slice(content.length));
-    say("Saved");
+    say(moved ? `Moved ${moved} note${moved === 1 ? "" : "s"} to your private notes (${ownLabel()})` : "Saved");
   } catch (err) {
     if (err === "conflict") {
       inConflict = true;
@@ -989,6 +1057,7 @@ $("toggle").addEventListener("click", async () => {
   if (current && isDmCopy(current)) return; // read-only
   if (editing) {
     await flush();
+    if (held) return; // see open
     editing = false;
   } else {
     if (!(await ownFile())) return;
@@ -1159,8 +1228,10 @@ function openRenameDialog(path, move = false) {
   $("rename-confirm").textContent = move ? "Move" : "Rename";
   $("rename-name").value = baseName(path);
   // Only sessions go in Sessions/ (a page already there can stay); Templates/ and Attachments/ aren't for pages, as in the tree.
-  const folders = ["", ...[...vault.folders].sort(naturally)].filter((f) => f === dirOf(path) || !/^(sessions|templates|attachments)(\/|$)/i.test(f));
-  $("rename-folder").replaceChildren(...folders.map((f) => new Option(f || "Top level", f, false, f === dirOf(path))));
+  // Folders as the sidebar shows them: a private page stays private wherever it goes (see moveTarget).
+  const here = shownAt(dirOf(path));
+  const folders = [...new Set(["", ...vault.folders.map(shownAt)])].sort(naturally).filter((f) => f === here || !/^(sessions|templates|attachments)(\/|$)/i.test(f));
+  $("rename-folder").replaceChildren(...folders.map((f) => new Option(f || "Top level", f, false, f === here)));
   $("rename-error").textContent = "";
   $("rename-dialog").showModal();
   move ? $("rename-folder").focus() : $("rename-name").select();
@@ -1202,12 +1273,12 @@ async function renameOrMove(from, to) {
   const moved = dirOf(from) !== dirOf(to);
   const verb = moved ? "Move" : "Rename";
   // A folder closed before the move opens, so the moved page shows selected in the tree.
-  for (let f = dirOf(to); f; f = dirOf(f)) closedFolders.delete(f);
+  for (let f = dirOf(to); f; f = dirOf(f)) for (const name of [f, shownAt(f)]) closedFolders.delete(name); // by either name (treeHtml)
   renderTree();
   // ponytail: undo / redo report only their label, so a page whose links couldn't be saved then goes unmentioned.
   record({ label: `${verb} ${baseName(from)}`, undo: () => renamePage(to, from, edits.map(([p, was, now]) => [p, now, was])), redo: () => renamePage(from, to) });
   const n = edits.filter(([p]) => p !== to).length;
-  const done = moved ? `Moved ${baseName(to)} to ${dirOf(to) || "the top level"}` : `Renamed to ${baseName(to)}`;
+  const done = moved ? `Moved ${baseName(to)} to ${shownAt(dirOf(to)) || "the top level"}` : `Renamed to ${baseName(to)}`; // as the sidebar names it
   say(failed.length ? `${verb}d, but couldn't update the links in ${failed.join(", ")}`
     : `${done}${n ? `; links updated in ${n} page${n === 1 ? "" : "s"}` : ""}`);
 }
@@ -1218,12 +1289,14 @@ $("rename-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const from = renaming;
   const name = $("rename-name").value.trim();
-  const problem = badName(name);
+  // Never across the private line (Make private / Make shared ask first): the same rules as a drop, but the name's own.
+  const folder = moveTarget(from, $("rename-folder").value);
+  const problem = badName(name) || moveProblem(from, folder, []);
   if (problem) {
     $("rename-error").textContent = problem;
     return $("rename-name").focus();
   }
-  const to = movedPath(`${name}.md`, $("rename-folder").value);
+  const to = movedPath(`${name}.md`, folder);
   if (to === from) return $("rename-dialog").close();
   try {
     await renameOrMove(from, to);
@@ -1239,7 +1312,11 @@ $("move").addEventListener("click", () => openRenameDialog(current, true));
 // dialog) does the same from the keyboard. dragDropEnabled is off in tauri.conf.json, so the webview gets these events.
 let dragged = null; // the page being dragged
 let dropMark = null; // the folder (or the tree) highlighted as where it would go
-const dropFolder = (el) => el.closest?.("details[data-folder]")?.dataset.folder ?? "";
+/** Where page `page` dropped on `el` goes: that folder, inside Private/ for a private page (moveTarget); a DM's copies stay as they are, refused. */
+const dropFolder = (el, page) => {
+  const folder = el.closest?.("details[data-folder]")?.dataset.folder ?? "";
+  return folder === "dm" || isDmCopy(`${folder}/`) ? folder : moveTarget(page, folder);
+};
 function markDrop(el, refused) {
   dropMark?.classList.remove("drop-target", "drop-refused");
   dropMark = el;
@@ -1262,7 +1339,7 @@ const pageDrag = (e) => dragged && !e.dataTransfer.types.includes("Files");
 $("tree").addEventListener("dragover", (e) => {
   if (!pageDrag(e)) return;
   e.preventDefault(); // a refused folder still takes the drop, to say why
-  const folder = dropFolder(e.target);
+  const folder = dropFolder(e.target, dragged);
   const same = folder === dirOf(dragged);
   markDrop(same ? null : e.target.closest?.("details[data-folder]") ?? $("tree"), !!moveProblem(dragged, folder, paths()));
   e.dataTransfer.dropEffect = same ? "none" : "move";
@@ -1278,7 +1355,7 @@ $("tree").addEventListener("drop", async (e) => {
   e.preventDefault();
   dragged = null;
   markDrop(null);
-  const folder = dropFolder(e.target);
+  const folder = dropFolder(e.target, from);
   if (folder === dirOf(from)) return;
   const problem = moveProblem(from, folder, paths());
   if (problem) return moveError(`Can't move ${baseName(from)}: ${problem}`);
