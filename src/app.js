@@ -462,6 +462,7 @@ function render() {
   const copy = !!current && isDmCopy(current); // a player's private note on a DM's computer: read-only
   $("delete").disabled = !n || !!n.parts || copy; // a shared session is everyone's notes
   $("rename").disabled = $("move").disabled = !n || keepsPlace(current) || copy;
+  for (const id of ["rename", "move", "delete"]) $(id).hidden = !n; // Home and the welcome page have no page to act on
   showPrivacy(n);
   $("backlinks").hidden = !n;
   $("connections").hidden = true; // until it has pages to show
