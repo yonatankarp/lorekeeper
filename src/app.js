@@ -4,7 +4,7 @@ import { createEditor } from "./editor.js";
 import { escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
-  pcPath, questStatus, recentlyMentioned, renameLinks, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
+  pcPath, questStatus, recentlyMentioned, renameLinks, moveProblem, movedPath, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -209,7 +209,7 @@ function treeHtml(node) {
       // Finished quests: dimmed, with a check or a cross, and the outcome in the accessible name.
       const status = p.startsWith("Quests/") ? questStatus(note(p)?.content ?? "") : "";
       const ended = status === "done" || status === "failed";
-      return `<button class="file${p === current ? " active" : ""}${ended ? " quest-ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
+      return `<button draggable="true" class="file${p === current ? " active" : ""}${ended ? " quest-ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
         `${ended ? icon(status) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
     })
     .join("");
@@ -406,7 +406,7 @@ function render() {
   $("back").disabled = nav.find(-1, alive, current) < 0;
   $("forward").disabled = nav.find(1, alive, current) < 0;
   $("delete").disabled = !n || !!n.parts; // a shared session is everyone's notes
-  $("rename").disabled = !n || !!n.parts;
+  $("rename").disabled = $("move").disabled = !n || !!n.parts;
   $("backlinks").hidden = !n;
   $("connections").hidden = true; // until it has pages to show
   $("toggle").hidden = !n;
@@ -1069,17 +1069,24 @@ function undoRedo(dir) {
   else if (!modal()) appHistory(dir);
 }
 
-// ---------- renaming ----------
+// ---------- renaming and moving ----------
 
 let renaming = null; // the page the Rename dialog is for
+const dirOf = (path) => path.split("/").slice(0, -1).join("/");
 
-function openRenameDialog(path) {
+/** The Rename dialog, which also moves: `move` opens it as Move, with the folder list focused. */
+function openRenameDialog(path, move = false) {
   if (!path || !note(path) || note(path).parts || modal()) return; // sessions keep their names (lib.rs rename_note)
   renaming = path;
+  $("rename-title").textContent = move ? "Move page" : "Rename page";
+  $("rename-confirm").textContent = move ? "Move" : "Rename";
   $("rename-name").value = baseName(path);
+  // Only sessions go in Sessions/ (a page already there can stay).
+  const folders = ["", ...vault.folders].filter((f) => f === dirOf(path) || !/^sessions(\/|$)/i.test(f));
+  $("rename-folder").replaceChildren(...folders.map((f) => new Option(f || "Top level", f, false, f === dirOf(path))));
   $("rename-error").textContent = "";
   $("rename-dialog").showModal();
-  $("rename-name").select();
+  move ? $("rename-folder").focus() : $("rename-name").select();
 }
 
 /**
@@ -1109,6 +1116,22 @@ async function renamePage(from, to, exact = []) {
   return { edits: edits.filter((e) => !failed.includes(e)), failed: failed.map(([p]) => baseName(p)) };
 }
 
+/** Renames or moves page `from` to `to` (see renamePage), undoably, and says so; throws when refused, links untouched. */
+async function renameOrMove(from, to) {
+  const { edits, failed } = await renamePage(from, to);
+  const moved = dirOf(from) !== dirOf(to);
+  const verb = moved ? "Move" : "Rename";
+  // A folder closed before the move opens, so the moved page shows selected in the tree.
+  for (let f = dirOf(to); f; f = dirOf(f)) closedFolders.delete(f);
+  renderTree();
+  // ponytail: undo / redo report only their label, so a page whose links couldn't be saved then goes unmentioned.
+  record({ label: `${verb} ${baseName(from)}`, undo: () => renamePage(to, from, edits.map(([p, was, now]) => [p, now, was])), redo: () => renamePage(from, to) });
+  const n = edits.filter(([p]) => p !== to).length;
+  const done = moved ? `Moved ${baseName(to)} to ${dirOf(to) || "the top level"}` : `Renamed to ${baseName(to)}`;
+  say(failed.length ? `${verb}d, but couldn't update the links in ${failed.join(", ")}`
+    : `${done}${n ? `; links updated in ${n} page${n === 1 ? "" : "s"}` : ""}`);
+}
+
 $("rename-cancel").addEventListener("click", () => $("rename-dialog").close());
 $("rename-form").addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "rename") return;
@@ -1120,24 +1143,66 @@ $("rename-form").addEventListener("submit", async (e) => {
     $("rename-error").textContent = problem;
     return $("rename-name").focus();
   }
-  const folder = from.split("/").slice(0, -1).join("/");
-  const to = folder ? `${folder}/${name}.md` : `${name}.md`;
+  const to = movedPath(`${name}.md`, $("rename-folder").value);
   if (to === from) return $("rename-dialog").close();
-  let done;
   try {
-    done = await renamePage(from, to);
+    await renameOrMove(from, to);
   } catch (err) {
     return ($("rename-error").textContent = err);
   }
   $("rename-dialog").close();
-  const { edits, failed } = done;
-  // ponytail: undo / redo report only their label, so a page whose links couldn't be saved then goes unmentioned.
-  record({ label: `Rename ${baseName(from)}`, undo: () => renamePage(to, from, edits.map(([p, was, now]) => [p, now, was])), redo: () => renamePage(from, to) });
-  const n = edits.filter(([p]) => p !== to).length;
-  say(failed.length ? `Renamed, but couldn't update the links in ${failed.join(", ")}`
-    : `Renamed to ${name}${n ? `; links updated in ${n} page${n === 1 ? "" : "s"}` : ""}`);
 });
 $("rename").addEventListener("click", () => openRenameDialog(current));
+$("move").addEventListener("click", () => openRenameDialog(current, true));
+
+// Drag a page in the sidebar onto a folder, or onto the tree outside any folder for the top level; Move… (the Rename
+// dialog) does the same from the keyboard. dragDropEnabled is off in tauri.conf.json, so the webview gets these events.
+let dragged = null; // the page being dragged
+let dropMark = null; // the folder (or the tree) highlighted as where it would go
+const dropFolder = (el) => el.closest?.("details[data-folder]")?.dataset.folder ?? "";
+function markDrop(el, refused) {
+  dropMark?.classList.remove("drop-target", "drop-refused");
+  dropMark = el;
+  el?.classList.add(refused ? "drop-refused" : "drop-target");
+}
+let moveErrorTimer;
+function moveError(text) {
+  $("move-error").textContent = text;
+  clearTimeout(moveErrorTimer);
+  moveErrorTimer = setTimeout(() => ($("move-error").textContent = ""), 8000);
+}
+$("tree").addEventListener("dragstart", (e) => {
+  dragged = e.target.closest?.(".file")?.dataset.path ?? null;
+  if (!dragged) return;
+  e.dataTransfer.setData("application/x-lorekeeper-page", dragged); // not text: dropped in the editor, it inserts nothing
+  e.dataTransfer.effectAllowed = "move";
+});
+$("tree").addEventListener("dragover", (e) => {
+  if (!dragged) return;
+  e.preventDefault(); // a refused folder still takes the drop, to say why
+  const folder = dropFolder(e.target);
+  const same = folder === dirOf(dragged);
+  markDrop(same ? null : e.target.closest?.("details[data-folder]") ?? $("tree"), !!moveProblem(dragged, folder, paths()));
+  e.dataTransfer.dropEffect = same ? "none" : "move";
+});
+$("tree").addEventListener("dragleave", (e) => $("tree").contains(e.relatedTarget) || markDrop(null));
+document.addEventListener("dragend", () => {
+  dragged = null;
+  markDrop(null);
+});
+$("tree").addEventListener("drop", async (e) => {
+  const from = dragged;
+  if (!from) return;
+  e.preventDefault();
+  dragged = null;
+  markDrop(null);
+  const folder = dropFolder(e.target);
+  if (folder === dirOf(from)) return;
+  const problem = moveProblem(from, folder, paths());
+  if (problem) return moveError(`Can't move ${baseName(from)}: ${problem}`);
+  moveError("");
+  await renameOrMove(from, movedPath(from, folder)).catch((err) => moveError(`Can't move ${baseName(from)}: ${err}`));
+});
 
 // ---------- Obsidian ----------
 
@@ -1217,6 +1282,7 @@ const actions = {
   forward: () => modal() || go(1),
   deletePage: () => deletePage(current),
   renamePage: () => openRenameDialog(current),
+  movePage: () => openRenameDialog(current, true),
   undo: () => undoRedo("undo"),
   redo: () => undoRedo("redo"),
   // Tauri's zoom-hotkey.js (zoomHotkeysEnabled, macOS/Linux) owns the zoom level; drive it with the key it listens for.
@@ -1288,6 +1354,7 @@ async function buildMenu() {
         sep,
         item("Open in Obsidian", "obsidian"),
         item("Rename…", "renamePage", "F2"),
+        item("Move to…", "movePage"),
         item("Move to Trash…", "deletePage"), // ⌘⌫ comes from the keydown handler, so text fields keep it
       ] },
       // Undo and Redo are our own items, not the predefined ones: the editor's history and the app's deletions need them.
@@ -1334,6 +1401,7 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { text: "Copy Link", action: () => copyLink(file) },
         { item: "Separator" },
         { text: "Rename…", action: () => openRenameDialog(file) },
+        { text: "Move to…", action: () => openRenameDialog(file, true) },
         { text: "Delete…", action: () => deletePage(file) },
       ]
     : [{ text: "New Page Here…", action: () => openNewDialog("", { folder }) }];

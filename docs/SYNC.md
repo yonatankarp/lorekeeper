@@ -162,7 +162,7 @@ The engine is `src-tauri/src/sync.rs`; it knows nothing of Tauri and is tested e
 - **Status** (events to the windows and on the campaign in Settings and the sidebar): "Connecting", "Syncing" or "Syncing N", "Synced", "Offline, will sync when the server is back", "Removed from this campaign", or "Sync stopped" with the reason. **Presence:** the names from `presence`, decrypted, without your own entry (told apart by your sealed display id).
 - **Files on disk:** reads use `O_NOFOLLOW` on Unix and `FILE_FLAG_OPEN_REPARSE_POINT` on Windows (a symlink or junction is refused), after checking every folder on the way. A folder swapped for a symlink between that check and the read or write is the one race left; it needs someone already on this computer. Hard links aren't detected.
 - **Leaving:** removing a joined campaign from Lorekeeper deletes its token and state. The owner's secrets stay when they remove their own campaign: they're the only way to invite or remove players.
-- **Renames:** ids come from paths, so a rename syncs as a new file plus a tombstone for the old path. (A `moved_to` blob that also moves private twins is planned with private notes.)
+- **Renames:** ids come from paths, so a rename (or a move to another folder) syncs as a new file plus a tombstone for the old path. (A `moved_to` blob that also moves private twins is planned with private notes.)
 - **Per-player session files** mean the common case, everyone writing notes during a game, never conflicts.
 
 ## Private notes (planned)

@@ -405,6 +405,19 @@ async fn two_players_sync_through_the_server() {
     assert_eq!(member.read(".trash/Locations/Inn.md").as_deref(), Some("# Inn"));
     assert!(member_dir.join("Locations").is_dir(), "top-level folders stay");
 
+    // Moving a page in the app (a rename into another folder) arrives as the page in its new folder: no copy is left at
+    // the old path, and the old one doesn't come back.
+    owner.write("NPCs/Crows.md", "# The Crows");
+    until("the page to move", || member.read("NPCs/Crows.md").is_some()).await;
+    until("the page is synced", || owner.synced_hash(&room.key, "NPCs/Crows.md").is_some()).await;
+    crate::rename_note(&owner_dir, "NPCs/Crows.md", "Lore/Crows.md").unwrap();
+    owner.engine.poke();
+    until("the move", || member.read("Lore/Crows.md").is_some() && member.read("NPCs/Crows.md").is_none()).await;
+    assert_eq!(member.read(".trash/NPCs/Crows.md").as_deref(), Some("# The Crows"));
+    until("both synced", || member.rec.last() == Some(Status::Synced) && owner.rec.last() == Some(Status::Synced)).await;
+    assert!(owner.read("NPCs/Crows.md").is_none(), "the old path isn't resurrected");
+    assert_eq!(member.tree(), owner.tree());
+
     // Deleting a page the other player changed meanwhile: theirs stays and comes back.
     member.stop().await;
     fs::write(member_dir.join("Lore/Offline.md"), "changed while it was deleted").unwrap();

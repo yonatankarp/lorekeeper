@@ -139,6 +139,27 @@ test("renaming a page rewrites the links to it, and only those", async () => {
   assert.equal(renameLinks("no links", "NPCs/Mirela.md", "NPCs/Mira.md", paths), "no links");
 });
 
+test("moving a page keeps plain links, updates path links, and never takes over another page's links", async () => {
+  const { moveProblem, movedPath, renameLinks } = await import("./vault.js");
+  const paths = ["NPCs/Vex.md", "Archive/Old/Vex.md", "Lore/Gods.md", "Sessions/Session 3.md", "Sessions/Prep.md"];
+  const move = (md, from, folder) => renameLinks(md, from, movedPath(from, folder), paths);
+  assert.equal(move("[[Gods]] [[Lore/Gods|gods]] ![[Gods]]", "Lore/Gods.md", "Archive"), "[[Gods]] [[Archive/Gods|gods]] ![[Gods]]");
+  // The archived Vex moves to the top level, a shorter path than NPCs/Vex: links to the NPC now name its folder.
+  assert.equal(move("[[Vex]] [[vex#Past|she]] [[Archive/Old/Vex]]", "Archive/Old/Vex.md", ""), "[[NPCs/Vex]] [[NPCs/Vex#Past|she]] [[Vex]]");
+  // A name another page has, at a shorter path: the moved page's links get its folder.
+  assert.equal(move("[[Archive/Old/Vex]]", "Archive/Old/Vex.md", "Places/Far/Away"), "[[Places/Far/Away/Vex]]");
+  assert.equal(move("[[Vex]]", "NPCs/Vex.md", "Lore"), "[[Vex]]");
+
+  assert.equal(movedPath("NPCs/Vex.md", ""), "Vex.md");
+  assert.equal(moveProblem("Lore/Gods.md", "Archive/Old", paths), "");
+  assert.equal(moveProblem("Sessions/Prep.md", "", paths), "");
+  assert.match(moveProblem("NPCs/Vex.md", "Archive/Old", paths), /already has a page named Vex/);
+  assert.match(moveProblem("Lore/Gods.md", "Sessions", paths), /Only sessions/);
+  for (const session of ["Sessions/Session 3.md", "Sessions/Session 4", "Sessions/Session 4/Sibling 5.md"]) {
+    assert.match(moveProblem(session, "Lore", paths), /Session N/, session);
+  }
+});
+
 test("shownProps leaves out the type and empty values, names labels, and links page names", () => {
   const paths = ["NPCs/Harbin Wester.md", "Locations/Phandalin.md", "Quests/Umbrage Hill Quest.md"];
   const props = [["type", "quest"], ["status", "open"], ["giver", "Harbin Wester"], ["location", ""], ["reward", "25gp"], ["first-met", '"2026-10-04"'], ["base", "[[Phandalin]]"]];

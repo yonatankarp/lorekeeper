@@ -260,17 +260,35 @@ export function badName(name) {
   return "";
 }
 
+/** Where page `path` goes when moved into `folder` ("" is the top level). */
+export const movedPath = (path, folder) => `${folder ? `${folder}/` : ""}${path.split("/").pop()}`;
+
 /**
- * Points the [[links]] to page `from` at its new path `to` (`paths`: the vault before the rename), keeping each link's
- * alias, heading, embed and folder prefix. A bare new name that would land on another page gets its folder.
+ * Why page `from` can't move into `folder` ("" is the top level), or "" when it can (`paths`: the vault's pages). The
+ * same rules as rename_note in lib.rs, checked before a drop so the reason can be told without trying.
+ */
+export function moveProblem(from, folder, paths) {
+  if (/^Sessions\/Session \d+(\.md|\/|$)/i.test(from)) return 'Sessions keep their "Session N" names in Sessions/, so hotkey notes find the current one.';
+  if (/^sessions(\/|$)/i.test(folder) && !/^sessions\//i.test(from)) return "Only sessions go in Sessions/.";
+  const to = movedPath(from, folder);
+  if (to !== from && paths.some((p) => p.toLowerCase() === to.toLowerCase())) return `${folder || "The top level"} already has a page named ${baseName(from)}.`;
+  return "";
+}
+
+/**
+ * Points the [[links]] to page `from` at its new path `to` (`paths`: the vault before the rename or move), keeping each
+ * link's alias, heading, embed and folder prefix. A bare new name that would land on another page gets its folder, and
+ * so does a link to another page that the renamed one would take over (same name, now a shorter path).
  */
 export function renameLinks(md, from, to, paths) {
   const after = paths.map((p) => (p === from ? to : p));
   return md.replace(WIKILINK, (link, bang, target, heading = "", alias) => {
-    if (resolve(target, paths) !== from) return link;
+    const was = resolve(target, paths);
+    if (!was || (was !== from && resolve(target, after) === was)) return link;
     const old = target.trim();
     let name = old.slice(0, old.lastIndexOf("/") + 1) + baseName(to);
-    if (resolve(name, after) !== to) name = to.replace(/\.md$/i, "");
+    if (was !== from) name = was.replace(/\.md$/i, "");
+    else if (resolve(name, after) !== to) name = to.replace(/\.md$/i, "");
     if (/\.md$/i.test(old)) name += ".md";
     return `${bang}[[${target.replace(old, () => name)}${heading}${alias === undefined ? "" : `|${alias}`}]]`;
   });
