@@ -248,7 +248,8 @@ async fn plain_endpoints() {
     assert_eq!(status, StatusCode::OK);
     let page = page.as_str().unwrap();
     assert!(page.contains("Join a shared campaign") && page.contains("https://lorekeeper.yonatankarp.com"));
-    assert!(!page.contains("http://") && !page.contains("src="), "no external assets");
+    assert!(!page.contains("http://"), "no external assets");
+    assert!(page.split("src=\"").skip(1).all(|rest| rest.starts_with("/icon.png\"")), "only the server's own icon");
     assert_eq!(s.redeem(&room, invite, "x").await.0, StatusCode::CREATED);
 }
 
@@ -889,6 +890,15 @@ async fn join_page_is_locked_down() {
     assert!(page.contains("Needs Lorekeeper 0.7 or later. Don't have it, or have an older version? <a href=\"https://yonatankarp.com/lorekeeper/\" rel=\"noreferrer\">Download Lorekeeper</a>, then open this link again."));
     assert!(page.contains("Keep it within your party."));
     assert!(!page.contains("http-equiv"), "no meta refresh");
+    // The logo is the only thing it loads, from this server.
+    assert!(csp.contains("img-src 'self';"), "{csp}");
+    assert!(page.contains("<img class=\"logo\" src=\"/icon.png\""));
+    assert_eq!(page.matches("src=\"").count(), 1, "nothing else is loaded");
+    let res = router(s.state.clone()).oneshot(Request::get("/icon.png").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "image/png");
+    let png = res.into_body().collect().await.unwrap().to_bytes();
+    assert!(png.starts_with(b"\x89PNG"));
     assert!(page.contains("Join a shared campaign") && page.contains("the part after <b>#</b>"));
 }
 
