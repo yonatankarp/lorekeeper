@@ -5,7 +5,7 @@ import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMe
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  DM, dmCopyOf, isDmCopy, isPrivate, moveTarget, myPc, privateLabel, privateMentions, shownAt, sidebarTree, startView, unprivate,
+  DM, dmCopyOf, editChoices, editTarget, isDmCopy, isPrivate, moveTarget, myPc, ownSessionFiles, privateLabel, privateMentions, sessionDate, shownAt, sidebarTree, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -34,6 +34,7 @@ const nav = navHistory(); // pages visited, for Back / Forward
 const undos = undoStack(); // the app's own undoable actions (deleting, creating); text edits use the editor's history
 let base = ""; // file content the editor started from, for conflict-safe saves
 let editing = false;
+let editChoice = null; // Edit on a shared session: which file (editChoices: "session", "mine", "private"); null is the first
 let saveTimer = null;
 let saving = null; // in-flight save promise
 let held = false; // unsaved while the cursor is still on a ~ line, or after its move failed (see save): the editor keeps it
@@ -56,14 +57,16 @@ const me = () => {
 };
 /** Your own file in shared session `path` ("Sessions/Session 4/Sibling 5.md"), there yet or not; null for other pages. */
 const myFile = (path) => (note(path)?.parts && me() ? `${path}/${baseName(me())}.md` : null);
-/** The file Edit changes: in a shared session your own (see myFile), or its first when you haven't picked a character. */
-const editPath = (path = current) => (note(path)?.parts ? myFile(path) ?? note(path).parts[0]?.path ?? path : path);
+/** The file Edit changes: in a shared session the one picked in its switch (see editChoices), else the page. */
+const editPath = (path = current) => (note(path)?.parts ? editTarget(choicesFor(path), path === current ? editChoice : null) : path);
 /** A file Obsidian can open for a page: in a shared session yours, or its first. */
 const obsidianPath = (path) => (note(editPath(path)) ? editPath(path) : note(path)?.parts?.[0]?.path ?? path);
 /** A session's notes in order: every player's, with authors, for a shared one, and the private ones you may read. */
 const sessionItems = (n) => (n.parts ? mergeTimelines([...n.parts, ...(n.private ?? [])]) : timeline(n.content));
 /** The open campaign's sharing settings, and who reads your private notes in it (see privateLabel). */
 const sharing = () => settings.sharing?.[settings.vaultPath];
+/** What Edit can change on shared session `path`: Session notes, My notes, Private notes (see editChoices). */
+const choicesFor = (path) => editChoices(note(path), baseName(me()), !!privateLabel(sharing()));
 const ownLabel = () => privateLabel(sharing()) || "Private";
 /** A player's name for their private notes a DM reads (sync.rs writes the names); never HTML. */
 const playerName = (id) => vault.dmPlayers?.[id] || "A player";
@@ -72,6 +75,8 @@ const lockLabel = (path) => (isDmCopy(path) ? `Private: ${playerName(dmCopyOf(pa
 const lockHtml = (path) => `<span class="lock" title="${escape(lockLabel(path))}">${icon("lock")}<span class="sr-only">${escape(lockLabel(path))}</span></span>`;
 /** Your private notes file in shared session `path`, there yet or not. */
 const myPrivateFile = (path) => (me() ? `Private/${path}/${baseName(me())}.md` : null);
+/** The files Delete trashes on a shared session that's all yours (see ownSessionFiles); [] when it isn't. */
+const ownSession = (path) => (note(path)?.parts ? ownSessionFiles(note(path), baseName(me())) : []);
 const isSession = (path) => path?.startsWith("Sessions/");
 const alive = (path) => path === null || !!note(path); // Home, or a page still in the vault
 const modal = () => !!document.querySelector("dialog[open]");
@@ -495,7 +500,7 @@ function render() {
   $("back").disabled = nav.find(-1, alive, current) < 0;
   $("forward").disabled = nav.find(1, alive, current) < 0;
   const copy = !!current && isDmCopy(current); // a player's private note on a DM's computer: read-only
-  $("delete").disabled = !n || !!n.parts || copy; // a shared session is everyone's notes
+  $("delete").disabled = !n || (!!n.parts && !ownSession(current).length) || copy; // a shared session is everyone's notes, unless it's all yours
   $("rename").disabled = $("move").disabled = !n || keepsPlace(current) || copy;
   for (const id of ["rename", "move", "delete"]) $(id).hidden = !n; // Home and the welcome page have no page to act on
   showPrivacy(n);
@@ -506,6 +511,16 @@ function render() {
   $("toggle").textContent = editing ? "Done" : "Edit";
   $("editor").hidden = !editing || !n;
   $("editor-hint").hidden = !editing || !n || !isSession(current);
+  // Session notes | My notes | Private notes, when a shared session has more than one file you can edit.
+  const choices = editing && n?.parts ? choicesFor(current) : [];
+  $("edit-switch").hidden = choices.length < 2;
+  if (choices.length > 1) {
+    const picked = editTarget(choices, editChoice);
+    const label = { session: "Session notes", mine: "My notes", private: `<span class="lock" aria-hidden="true">${icon("lock")}</span>Private notes` };
+    $("edit-switch").innerHTML = `<div class="view-switch" role="group" aria-label="Notes to edit">${choices
+      .map((c) => `<button type="button" data-choice="${c.id}" aria-pressed="${c.path === picked}">${label[c.id]}</button>`).join("")}</div>${
+      isPrivate(picked) ? `<span class="private-label">${escape(ownLabel())}</span>` : ""}`;
+  }
   $("view").hidden = editing && !!n;
 
   $("new-page").disabled = $("new-session").disabled = !settings.vaultPath;
@@ -546,6 +561,7 @@ async function open(path, { edit = false, to } = {}) {
   if (to === undefined) nav.visit(path);
   else nav.go(to);
   current = path;
+  editChoice = null;
   base = note(editPath())?.content ?? "";
   editing = edit;
   inConflict = false;
@@ -1047,7 +1063,7 @@ async function ownFile() {
     say("Pick your character in Settings > General first");
     return false;
   }
-  await invoke("create_file", { path, content: playerFile(current, baseName(me()), today()) })
+  await invoke("create_file", { path, content: playerFile(current, baseName(me()), sessionDate(note(current)) || today()) })
     .catch((err) => String(err).endsWith("already exists.") || say(`Couldn't edit: ${err}`));
   await refresh();
   return !!note(path);
@@ -1060,8 +1076,9 @@ $("toggle").addEventListener("click", async () => {
     if (held) return; // see open
     editing = false;
   } else {
+    editChoice = null;
     if (!(await ownFile())) return;
-    if (note(current)?.parts) say(`Editing your own notes in ${baseName(current)}`);
+    if (editPath() === myFile(current)) say(`Editing your own notes in ${baseName(current)}`);
     editing = true;
     base = note(editPath())?.content ?? "";
     ed().setValue(base, { reset: true });
@@ -1070,12 +1087,29 @@ $("toggle").addEventListener("click", async () => {
   if (editing) ed().focus();
 });
 
+/** Session notes | My notes | Private notes, while editing a shared session: saves, then edits the picked file (made on first pick). */
+$("edit-switch").addEventListener("click", async (e) => {
+  const choice = e.target.closest("button")?.dataset.choice;
+  if (!choice || editTarget(choicesFor(current), choice) === editPath()) return;
+  await flush();
+  if (inConflict) return say("Keep your version or load theirs first.");
+  const was = editChoice;
+  editChoice = choice;
+  if (!(await ownFile())) editChoice = was;
+  base = note(editPath())?.content ?? "";
+  ed().setValue(base, { reset: true });
+  render();
+  ed().focus();
+});
+
 // ---------- deleting, and undoing it ----------
 
-/** Asks before moving a page to the Trash; true when confirmed. Focus starts on Cancel. */
-function confirmDelete(path) {
+/** Asks before moving a page to the Trash, naming the `files` that go when they aren't just the page; true when confirmed. Focus starts on Cancel. */
+function confirmDelete(path, files = [path]) {
   const n = backlinks(path, vault.notes).length;
   $("delete-title").textContent = `Move "${baseName(path)}" to the Trash?`;
+  $("delete-files").textContent = `Your notes in it go: ${files.map((f) => (isPrivate(f) ? `your private notes, ${f}` : f)).join(" and ")}.`;
+  $("delete-files").hidden = files[0] === path;
   $("delete-links").textContent = n ? `${n} page${n === 1 ? " links" : "s link"} to it; those links will show as missing.` : "";
   $("delete-links").hidden = !n;
   $("delete-dialog").returnValue = "";
@@ -1086,27 +1120,34 @@ function confirmDelete(path) {
 }
 
 /**
- * Moves a page to the OS Trash and returns what it held (for undo), saving pending typing first so a failed delete
- * loses nothing. When it was the open page, goes Back (skipping it), or Home when there's nothing to go back to.
+ * Moves a page (its `files`: a shared session's are the ones in it) to the OS Trash and returns what each held (for
+ * undo), saving pending typing first so a failed delete loses nothing. When it was the open page, goes Back (skipping
+ * it), or Home when there's nothing to go back to.
  */
-async function trash(path) {
+async function trash(path, files = [path]) {
   const wasOpen = path === current;
   await flush();
-  const content = note(path)?.content ?? "";
+  const contents = files.map((f) => note(f)?.content ?? "");
   const back = nav.find(-1, (p) => p !== path && alive(p), path);
-  await invoke("delete_file", { path });
-  await refresh();
+  try {
+    for (const file of files) await invoke("delete_file", { path: file });
+  } finally {
+    await refresh();
+  }
   if (wasOpen) await (back >= 0 ? open(nav.entry(back), { to: back }) : open(null));
-  return content;
+  return contents;
 }
 
-/** Undo for creating a page (or redo for deleting one): only while it still holds `expected`, so no work is lost. */
-async function trashIfUnchanged(path, expected) {
+/**
+ * Undo for creating a page (or redo for deleting one): only while it still holds `expected` (a shared session's
+ * `files` each theirs, in order), so no work is lost.
+ */
+async function trashIfUnchanged(path, expected, files = [path]) {
   await flush();
-  const n = note(path);
-  if (!n) return; // already gone
-  if (n.content !== expected) throw `${baseName(path)} has changed since, so it was kept`;
-  await trash(path);
+  const want = [].concat(expected);
+  if (files.every((f) => !note(f))) return; // already gone
+  if (files.some((f, i) => note(f)?.content !== want[i])) throw `${baseName(path)} has changed since, so it was kept`;
+  await trash(path, files);
 }
 
 /** Puts a page back at its path; never overwrites one that's there now. */
@@ -1119,12 +1160,17 @@ async function deletePage(path) {
   if (modal()) return say("Close the open dialog first.");
   if (!note(path)) return say("Open a page to move it to the Trash.");
   if (isDmCopy(path)) return say("A player's private note is read-only here.");
-  if (note(path).parts) return say("A shared session holds everyone's notes. Delete your own notes from its Timeline instead.");
-  if (!(await confirmDelete(path))) return;
+  const files = note(path).parts ? ownSession(path) : [path];
+  if (!files.length) return say("A shared session holds everyone's notes. Delete your own notes from its Timeline instead.");
+  if (!(await confirmDelete(path, files))) return;
   const name = baseName(path);
   try {
-    const content = await trash(path);
-    record({ label: `Delete ${name}`, undo: () => restore(path, content), redo: () => trashIfUnchanged(path, content) });
+    const contents = await trash(path, files);
+    record({
+      label: `Delete ${name}`,
+      undo: async () => { for (const [i, f] of files.entries()) await restore(f, contents[i]); },
+      redo: () => trashIfUnchanged(path, contents, files),
+    });
     say(`Moved ${name} to the Trash`);
   } catch (err) {
     say(`Couldn't delete ${name}: ${err}`);
@@ -1645,8 +1691,9 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
-        // Only what works for this page: sessions keep their name and folder, a shared one holds everyone's notes.
-        ...(note(file)?.parts ? [] : [
+        // Only what works for this page: sessions keep their name and folder, a shared one holds everyone's notes
+        // (unless it's all yours).
+        ...(note(file)?.parts && !ownSession(file).length ? [] : [
           { item: "Separator" },
           ...(keepsPlace(file) ? [] : [
             { text: "Rename…", action: () => openRenameDialog(file) },

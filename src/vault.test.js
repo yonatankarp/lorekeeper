@@ -4,7 +4,7 @@ import {
   backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
   authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel, startView,
-  DM, mayPlayDm, myPc,
+  DM, mayPlayDm, myPc, ownSessionFiles, editChoices, editTarget, sessionDate,
 } from "./vault.js";
 
 test("private notes: your own in Private/, a DM's read-only copies of the players' in .lorekeeper/dm/", () => {
@@ -424,6 +424,53 @@ test("a shared session's folder is one page, which links, backlinks, search and 
   assert.ok(isSessionFolder("Sessions/Session 12") && !isSessionFolder("Sessions/Session 12 (1)") && !isSessionFolder("Sessions/Arc"));
   assert.equal(pcPath("sibling 5", ["NPCs/Sibling 5.md", "PCs/Retired/Sibling 5.md"]), "PCs/Retired/Sibling 5.md");
   assert.equal(pcPath("Vex", paths), null);
+});
+
+test("Edit on a shared session: Session notes, My notes and Private notes, each when it applies", () => {
+  const f = (path, content = "- 20:00 x\n") => ({ path, content });
+  const session = (...files) => pages(files, ["Sessions/Session 1"]).find((p) => p.path === "Sessions/Session 1");
+  const old = f("Sessions/Session 1.md", "---\nsession: 1\ndate: 2026-10-04\n---\n# Session 1 - 2026-10-04\n");
+  const arn = f("Sessions/Session 1/Arn.md", "---\ndate: 2026-10-05\n---\n- 20:00 x\n");
+  const [mine, secret] = ["Sessions/Session 1/Sibling 5.md", "Private/Sessions/Session 1/Sibling 5.md"];
+  const ids = (choices) => choices.map((c) => c.id);
+
+  // A session from before sharing, in a shared campaign: all three, its own notes first; files there yet or not.
+  const all = editChoices(session(old), "Sibling 5", true);
+  assert.deepEqual(all, [{ id: "session", path: old.path }, { id: "mine", path: mine }, { id: "private", path: secret }]);
+  assert.equal(editTarget(all, null), old.path, "Edit opens Session notes");
+  assert.equal(editTarget(all, "mine"), mine);
+  assert.equal(editTarget(all, "private"), secret);
+  // A folder session: My notes first, then Private notes.
+  const folder = editChoices(session(arn), "Sibling 5", true);
+  assert.deepEqual(ids(folder), ["mine", "private"]);
+  assert.equal(editTarget(folder, null), mine);
+  assert.equal(editTarget(folder, "session"), mine, "a choice that isn't there opens the first");
+  // Not shared (no private notes): one choice, so no switch, unless there's a Session 1.md too.
+  assert.deepEqual(ids(editChoices(session(arn), "Sibling 5")), ["mine"]);
+  assert.deepEqual(ids(editChoices(session(old, f(mine)), "Sibling 5")), ["session", "mine"]);
+  // No character picked: just the session's first file.
+  assert.deepEqual(editChoices(session(old, arn), "", true), [{ id: "session", path: old.path }]);
+  assert.deepEqual(editChoices(session(arn), "", true), [{ id: "session", path: arn.path }]);
+
+  // A file added to a session takes its date: its Session 1.md's, else the first part's that has one.
+  assert.equal(sessionDate(session(old, arn)), "2026-10-04");
+  assert.equal(sessionDate(session(f(mine), arn)), "2026-10-05");
+  assert.equal(sessionDate(session(f(mine))), "", "none: today's, then");
+});
+
+test("Delete takes a shared session only when every file in it is yours", () => {
+  const f = (path) => ({ path, content: "- 20:00 x\n" });
+  const session = (...paths) => pages(paths.map(f)).find((p) => p.path === "Sessions/Session 1");
+  const mine = "Sessions/Session 1/Sibling 5.md", secret = "Private/Sessions/Session 1/Sibling 5.md";
+  assert.deepEqual(ownSessionFiles(session(mine), "Sibling 5"), [mine]);
+  assert.deepEqual(ownSessionFiles(session(mine, secret), "Sibling 5"), [mine, secret], "your private notes go with it");
+  assert.deepEqual(ownSessionFiles(session(secret), "Sibling 5"), [secret], "only private notes so far");
+  assert.deepEqual(ownSessionFiles(session(mine, "Sessions/Session 1.md"), "Sibling 5"), [], "a session from before sharing");
+  assert.deepEqual(ownSessionFiles(session(mine, "Sessions/Session 1/Arn.md"), "Sibling 5"), [], "a teammate's notes");
+  assert.deepEqual(ownSessionFiles(session(mine, ".lorekeeper/dm/aaaaaaaaaaaaaaaaaaaaaaaaaa/Sessions/Session 1/Arn.md"), "Sibling 5"), [], "a DM's copy of a player's");
+  assert.deepEqual(ownSessionFiles(session(mine), "Arn"), [], "someone else's");
+  assert.deepEqual(ownSessionFiles(session(mine), ""), [], "no character picked");
+  assert.deepEqual(ownSessionFiles(pages([], ["Sessions/Session 1"])[0], "Sibling 5"), [], "an empty folder");
 });
 
 test("sync conflict copies are found by their names", () => {
