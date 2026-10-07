@@ -175,7 +175,7 @@ Backups run on each new session, every 30 minutes while notes change, and once a
 ## Settings
 
 - **General:** campaigns (notes folders), sharing them with your party, the D&D Beyond sign-in, launch at login, updates, and under **Advanced** the sync server.
-- **Shortcuts:** change the global shortcuts; a shortcut another app already uses is refused and the old one keeps working.
+- **Shortcuts:** change the global shortcuts; a shortcut another app already uses is refused and the old one keeps working. **Reset to defaults** puts every shortcut back at once (`⌘⌥N` / `Ctrl+Alt+N` and `⌘⇧S` / `Ctrl+Shift+S`, with New session and New page off).
 - **Appearance:** Light (Tome), Dark (Dungeon) or Match my computer, and text size.
 - **Backups:** see above.
 

@@ -1759,6 +1759,12 @@ fn get_settings(app: AppHandle) -> Settings {
     current_settings(&app)
 }
 
+/// What a fresh install starts with; Settings > Shortcuts > Reset to defaults puts the shortcuts back to these.
+#[tauri::command]
+fn default_settings() -> Settings {
+    Settings::default()
+}
+
 /// Checks and applies every setting, saves them, then tells all windows. On error nothing changes.
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
@@ -2067,6 +2073,7 @@ pub fn run() {
             open_in_obsidian,
             open_url,
             get_settings,
+            default_settings,
             save_settings,
             open_settings,
             open_cheat_sheet,
