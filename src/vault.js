@@ -100,10 +100,13 @@ export function questStatus(content) {
   return value.replace(/^["']|["']$/g, "").trim().toLowerCase() || "open";
 }
 
-/** Paths of the pages in Quests/ that are still open, sorted by name. */
+/** The statuses a quest page's dropdown offers, in order; "open" and "in progress" keep it in the open quest list. */
+export const QUEST_STATUSES = ["open", "in progress", "done", "failed"];
+
+/** Paths of the pages in Quests/ that are still open ("open" or "in progress"), sorted by name. */
 export const openQuests = (notes) =>
   notes
-    .filter((n) => n.path.startsWith("Quests/") && questStatus(n.content) === "open")
+    .filter((n) => n.path.startsWith("Quests/") && QUEST_STATUSES.slice(0, 2).includes(questStatus(n.content)))
     .map((n) => n.path)
     .sort((a, b) => naturally(baseName(a), baseName(b)));
 

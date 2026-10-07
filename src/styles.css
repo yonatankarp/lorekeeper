@@ -479,9 +479,18 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 .props .rarity-rare { --k: var(--kind-npc); }
 .props .rarity-veryrare { --k: var(--kind-mystery); }
 .props :is(.rarity-legendary, .rarity-artifact) { --k: var(--kind-loot); }
-.props .status { padding: 0 7px; border-radius: 3px; font: 14.5px/20px var(--font-display); letter-spacing: 0.04em; color: var(--kind-quest); background: color-mix(in srgb, var(--kind-quest) 14%, transparent); }
-.props :is(.status-done, .status-failed, .status-dead) { color: var(--muted); background: var(--hover); }
-.props .status .icon { margin-right: 0.25em; }
+select.status { appearance: auto; border: 0; cursor: pointer; }
+:is(.props, .home-list) .status { padding: 0 7px; border-radius: 3px; font: 14.5px/20px var(--font-display); letter-spacing: 0.04em; color: var(--kind-quest); background: color-mix(in srgb, var(--kind-quest) 14%, transparent); }
+:is(.props, .home-list) :is(.status-done, .status-failed, .status-dead) { color: var(--muted); background: var(--hover); }
+:is(.props, .home-list) .status .icon { margin-right: 0.25em; color: inherit; }
+/* Coins in a reward, as on D&D Beyond: platinum, gold, electrum, silver, copper. */
+.coin { white-space: nowrap; }
+.coin .icon { margin-right: 0.2em; color: color-mix(in srgb, var(--c) 60%, #000); fill: var(--c); }
+.coin-pp { --c: #d9dde3; }
+.coin-gp { --c: #e8b923; }
+.coin-ep { --c: #9fc2c9; }
+.coin-sp { --c: #b8bcc2; }
+.coin-cp { --c: #c46f3c; }
 .session-note { margin: 0 0 16px; color: var(--muted); font-size: 15px; font-style: italic; }
 .welcome { color: var(--muted); padding-top: 40px; text-align: center; }
 .view-switch { display: inline-flex; gap: 2px; margin: 0 0 14px; padding: 2px; border-radius: 8px; background: var(--hover); }

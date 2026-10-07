@@ -4,7 +4,7 @@ import { createEditor } from "./editor.js";
 import { authorLink, escape, insertLine, linkify, localTime, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, splitPrivate, stripLinks, toHtml, zoned } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
-  pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
+  pcPath, QUEST_STATUSES, questStatus, recentlyMentioned, setProps, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
   DM, dmCopyOf, editChoices, editTarget, isDmCopy, isPrivate, moveTarget, myPc, ownSessionFiles, privateLabel, privateMentions, sessionDate, shownAt, sidebarTree, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
@@ -160,8 +160,23 @@ const inlineLink = (target, label, m) => (m[1] && isImage(target) ? imageHtml(ta
 /** Raw text with its [[links]] made clickable and its ![[images]] shown. */
 const inlineLinks = (text) => linkify(text, inlineLink);
 
-/** Status words that end a quest or a life get their own badge and icon. */
-const STATUS_ICONS = { done: "done", failed: "failed", dead: "failed" };
+/** Status words that end a quest or a life, or say it's under way, get their own badge and icon. */
+const STATUS_ICONS = { done: "done", failed: "failed", dead: "failed", "in progress": "progress" };
+
+/** A status or rarity as a badge, with an icon when the word has one. */
+const badgeHtml = (key, value) =>
+  `<span class="${key} ${key}-${escape(value.toLowerCase().replace(/[^a-z]/g, ""))}">${STATUS_ICONS[value.toLowerCase()] ? icon(STATUS_ICONS[value.toLowerCase()]) : ""}${escape(value)}</span>`;
+
+/** A quest's status as a dropdown of QUEST_STATUSES (and whatever else the page says, so it isn't lost). */
+function statusSelect(value) {
+  const word = value.toLowerCase();
+  const options = QUEST_STATUSES.includes(word) ? QUEST_STATUSES : [...QUEST_STATUSES, word];
+  return `<select class="status status-${escape(word.replace(/[^a-z]/g, ""))}" data-prop="status" aria-label="Status">` +
+    options.map((s) => `<option value="${escape(s)}"${s === word ? " selected" : ""}>${escape(s)}</option>`).join("") + "</select>";
+}
+
+/** Amounts of coin in a reward ("25gp", "3 sp"), each shown with a coin of its metal. */
+const COIN = /\d[\d,]*\s*(pp|gp|ep|sp|cp)\b/gi;
 
 /** "2026-10-04" as "4 Oct 2026"; anything else as written. */
 const prettyDate = (v) =>
@@ -182,21 +197,25 @@ function authorHtml(author) {
 /** A page's properties, as a small stat block: see shownProps. */
 function propsHtml(props, path) {
   const shown = shownProps(props, paths(), kindOf(path));
+  const quest = kindOf(path) === "quest" && !isDmCopy(path);
   // A portrait ("[[Attachments/Demus.jpg]]" or a plain path) shows as a picture in the corner, not as a row.
   const pic = shown.rows.find((r) => r.key === "portrait");
   shown.rows = shown.rows.filter((r) => r !== pic);
   const portrait = pic ? `<div class="props-portrait">${imageHtml(imageTarget(pic.value), baseName(path))}</div>` : "";
   const rows = shown.rows.map(({ key, label, value, icon: name, path }) => {
     let html;
-    if (key === "status" || key === "rarity") {
-      const word = value.toLowerCase();
-      html = `<span class="${key} ${key}-${escape(word.replace(/[^a-z]/g, ""))}">${STATUS_ICONS[word] ? icon(STATUS_ICONS[word]) : ""}${escape(value)}</span>`;
+    if (key === "status" && quest) {
+      html = statusSelect(value);
+    } else if (key === "status" || key === "rarity") {
+      html = badgeHtml(key, value);
     } else if (key === "dndbeyond") {
       // The sheet opens in the browser (the document click handler sends https links to open_url).
       html = sheetId(value)
         ? `<a href="${escape(value)}">Character sheet</a> <button type="button" class="ghost icon-button props-action" data-ddb-refresh ` +
           `title="Refresh from D&amp;D Beyond" aria-label="Refresh from D&amp;D Beyond">${icon("refresh")}</button>`
         : inlineLinks(value);
+    } else if (key === "reward" && !value.includes("[[") && value.search(COIN) >= 0) {
+      html = escape(value).replace(COIN, (m, c) => `<span class="coin coin-${c.toLowerCase()}">${icon("coin")}${m}</span>`);
     } else if (path) {
       html = `<a class="wikilink" data-target="${escape(value)}" href="#">${icon(name)}${escape(value)}</a>`;
     } else {
@@ -425,7 +444,7 @@ function homeHtml(graph) {
       <p class="home-meta">${dated(latest, items.length)}</p>
       ${items.length ? timelineHtml(items.slice(-5)) : `<p class="home-none">No notes yet. Press <kbd>${escape(readable(globalKeys(settings).quickNote, mac))}</kbd> during the game to jot one.</p>`}`, true));
   }
-  if (quests.length) cards.push(card("quests", "Open quests", "quest", `<ul class="home-list">${quests.map((p) => `<li>${link(p, "quest")}</li>`).join("")}</ul>`));
+  if (quests.length) cards.push(card("quests", "Open quests", "quest", `<ul class="home-list">${quests.map((p) => `<li>${link(p, "quest")} ${badgeHtml("status", questStatus(note(p).content))}</li>`).join("")}</ul>`));
   if (pcs.length) {
     const who = (pc) => {
       const what = [pc.race, pc.class].filter(Boolean).join(" ");
@@ -997,6 +1016,21 @@ for (const type of ["dragover", "drop"]) document.addEventListener(type, (e) => 
 $("tree").addEventListener("click", (e) => {
   const b = e.target.closest(".folder-new");
   if (b) openNewDialog("", { folder: b.dataset.folder });
+});
+
+// A quest's status dropdown writes the page's `status` property, with Undo.
+$("view").addEventListener("change", async (e) => {
+  const select = e.target.closest("select[data-prop]");
+  if (!select) return;
+  const path = current, before = note(path).content;
+  try {
+    await rewrite(path, (md) => setProps(md, { [select.dataset.prop]: select.value }));
+  } catch (err) {
+    return say(`Couldn't change the status: ${err}`);
+  }
+  const after = note(path).content;
+  record({ label: "Change status", undo: () => putBack(path, after, before), redo: () => putBack(path, before, after) });
+  renderTree(); // a finished quest gets its check mark
 });
 
 $("view").addEventListener("click", async (e) => {
