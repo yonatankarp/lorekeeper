@@ -16,6 +16,7 @@ Lorekeeper has no accounts and no analytics. Your notes stay on your computer, u
 
 - **Your notes** are plain text files in the folder you choose on your computer (by default `Documents/Lorekeeper`).
 - **Settings** are stored in the app's configuration folder on your computer.
+- **Thumbnails** of the pictures in your notes, for the connections map, are kept in the app's cache folder on your computer, outside your notes folder.
 - **Sign-in tokens** for the backups you turn on, your D&D Beyond sign-in session if you sign in there, and the keys and tokens of shared campaigns, are stored in your system's password storage (macOS Keychain, Windows Credential Manager or the Secret Service on Linux). They are only ever sent to the service they belong to.
 
 Nothing is sent to the developer. Lorekeeper does not collect usage data, crash reports or personal information.
