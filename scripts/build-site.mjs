@@ -107,24 +107,23 @@ ${[["@", "npc", "NPC"], ["#", "loot", "Loot"], ["!", "quest", "Quest"], ["?", "m
   .join("\n")}
 </ul>`,
   ],
-  ["session", "Sessions as a timeline", `<p>Every note keeps its time, so a session reads like the tale it was. The Journal groups it into a recap: who you met, what you found, the quests and mysteries. <strong>Copy for D&amp;D Beyond</strong> puts it on your clipboard.</p>`],
+  ["session", "Sessions as a timeline", `<p>Every note keeps its time, so a session reads like the tale it was. The Journal groups it into a recap: who you met, what you found, the quests and mysteries.</p>`],
+  ["pc", "Play with your party", `<p>Share a campaign with an invite link and everyone's notes land in one session timeline, each with who wrote it. Private notes stay with you (and the DM, if the campaign's owner allows it). It syncs end-to-end encrypted, so the server can't read a word.</p>`],
+  ["faction", "Characters and connections", `<p>Import the whole party from D&amp;D Beyond: class, level, background and portrait, refreshed after a level up. Home maps your NPCs, PCs, places and factions and who's linked to whom.</p>`],
   ["location", "The campaign vault", `<p>NPCs, PCs, places, items, factions, quests and lore, joined by <code>[[links]]</code> with backlinks on every page. Paste in maps and handouts. It's all plain Markdown, so Obsidian opens it as a vault.</p>`],
   ["loot", "Backups, your way", `<p>To a folder, Dropbox, Google Drive or a private GitHub repository, straight from your computer to your own account. No accounts, <a href="PRIVACY.html">no analytics</a>.</p>`],
+  ["note", "A cheat sheet", `<p>Every note symbol, link and shortcut on one page: <strong>Help &gt; Cheat Sheet</strong>, or <kbd>⌘/</kbd> (<kbd>Ctrl+/</kbd>).</p>`],
   ["home", "Tome or Dungeon", `<p>Aged parchment and red rubrics by day, torchlit stone and candle gold by night, set in the 5e book fonts. It follows your system, or pick one.</p>`],
 ];
 
 // Built but not in a release yet. When NEXT ships, move these into FEATURES (and drop "coming in" from the FAQ).
-const NEXT = "0.7";
-const SOON = [
-  ["pc", "Play with your party", `<p>Share a campaign with an invite link and everyone's notes land in one session timeline, each with who wrote it, and private notes stay with you (and the DM, if your party allows it). It syncs end-to-end encrypted, so the server can't read a word.</p>`],
-  ["faction", "Characters and connections", `<p>Import the whole party from D&amp;D Beyond: class, level, background and portrait, refreshed after a level up. Home maps your NPCs, places and factions and who's linked to whom.</p>`],
-  ["note", "A cheat sheet", `<p>Every note symbol, link and shortcut on one page: <strong>Help &gt; Cheat Sheet</strong>, or <kbd>⌘/</kbd> (<kbd>Ctrl+/</kbd>).</p>`],
-];
+const NEXT = "0.8";
+const SOON = [];
 
 const STEPS = [
   ["Install it", `Download Lorekeeper and open it. It waits in the menu bar (the system tray on Windows and Linux) and keeps itself up to date.`],
   ["Jot during the game", `Press <kbd>⌘⌥N</kbd> (<kbd>Ctrl+Alt+N</kbd>), type, press Enter. You're back in Discord before the next initiative roll.`],
-  ["Read it back", `Each session reads as a timeline, or as a Journal recap of who you met and what you found, ready to paste into D&amp;D Beyond.`],
+  ["Read it back", `Each session reads as a timeline, or as a Journal recap of who you met and what you found. Share the campaign and your party's notes join yours.`],
 ];
 
 const FAQ = [
@@ -132,9 +131,9 @@ const FAQ = [
   ["Why does my computer warn me when I open it?", `The builds aren't code-signed yet, so macOS and Windows don't recognise who made them. <a href="GUIDE.html#installing">The guide shows how to open it anyway</a>; you only have to do it once.`],
   ["Where are my notes kept?", `On your computer, as plain Markdown files in <code>Documents/Lorekeeper</code>, a folder for each campaign. They only leave your computer if you turn on a backup or share the campaign.`],
   ["Does it work with Obsidian?", `Yes. Open the notes folder as an Obsidian vault and the <strong>Obsidian</strong> button opens pages there. Links, embedded images and templates work the Obsidian way.`],
-  ["Do I need to be online?", `No. Your notes are on your computer, so Lorekeeper works offline. Backups and updates wait for a connection.`],
-  ["Does my party need Lorekeeper too?", `Not for your own notes. To share a campaign (coming in ${NEXT}), everyone who writes in it needs Lorekeeper and an invite link from whoever shared it. There's no account to make; the first time you share, ask Lorekeeper's maintainer for the server's creation key.`],
-  ["What does Lorekeeper collect?", `Nothing. No analytics, no crash reports, no accounts. The <a href="PRIVACY.html">privacy policy</a> has the details.`],
+  ["Do I need to be online?", `No. Your notes are on your computer, so Lorekeeper works offline. Backups and updates wait for a connection, and a shared campaign catches up when the sync server answers again.`],
+  ["Does my party need Lorekeeper too?", `Not for your own notes. To share a campaign, everyone who writes in it needs Lorekeeper 0.7 or later and an invite link from whoever shared it, one link per player. There's no account to make; the first time you share, ask Lorekeeper's maintainer for the sync server's creation key. See <a href="GUIDE.html#playing-with-your-party">Playing with your party</a>.`],
+  ["What does Lorekeeper collect?", `Nothing. No analytics, no crash reports, no accounts. A campaign you share is end-to-end encrypted, so the sync server can't read it. The <a href="PRIVACY.html">privacy policy</a> has the details.`],
   ["Which computers does it run on?", `macOS (Apple silicon and Intel), 64-bit Windows, and Linux as an AppImage. On Linux, the global shortcuts need an X11 session.`],
 ];
 
@@ -193,7 +192,7 @@ const home = `<section class="hero wrap" aria-labelledby="title">
   <h1 class="title" id="title">Lorekeeper</h1>
   <hr class="fleuron">
   <p class="pitch">Session notes for D&amp;D players</p>
-  <p class="lede">Jot things down mid-game without leaving Discord, keep a vault of NPCs, places and quests, and read every session back as a tale.</p>
+  <p class="lede">Jot things down mid-game without leaving Discord, keep a vault of NPCs, places and quests, share it with your party, and read every session back as a tale.</p>
   <div class="downloads" id="download">
     <div class="seals" id="downloads">
 ${DOWNLOADS.map(([os, label, file, suffix]) => `      <a class="seal" href="${RELEASES}" data-os="${os}" data-label="${label}" data-suffix="${suffix}">Download for ${label}<small>${file}</small></a>`).join("\n")}
@@ -256,7 +255,7 @@ if (cut < 0) throw new Error("build-site: theme tokens not found in src/styles.c
 writeFileSync(new URL("style.css", out), appCss.slice(0, cut) + read("scripts/site.css"));
 
 const pages = {
-  "index.html": { title: "Lorekeeper: session notes for D&D players", description: "Free desktop app for D&D session notes: jot things down mid-game, keep a campaign vault, paste a recap into D&D Beyond.", body: home },
+  "index.html": { title: "Lorekeeper: session notes for D&D players", description: "Free desktop app for D&D session notes: jot things down mid-game, keep a campaign vault, share it with your party end-to-end encrypted, import characters from D&D Beyond.", body: home },
 };
 for (const [file, description] of [
   ["GUIDE.md", "How to install and use Lorekeeper: shortcuts, note prefixes, sessions, the vault, playing with your party, backups and settings."],
