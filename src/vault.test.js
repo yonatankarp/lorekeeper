@@ -4,6 +4,7 @@ import {
   backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
   authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel, startView,
+  DM, mayPlayDm, myPc,
 } from "./vault.js";
 
 test("private notes: your own in Private/, a DM's read-only copies of the players' in .lorekeeper/dm/", () => {
@@ -29,6 +30,20 @@ test("private labels say who reads your private notes, as the server last said",
   assert.equal(privateLabel({ shared: true, room: "r", role: "owner" }), "Private: only you", "the owner's setting starts off");
   assert.equal(privateLabel({ shared: true, access: { role: "player", dmReadsPrivate: false } }), "Private: only you");
   assert.equal(privateLabel({ shared: true, access: { role: "player", dmReadsPrivate: true } }), "Private: you and the DM");
+});
+
+test("I play: I'm the DM (no character) is for the owner and DMs, never a player", () => {
+  const member = { shared: true, room: "r", role: "member" };
+  assert.ok(mayPlayDm({ shared: true }), "sharing it makes you the owner");
+  assert.ok(mayPlayDm({ ...member, role: "owner" }), "the owner may run the game without a character");
+  assert.ok(mayPlayDm({ ...member, access: { role: "dm" } }));
+  assert.ok(!mayPlayDm({ ...member, access: { role: "player" } }), "a player");
+  assert.ok(!mayPlayDm(member), "the server hasn't said yet");
+  assert.equal(myPc({ ...member, me: DM, access: { role: "player" } }), "", "a player's old DM choice: pick your character");
+  assert.equal(myPc({ ...member, me: DM, access: { role: "dm" } }), DM);
+  assert.equal(myPc({ ...member, role: "owner", me: DM }), DM);
+  assert.equal(myPc({ ...member, me: "PCs/Arn.md", access: { role: "player" } }), "PCs/Arn.md");
+  assert.equal(myPc(undefined), "");
 });
 
 test("a session page shows its private files in its timeline, never in its content, and they stay pages", () => {

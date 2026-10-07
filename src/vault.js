@@ -154,6 +154,16 @@ export const authorOf = (path) => (/^Sessions\/Session \d+\/[^/]+\.md$/i.test(pa
 export const DM = "DM";
 
 /**
+ * Whether I play may be "I'm the DM (no character)" in a campaign (its sharing settings): for the owner, who may run
+ * the game without a character (also before sharing, which makes them the owner), and a member the server made a DM.
+ * Not for a player, or a member the server hasn't said a role for yet.
+ */
+export const mayPlayDm = (sharing) => !sharing?.room || sharing.role === "owner" || sharing.access?.role === "dm";
+
+/** The PC you play (`me`), "" when none is picked yet: a player's DM choice (made before they could) counts as none. */
+export const myPc = (sharing) => (sharing?.me === DM && !mayPlayDm(sharing) ? "" : sharing?.me ?? "");
+
+/**
  * The pages the app shows for the notes on disk (`files`, [{ path, content }]) and the vault's `folders`. A shared session's
  * folder is one page, "Sessions/Session 4", made of its players' files (plus a Session 4.md written next to it); a sync
  * conflict's copy among them is left out (see syncConflicts). Everything else is its own page, the same object.

@@ -5,7 +5,7 @@ import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMe
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  DM, dmCopyOf, isDmCopy, isPrivate, privateLabel, startView, unprivate,
+  DM, dmCopyOf, isDmCopy, isPrivate, myPc, privateLabel, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -50,7 +50,7 @@ const pageFor = (path) => vault.notes.find((n) => n.parts?.some((p) => p.path ==
 /** In a campaign shared with your party, the PC page you play ("PCs/Sibling 5.md"); "" otherwise. */
 const me = () => {
   const s = settings.sharing?.[settings.vaultPath];
-  return (s?.shared && s.me) || "";
+  return (s?.shared && myPc(s)) || "";
 };
 /** Your own file in shared session `path` ("Sessions/Session 4/Sibling 5.md"), there yet or not; null for other pages. */
 const myFile = (path) => (note(path)?.parts && me() ? `${path}/${baseName(me())}.md` : null);
