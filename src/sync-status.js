@@ -46,3 +46,6 @@ export const roleText = (role, manage) => (role === "owner" ? "owner" : role ===
 
 /** "Online: Lorelei, Syloth", or "" when nobody else is. */
 export const onlineText = (snap) => (snap?.online?.length ? `Online: ${snap.online.join(", ")}` : "");
+
+/** Someone came online or went offline between two snapshots: joining, leaving or removal show there first. */
+export const onlineChanged = (before, after) => JSON.stringify(before?.online ?? []) !== JSON.stringify(after?.online ?? []);

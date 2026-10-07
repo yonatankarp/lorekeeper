@@ -1,6 +1,6 @@
 import { applyTheme } from "./theme.js";
-import { joinText, onlineText, roleText, syncText } from "./sync-status.js";
-import { DM, privateLabel } from "./vault.js";
+import { joinText, onlineChanged, onlineText, roleText, syncText } from "./sync-status.js";
+import { DM, mayPlayDm, myPc, privateLabel } from "./vault.js";
 import { confirmClick } from "./confirm.js";
 import { readable } from "./cheatsheet.js";
 
@@ -179,13 +179,14 @@ const campaignName = (path) => current.backupNames?.[path] || folderName(path);
 
 const pcs = new Map(); // campaign folder -> its PC pages (campaign_pcs)
 
-/** Fills an "I play" list with "I'm the DM (no character)" and a campaign's PC pages, `me` chosen (kept even when its
- * page isn't there). */
+/** Fills an "I play" list with a campaign's PC pages, `me` chosen (kept even when its page isn't there), and "I'm the
+ * DM (no character)" for the owner and DMs only (mayPlayDm): a player's DM choice shows as none picked. */
 function fillPcs(select, path, me) {
+  const dm = mayPlayDm(current.sharing?.[path]);
   const options = [...new Set([...(pcs.get(path) ?? []), ...(me && me !== DM ? [me] : [])])];
-  select.replaceChildren(new Option("Choose…", ""), new Option("I'm the DM (no character)", DM),
+  select.replaceChildren(new Option("Choose…", ""), ...(dm ? [new Option("I'm the DM (no character)", DM)] : []),
     ...options.map((p) => new Option(p.replace(/^PCs\//, "").replace(/\.md$/i, ""), p)));
-  select.value = me;
+  select.value = me === DM && !dm ? "" : me;
 }
 
 // ---------- shared campaigns: a status line and one button per row; the Party dialog does the rest (shared.rs) ----------
@@ -194,7 +195,7 @@ function fillPcs(select, path, me) {
 const snapshots = new Map(); // campaign folder -> { status, online, warning } from sync-status events
 /** You own the campaign, or the server says you're a DM who manages players. */
 const manages = (sh) => sh.role === "owner" || (sh.access?.role === "dm" && !!sh.access?.manage);
-let syncInfo = null, partyPath = null, sharingNow = false, askKey = false, linksTimer, privateBusy = false;
+let syncInfo = null, partyPath = null, sharingNow = false, askKey = false, linksTimer, privateBusy = false, partyTimer;
 let unshare = null; // a campaign Share turned sharing on for: turned back off if Share doesn't finish (its notes would
 // otherwise go to per-character files in a campaign nobody shares)
 
@@ -211,7 +212,7 @@ function renderSharing(row, s, path) {
 /** What a shared campaign is doing (every shared campaign syncs, open or not), and what to do next. */
 function sharingText(path, row = true) {
   const sh = current.sharing?.[path] ?? {}, snap = snapshots.get(path);
-  const pick = row && sh.shared && !sh.removed && !sh.me ? `Pick your character: click ${sh.room ? "Party…" : "Share with party…"}` : "";
+  const pick = row && sh.shared && !sh.removed && !myPc(sh) ? `Pick your character: click ${sh.room ? "Party…" : "Share with party…"}` : "";
   if (sh.shared && !sh.room && !sh.removed) return pick || "Not shared yet.";
   const online = sh.room ? onlineText(snap) : "";
   return [syncText(snap, sh, campaignName(path)), online, pick].filter(Boolean).join(" · ");
@@ -224,10 +225,12 @@ function showSyncStatus(row, path) {
 const rowFor = (path) => [...document.querySelectorAll(".campaign")].find((r) => r.querySelector(".campaign-path").textContent === path);
 
 listen("sync-status", ({ payload }) => {
+  const joinedOrLeft = onlineChanged(snapshots.get(payload.path), payload);
   snapshots.set(payload.path, payload);
   const row = rowFor(payload.path);
   if (row && current) showSyncStatus(row, payload.path);
   if (partyPath === payload.path) renderParty();
+  if (partyPath === payload.path && joinedOrLeft) refreshPlayers();
   if (joinPath === payload.path) showJoin();
 });
 
@@ -269,11 +272,21 @@ function openParty(path, note = "") {
   refreshPcs(path);
   if (!$("players-dialog").open) $("players-dialog").showModal();
   const sh = current.sharing?.[path] ?? {};
-  $(sh.room && sh.me ? "players-close" : "party-me").focus();
+  $(sh.room && myPc(sh) ? "players-close" : "party-me").focus();
   $("invite-role").value = "player";
   $("invite-manage").checked = false;
   showInviteRole();
   if (sh.room && manages(sh) && !sh.removed) loadPlayers();
+  // A player who joins shows in presence (sync-status, above), but nothing reaches an owner who isn't the DM when
+  // someone leaves (they go offline first, then leave) or another manager invites: re-read every few seconds while open.
+  clearInterval(partyTimer);
+  partyTimer = setInterval(refreshPlayers, 5000);
+}
+
+/** Re-reads Pending invites and Players while they show, unless you're using them (an armed Remove, a role list). */
+function refreshPlayers() {
+  if ($("party-invites").hidden || [$("invite-list"), $("player-list")].some((l) => l.contains(document.activeElement))) return;
+  loadPlayers();
 }
 
 function renderParty() {
@@ -285,7 +298,7 @@ function renderParty() {
   $("party-key").hidden = !askKey;
   $("party-sync").textContent = setup ? "" : sharingText(path, false);
   if (document.activeElement !== select) fillPcs(select, path, setup ? select.value : sh.me);
-  $("party-no-pcs").hidden = select.options.length > 2 || select.value === DM; // more than Choose… and the DM
+  $("party-no-pcs").hidden = [...select.options].some((o) => o.value && o.value !== DM) || select.value === DM; // a PC to pick
   $("party-dm-hint").hidden = select.value !== DM;
   $("party-dm-hint").textContent = select.value === DM ? dmHint(sh) : ""; // it describes the list
   $("party-invites").hidden = !(sh.room && manages(sh) && !sh.removed);
@@ -543,6 +556,7 @@ function undoShare() {
 $("players-dialog").addEventListener("close", () => {
   undoShare();
   clearLinks();
+  clearInterval(partyTimer);
   partyPath = null;
 });
 

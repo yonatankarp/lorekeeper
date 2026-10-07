@@ -380,8 +380,9 @@ impl sync::Sink for AppSink {
 /// private-notes setting raises the one-time notice for everyone but the owner (who made it).
 fn note_access(s: &mut Settings, path: &str, access: &Access) -> bool {
     let Some(sh) = s.sharing.get_mut(path) else { return false };
+    let picks_again = a_player_plays_a_character(sh, access);
     if sh.access.as_ref() == Some(access) {
-        return false;
+        return picks_again;
     }
     let was = sh.access.as_ref().map(|a| a.dm_reads_private);
     if was.is_some_and(|was| was != access.dm_reads_private) && access.role != Role::Owner {
@@ -398,6 +399,17 @@ fn dm_plays_no_character(sh: &mut Sharing, access: &Access) {
     if sh.role == "member" && sh.me.is_empty() && access.role == Role::Dm {
         sh.me = DM_ME.into();
     }
+}
+
+/// A player with I play "I'm the DM (no character)" (picked before Lorekeeper offered it only to the owner and DMs,
+/// or kept from when they were a DM) would file their notes as the DM's: they pick their character again instead.
+/// Checked on every access message, unchanged ones too, so a choice from before is cleared at the next connect.
+fn a_player_plays_a_character(sh: &mut Sharing, access: &Access) -> bool {
+    let dm = sh.role == "member" && sh.me == DM_ME && access.role == Role::Player;
+    if dm {
+        sh.me.clear();
+    }
+    dm
 }
 
 const OWNER_REFUSED: &str =
@@ -1025,6 +1037,25 @@ mod tests {
         assert_eq!(s.sharing["/p"].me, "", "a player picks their character");
         assert_eq!(s.sharing["/c"].me, "PCs/Arn.md", "a character already picked stays");
         assert_eq!(s.sharing["/o"].me, "");
+    }
+
+    /// I play "I'm the DM (no character)" is for the owner and DMs: a player's (from before, or kept from when they
+    /// were a DM) is cleared, so they pick a character, even when the server says nothing new.
+    #[test]
+    fn a_player_never_plays_the_dm() {
+        let access = |role| Access { member_id: "m".into(), role, manage: false, owner_is_dm: false, dm_reads_private: false };
+        let dm = |role: &str, room: &str| Sharing { me: DM_ME.into(), ..synced(role, room) };
+        let known = Sharing { access: Some(access(Role::Player)), ..dm("member", "roomk") };
+        let mut s = Settings { sharing: [("/p".into(), dm("member", "rooma")), ("/d".into(), dm("member", "roomb")), ("/o".into(), dm("owner", "roomo")), ("/k".into(), known)].into(), ..Settings::default() };
+        assert!(note_access(&mut s, "/p", &access(Role::Player)));
+        note_access(&mut s, "/d", &access(Role::Dm));
+        note_access(&mut s, "/o", &access(Role::Owner));
+        assert!(note_access(&mut s, "/k", &access(Role::Player)), "the same access as before still clears it");
+        assert_eq!(s.sharing["/p"].me, "", "a player picks their character");
+        assert_eq!(s.sharing["/k"].me, "");
+        assert_eq!(s.sharing["/d"].me, DM_ME, "a DM keeps it");
+        assert_eq!(s.sharing["/o"].me, DM_ME, "the owner may run the game without a character");
+        assert!(!note_access(&mut s, "/k", &access(Role::Player)), "once");
     }
 
     /// Every shared campaign syncs, open or not (so Share uploads a campaign that isn't open), each with its own PC's

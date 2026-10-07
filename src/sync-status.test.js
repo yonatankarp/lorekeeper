@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { joinText, onlineText, roleText, syncText } from "./sync-status.js";
+import { joinText, onlineChanged, onlineText, roleText, syncText } from "./sync-status.js";
 
 const room = { shared: true, room: "abc", role: "member" };
 
@@ -51,4 +51,13 @@ test("who's online", () => {
   assert.equal(onlineText({ online: [] }), "");
   assert.equal(onlineText(undefined), "");
   assert.equal(onlineText({ online: ["Lorelei", "Syloth"] }), "Online: Lorelei, Syloth");
+});
+
+test("the Party dialog re-reads its lists when someone comes online or goes offline, not on every status", () => {
+  const syncing = { status: { state: "syncing", count: 3 }, online: ["Lorelei"] };
+  assert.ok(!onlineChanged(syncing, { ...syncing, status: { state: "synced" } }));
+  assert.ok(!onlineChanged(undefined, { online: [] }));
+  assert.ok(onlineChanged(syncing, { ...syncing, online: ["Lorelei", "a player"] }), "a player joined");
+  assert.ok(onlineChanged(syncing, { ...syncing, online: [] }), "a player left");
+  assert.ok(onlineChanged(undefined, syncing));
 });

@@ -732,7 +732,7 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     }
     // A PC named DM would write to the DM's notes file (so would "dm", on a case-insensitive disk).
     if let Some(c) = s.sharing.values().find(|c| c.me != DM_ME && Path::new(&c.me).file_stem().is_some_and(|n| sync::folded(&n.to_string_lossy()) == "dm")) {
-        return Err(format!("\"{}\" can't be the character you play: DM is kept for the DM's notes. Rename that page, or choose I'm the DM (no character).", c.me));
+        return Err(format!("\"{}\" can't be the character you play: DM is kept for the DM's notes. Rename that page, or, as the DM, choose I'm the DM (no character).", c.me));
     }
     if !s.sync_server.trim().is_empty() {
         s.sync_server = sync_protocol::server_origin(&s.sync_server).map_err(|e| format!("Sync server: {e}."))?;
