@@ -22,6 +22,7 @@ use tauri_plugin_notification::NotificationExt;
 
 mod backup;
 mod cloud;
+mod deeplink;
 mod dndbeyond;
 mod dropbox;
 mod gdrive;
@@ -45,6 +46,10 @@ mod watch;
 /// Your private notes in a shared campaign (see sync::PRIVATE).
 const PRIVATE_FOLDER: &str = "Private";
 
+/// `me` for a DM who plays no character ("I play: I'm the DM (no character)"): their notes go to
+/// `Sessions/Session N/DM.md`, and presence shows "DM". Reserved: no PC named DM can be the one you play.
+pub(crate) const DM_ME: &str = "DM";
+
 const VAULT_FOLDERS: [&str; 9] = ["Sessions", "PCs", "NPCs", "Locations", "Items", "Factions", "Quests", "Lore", "Templates"];
 
 const TEMPLATES: [(&str, &str); 7] = [
@@ -66,13 +71,15 @@ const LOGIN_ARG: &str = "--from-login";
 /// Serializes writes from the hotkeys and the editor so neither loses the other's change.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
-/// The notes folder chosen in Settings.
+/// The open campaign's notes folder; empty (not a full path) before you create or join one, so vault_file, vault_image
+/// and note_target refuse it rather than write next to the program.
 pub(crate) fn notes_dir(app: &AppHandle) -> PathBuf {
     PathBuf::from(&app.state::<Mutex<Settings>>().lock().unwrap().vault_path)
 }
 
-/// Documents/Lorekeeper: the default notes folder, and the folder that holds your campaigns and their shared Templates/.
-/// A test profile's is Documents/Lorekeeper (<profile>).
+/// Documents/Lorekeeper, the Lorekeeper folder: it holds Templates/ (every campaign's) and a folder for each campaign
+/// you create or join. Older installs kept their one campaign right in it (see move_offer). A test profile's is
+/// Documents/Lorekeeper (<profile>).
 fn default_vault(app: &AppHandle) -> PathBuf {
     let base = app.path().document_dir().or_else(|_| app.path().home_dir());
     let name = profile().map_or_else(|| "Lorekeeper".to_string(), |p| format!("Lorekeeper ({p})"));
@@ -216,7 +223,11 @@ fn start_file(dir: &Path, n: u32, me: Option<&str>) -> io::Result<PathBuf> {
     let path = notes_file(dir, n, me);
     fs::create_dir_all(path.parent().unwrap())?;
     let date = chrono::Local::now().format("%Y-%m-%d");
-    let author = me.map(|me| format!("author: \"[[{me}]]\"\n")).unwrap_or_default();
+    let author = match me {
+        Some(DM_ME) => "author: DM\n".to_string(), // no PC page to link to (playerFile in notes.js agrees)
+        Some(me) => format!("author: \"[[{me}]]\"\n"),
+        None => String::new(),
+    };
     match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(mut f) => {
             f.write_all(format!("---\nsession: {n}\ndate: {date}\n{author}---\n# Session {n} - {date}\n\n").as_bytes())?;
@@ -387,7 +398,13 @@ fn stale_session(dir: &Path, me: Option<&str>, now: std::time::SystemTime) -> io
 fn vault_file(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
     let ok = p.extension().is_some_and(|e| e == "md") && p.components().all(|c| matches!(c, Component::Normal(_))) && !hidden(p);
-    if ok { Ok(root.join(p)) } else { Err(format!("Not a note in the vault: {rel}")) }
+    if !root.is_absolute() {
+        Err(NO_CAMPAIGN.into())
+    } else if ok {
+        Ok(root.join(p))
+    } else {
+        Err(format!("Not a note in the vault: {rel}"))
+    }
 }
 
 /// A path through a hidden name, in any spelling a disk takes for one (`.lorekeeper/` is Lorekeeper's own: a DM's copies
@@ -414,13 +431,21 @@ fn is_image(p: &Path) -> bool {
 pub(crate) fn vault_image(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
     let ok = is_image(p) && p.components().all(|c| matches!(c, Component::Normal(_))) && !hidden(p);
-    if ok { Ok(root.join(p)) } else { Err(format!("Not an image in the vault: {rel}")) }
+    if !root.is_absolute() {
+        Err(NO_CAMPAIGN.into())
+    } else if ok {
+        Ok(root.join(p))
+    } else {
+        Err(format!("Not an image in the vault: {rel}"))
+    }
 }
 
 /// Lets the page view load images from the notes folder through the asset protocol. Every campaign's folder
 /// stays allowed (they're all your own notes), since Tauri's scope can only grow and switching back must work.
 fn allow_vault_images(app: &AppHandle, dir: &str) {
-    let _ = app.asset_protocol_scope().allow_directory(dir, true);
+    if !dir.is_empty() {
+        let _ = app.asset_protocol_scope().allow_directory(dir, true);
+    }
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
@@ -533,6 +558,8 @@ struct Settings {
     /// Optional global shortcuts; "" = off.
     new_session: String,
     new_page: String,
+    /// You chose to keep the campaign that's in the Lorekeeper folder itself where it is: move_offer stops asking.
+    move_declined: bool,
 }
 
 impl Default for Settings {
@@ -556,6 +583,7 @@ impl Default for Settings {
             auto_update: true,
             new_session: String::new(),
             new_page: String::new(),
+            move_declined: false,
         }
     }
 }
@@ -566,7 +594,7 @@ impl Default for Settings {
 #[serde(rename_all = "camelCase", default)]
 struct Sharing {
     shared: bool,
-    /// The PC you play in it ("PCs/Sibling 5.md"); its name names your files.
+    /// The PC you play in it ("PCs/Sibling 5.md"), or DM_ME for a DM without one; its name names your files.
     me: String,
     /// The sync server its room is on. This and the next three are set only by Share and Join.
     server: String,
@@ -578,6 +606,8 @@ struct Sharing {
     removed: bool,
     /// With `removed`: a re-invite moved you to another computer ("Signed in on another computer").
     replaced: bool,
+    /// With `removed`: the owner stopped sharing the campaign (its room is gone from the server).
+    unshared: bool,
     /// What the sync server last said about you (role, manage, the room's private-notes setting); only the engine sets
     /// it, so labels say truthfully who reads private notes.
     access: Option<sync::Access>,
@@ -587,6 +617,9 @@ struct Sharing {
 }
 
 const PICK_PC: &str = "Pick your character in Settings > General first";
+
+/// Before you create or join a campaign: why a note can't be saved.
+const NO_CAMPAIGN: &str = "There's no campaign yet. Open Lorekeeper and create or join one first";
 
 /// In a campaign shared with your party, your PC's name (the stem of `me`), which your notes files are named after;
 /// None in a campaign of your own. Shared but no character picked yet is an error, so no note lands in the wrong place.
@@ -627,18 +660,26 @@ fn write_settings(file: &Path, s: &Settings) -> io::Result<()> {
 
 /// Reads `file`, writing the defaults only when it's missing so a typo never wipes your settings.
 /// The first time, an older `<default vault>/settings.json` (hotkeys only) is moved over instead.
+/// A first run has no campaign (vault_path ""): the main window offers to create or join one. Files from before
+/// campaigns (no "campaigns" in them) kept their notes in the Lorekeeper folder itself, and still do; so does a first run
+/// that finds notes there (a reinstall), so they aren't hidden behind the first-run view.
 fn load_settings(file: &Path, default_vault: &Path) -> Result<Settings, String> {
     let legacy = default_vault.join("settings.json");
     let migrate = !file.exists() && legacy.exists();
     let src = if migrate { &legacy } else { file };
-    let mut s: Settings = match fs::read_to_string(src) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", src.display()))?,
-        Err(_) => Settings::default(),
+    let text = fs::read_to_string(src).ok();
+    let mut s: Settings = match &text {
+        Some(text) => serde_json::from_str(text).map_err(|e| format!("{}: {e}", src.display()))?,
+        None => Settings::default(),
     };
-    if s.vault_path.is_empty() {
+    let before_campaigns = match &text {
+        Some(text) => serde_json::from_str::<serde_json::Value>(text).map_or(true, |v| v.get("campaigns").is_none()),
+        None => default_vault.join("Sessions").is_dir(),
+    };
+    if s.vault_path.is_empty() && before_campaigns {
         s.vault_path = default_vault.to_string_lossy().into_owned();
     }
-    if s.campaigns.is_empty() {
+    if s.campaigns.is_empty() && !s.vault_path.is_empty() {
         s.campaigns = vec![s.vault_path.clone()];
     }
     // 0.3.0 had Tome and Dungeon next to plain Light and Dark; now they are the light and dark themes.
@@ -674,19 +715,24 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     if !capture.mods.contains(primary) {
         return Err(format!("The Save selection shortcut must include {key}."));
     }
-    if !Path::new(&s.vault_path).is_absolute() {
+    // "" = no campaign open yet (a first run): settings still save, and joining or adding one works.
+    if !s.vault_path.is_empty() && !Path::new(&s.vault_path).is_absolute() {
         return Err(format!("The notes folder must be a full path, not \"{}\".", s.vault_path));
     }
     if let Some(c) = s.campaigns.iter().find(|c| !Path::new(c).is_absolute()) {
         return Err(format!("A campaign's folder must be a full path, not \"{c}\"."));
     }
-    if !s.campaigns.contains(&s.vault_path) {
+    if !s.vault_path.is_empty() && !s.campaigns.contains(&s.vault_path) {
         return Err("The campaign you're in can't be removed. Switch to another one first.".into());
     }
     s.backup_names = s.backup_names.into_iter().map(|(k, v)| (k, v.trim().to_string())).filter(|(_, v)| !v.is_empty()).collect();
     backup::check_campaigns(&s)?;
-    if let Some(c) = s.sharing.values().find(|c| !c.me.is_empty() && !(c.me.starts_with("PCs/") && vault_file(Path::new("/"), &c.me).is_ok())) {
+    if let Some(c) = s.sharing.values().find(|c| !c.me.is_empty() && c.me != DM_ME && !(c.me.starts_with("PCs/") && vault_file(Path::new("/"), &c.me).is_ok())) {
         return Err(format!("\"{}\" isn't a page in PCs/.", c.me));
+    }
+    // A PC named DM would write to the DM's notes file (so would "dm", on a case-insensitive disk).
+    if let Some(c) = s.sharing.values().find(|c| c.me != DM_ME && Path::new(&c.me).file_stem().is_some_and(|n| sync::folded(&n.to_string_lossy()) == "dm")) {
+        return Err(format!("\"{}\" can't be the character you play: DM is kept for the DM's notes. Rename that page, or choose I'm the DM (no character).", c.me));
     }
     if !s.sync_server.trim().is_empty() {
         s.sync_server = sync_protocol::server_origin(&s.sync_server).map_err(|e| format!("Sync server: {e}."))?;
@@ -760,7 +806,7 @@ fn refresh_login_item(app: &AppHandle) {
 
 // ---------- helpers ----------
 
-fn notify(app: &AppHandle, title: &str, body: &str) {
+pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
@@ -784,7 +830,7 @@ fn app_window_visible(app: &AppHandle, except: &str) -> bool {
         .any(|l| app.get_webview_window(l).is_some_and(|w| w.is_visible().unwrap_or(false)))
 }
 
-fn show_window(app: &AppHandle, label: &str) {
+pub(crate) fn show_window(app: &AppHandle, label: &str) {
     // dismiss() hides the whole app on macOS; a hidden app's windows won't show until it's unhidden.
     #[cfg(target_os = "macos")]
     {
@@ -822,7 +868,9 @@ fn latest_file(dir: &Path, me: Option<&str>) -> Option<PathBuf> {
 /// with the folder's path on the clipboard, ready for "Open folder as vault", or shows the folder.
 fn open_notes(app: &AppHandle) {
     let dir = notes_dir(app);
-    if obsidian::vault_root(&dir).is_some() {
+    if !dir.is_absolute() {
+        show_window(app, "main"); // its first-run view: create or join a campaign
+    } else if obsidian::vault_root(&dir).is_some() {
         let me = author(&app.state::<Mutex<Settings>>().lock().unwrap()).ok().flatten();
         match latest_file(&dir, me.as_deref()) {
             Some(session) => obsidian::open(&session),
@@ -949,8 +997,14 @@ fn open_new_page(app: &AppHandle) {
 
 /// The open campaign's folder and, when it's shared with your party, your PC's name (see author).
 fn note_target(app: &AppHandle) -> Result<(PathBuf, Option<String>), String> {
+    // A Move notes in progress holds the lock until the campaign's new place is saved: a hotkey note waits for it, so it
+    // never lands in the old place.
+    drop(WRITE_LOCK.lock());
     let s = app.state::<Mutex<Settings>>();
     let s = s.lock().unwrap();
+    if s.vault_path.is_empty() {
+        return Err(NO_CAMPAIGN.into());
+    }
     Ok((PathBuf::from(&s.vault_path), author(&s)?))
 }
 
@@ -1103,6 +1157,9 @@ fn emit_changed(app: &AppHandle) {
 fn read_vault(app: AppHandle) -> Result<Vault, String> {
     let root = notes_dir(&app);
     let mut vault = Vault::default();
+    if !root.is_absolute() {
+        return Ok(vault); // no campaign yet
+    }
     walk(&root, &root, &mut vault).map_err(|e| e.to_string())?;
     let n = latest_session(&root).map_err(|e| e.to_string())?;
     if n > 0 {
@@ -1173,12 +1230,157 @@ fn prepare_campaign(app: &AppHandle, vault: &Path) -> io::Result<()> {
     create_vault_folders(vault, &templates_home(vault, &library))
 }
 
+// ---------- the Lorekeeper folder: Templates/ and one folder per campaign ----------
+
+/// `<library>/<name>` for a new campaign, when `name` works as a folder name and no folder has it yet (never one the
+/// Lorekeeper folder uses itself, as in sync_join). Leading and trailing spaces are dropped.
+fn campaign_folder(library: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the campaign a name.".into());
+    }
+    if name.starts_with('.') || name.ends_with('.') || name.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c)) {
+        return Err(format!("\"{name}\" can't be a folder name. Leave out / \\ : * ? \" < > |, and a dot at the start or end."));
+    }
+    if VAULT_FOLDERS.iter().any(|f| sync::folded(f) == sync::folded(name)) {
+        return Err(format!("\"{name}\" is the name of a folder inside every campaign. Give the campaign another name."));
+    }
+    let path = library.join(name);
+    if path.exists() {
+        return Err(format!("There's already a folder called \"{name}\" in the Lorekeeper folder. Give the campaign another name."));
+    }
+    Ok(path)
+}
+
+/// A new campaign in the Lorekeeper folder (see campaign_folder): the settings with it added, not opened. Its name
+/// must also pass the campaign checks (names and backup names differ).
+fn add_new_campaign(library: &Path, name: &str, s: &Settings) -> Result<(PathBuf, Settings), String> {
+    let path = campaign_folder(library, name)?;
+    let mut s = s.clone();
+    s.campaigns.push(path.to_string_lossy().into_owned());
+    backup::check_campaigns(&s)?;
+    Ok((path, s))
+}
+
+/// "Create campaign" (first run) and "Add campaign… > Create campaign" (Settings): makes `<library>/<name>/` with the
+/// standard folders and adds it. The window then opens it with switch_campaign, which saves the page open first.
+/// Returns the new folder.
+#[tauri::command]
+fn create_campaign(app: AppHandle, name: String) -> Result<String, String> {
+    let library = library_dir(&app);
+    let (path, s) = add_new_campaign(&library, &name, &current_settings(&app))?;
+    fs::create_dir_all(&library).and_then(|_| fs::create_dir(&path)).map_err(|e| format!("Couldn't make the campaign's folder: {e}"))?;
+    prepare_campaign(&app, &path).map_err(|e| format!("Couldn't make the campaign's folders: {e}"))?;
+    store_settings(&app, &s)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// The campaign kept in the Lorekeeper folder itself (from before campaigns had folders of their own), with the name
+/// to suggest for its folder, while Lorekeeper should offer to move it: you haven't said no, and it doesn't sync.
+/// ponytail: a synced campaign isn't offered, since its sync engine could see the notes vanish mid-move and tell the
+/// party they were deleted; offer it too once the engine can be paused and waited for.
+fn move_offer_for(s: &Settings, library: &Path) -> Option<String> {
+    let path = s.campaigns.iter().find(|c| Path::new(c) == library).filter(|_| !s.move_declined)?;
+    if s.sharing.get(path).is_some_and(|sh| !sh.room.is_empty() && !sh.removed) {
+        return None;
+    }
+    Some(s.backup_names.get(path).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| "My campaign".into()))
+}
+
+/// For the main window's offer to move a campaign into a folder of its own; None when there's nothing to offer.
+#[tauri::command]
+fn move_offer(app: AppHandle) -> Option<String> {
+    move_offer_for(&current_settings(&app), &library_dir(&app))
+}
+
+/// The settings after campaign `from` moved to `to`: open there if it was open, with its sharing, and with the same
+/// backup name (see backup::backup_name), so its backups carry on where they are.
+fn moved_settings(s: &Settings, from: &str, to: &str) -> Settings {
+    let mut s = s.clone();
+    let name = backup::backup_name(&s, from);
+    for c in s.campaigns.iter_mut().filter(|c| *c == from) {
+        *c = to.into();
+    }
+    if s.vault_path == from {
+        s.vault_path = to.into();
+    }
+    if let Some(sh) = s.sharing.remove(from) {
+        s.sharing.insert(to.into(), sh);
+    }
+    s.backup_names.remove(from);
+    s.backup_names.insert(to.into(), name);
+    s
+}
+
+/// Moves the campaign in the Lorekeeper folder itself into `<library>/<name>` (a new folder: nothing is overwritten).
+/// Each of its entries is renamed into it, which is atomic on one disk. Templates/ stays (every campaign's), and so do
+/// other campaigns' folders, a folder holding one, and Obsidian's settings (so Obsidian still opens the Lorekeeper
+/// folder as its vault). When a rename fails, what moved goes back. Returns the settings to save and the moves made.
+fn move_into_folder(library: &Path, name: &str, s: &Settings) -> Result<(Settings, Vec<(PathBuf, PathBuf)>), String> {
+    let from = s.campaigns.iter().find(|c| Path::new(c) == library).ok_or("No campaign is in the Lorekeeper folder itself.")?;
+    let dest = campaign_folder(library, name)?;
+    let new = moved_settings(s, from, &dest.to_string_lossy());
+    backup::check_campaigns(&new)?;
+    let others: Vec<&String> = s.campaigns.iter().chain(s.backup_names.keys()).chain(s.sharing.keys()).filter(|c| *c != from).collect();
+    let stays = |p: &Path| {
+        let n = p.file_name().unwrap_or_default().to_string_lossy();
+        // A folder that looks like a campaign of its own (one you removed from the list, say) isn't one of this one's.
+        let campaign = !VAULT_FOLDERS.iter().any(|f| sync::folded(f) == sync::folded(&n)) && (p.join("Sessions").is_dir() || p.join(".lorekeeper").is_dir());
+        n.eq_ignore_ascii_case("Templates") || n == ".obsidian" || n == ".DS_Store" || campaign || others.iter().any(|c| Path::new(c).starts_with(p))
+    };
+    let entries: Vec<PathBuf> = fs::read_dir(library).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).filter(|p| !stays(p)).collect();
+    fs::create_dir(&dest).map_err(|e| format!("Couldn't make the campaign's folder: {e}"))?;
+    let mut moved = Vec::new();
+    for path in entries {
+        let to = dest.join(path.file_name().unwrap_or_default());
+        if let Err(e) = fs::rename(&path, &to) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            return Err(match put_back(&moved, &dest) {
+                Ok(()) => format!("Couldn't move {name}: {e}. Nothing was moved."),
+                Err(left) => format!("Couldn't move {name}: {e}. Some notes are still in {}: {left}", dest.display()),
+            });
+        }
+        moved.push((path, to));
+    }
+    Ok((new, moved))
+}
+
+/// Undoes move_into_folder's renames, newest first, then removes the folder they went to (only when empty).
+fn put_back(moved: &[(PathBuf, PathBuf)], dest: &Path) -> io::Result<()> {
+    let result = moved.iter().rev().try_for_each(|(from, to)| fs::rename(to, from));
+    let _ = fs::remove_dir(dest);
+    result
+}
+
+/// "Move notes": moves the campaign in the Lorekeeper folder itself into a folder of its own there (see
+/// move_into_folder) and saves its new place. Returns the new folder.
+#[tauri::command]
+fn move_campaign(app: AppHandle, name: String) -> Result<String, String> {
+    let library = library_dir(&app);
+    let s = current_settings(&app);
+    if move_offer_for(&s, &library).is_none() {
+        return Err("There's no campaign to move.".into());
+    }
+    let dest = library.join(name.trim()); // as campaign_folder makes it
+    let _guard = WRITE_LOCK.lock().unwrap(); // no hotkey note lands in the old place meanwhile
+    let (new, moved) = move_into_folder(&library, &name, &s)?;
+    if let Err(e) = store_settings(&app, &new) {
+        let _ = put_back(&moved, &dest);
+        return Err(e);
+    }
+    allow_vault_images(&app, &new.vault_path);
+    emit_changed(&app);
+    Ok(dest.to_string_lossy().into_owned())
+}
+
 /// Note names for the quick box's suggestions; an unreadable vault just means no suggestions.
 #[tauri::command]
 fn page_names(app: AppHandle) -> Vec<String> {
     let root = notes_dir(&app);
     let mut vault = Vault::default();
-    let _ = walk(&root, &root, &mut vault);
+    if root.is_absolute() {
+        let _ = walk(&root, &root, &mut vault);
+    }
     page_names_of(vault.notes.iter().map(|n| n.path.as_str()))
 }
 
@@ -1204,17 +1406,7 @@ fn delete_file(app: AppHandle, path: String) -> Result<(), String> {
     }
     {
         let _guard = WRITE_LOCK.lock().unwrap();
-        // The file-manager call needs no "control Finder" permission prompt; the file can still be dragged back out.
-        #[cfg(target_os = "macos")]
-        let trash = {
-            use trash::macos::{DeleteMethod, TrashContextExtMacos};
-            let mut trash = trash::TrashContext::default();
-            trash.set_delete_method(DeleteMethod::NsFileManager);
-            trash
-        };
-        #[cfg(not(target_os = "macos"))]
-        let trash = trash::TrashContext::default();
-        trash.delete(&file).map_err(|e| format!("Couldn't move {path} to the Trash: {e}"))?;
+        move_to_trash(&file).map_err(|e| format!("Couldn't move {path} to the Trash: {e}"))?;
         watch::wrote(&file);
         // The last file of a shared session (undoing New session): the empty folder goes too, so it isn't the newest session.
         if let Some(dir) = file.parent().filter(|d| d.file_name().and_then(|n| n.to_str()).and_then(|n| session_number(n, true)).is_some()) {
@@ -1222,6 +1414,85 @@ fn delete_file(app: AppHandle, path: String) -> Result<(), String> {
         }
     }
     emit_changed(&app);
+    Ok(())
+}
+
+/// Moves a file or folder to the system Trash / Recycle Bin. On macOS the file-manager call needs no "control Finder"
+/// permission prompt; the item can still be dragged back out.
+fn move_to_trash(path: &Path) -> Result<(), trash::Error> {
+    #[cfg(target_os = "macos")]
+    let trash = {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut trash = trash::TrashContext::default();
+        trash.set_delete_method(DeleteMethod::NsFileManager);
+        trash
+    };
+    #[cfg(not(target_os = "macos"))]
+    let trash = trash::TrashContext::default();
+    trash.delete(path)
+}
+
+/// The folder Delete campaign may move to the Trash: one of your campaigns, not the open one, a real folder (not a link
+/// to one), and none of the Lorekeeper folder, its Templates or your home folder, nor a folder holding any of them or
+/// another of your campaigns. Folders are compared as the disk resolves them.
+// ponytail: compared case-folded everywhere, which only ever refuses more (two folders differing only in case on Linux).
+fn deletable(s: &Settings, path: &str, library: &Path, home: Option<&Path>) -> Result<PathBuf, String> {
+    let name = backup::backup_name(s, path);
+    if !s.campaigns.iter().any(|c| c == path) {
+        return Err(format!("{path} isn't one of your campaigns."));
+    }
+    if path == s.vault_path {
+        return Err(format!("{name} is open. Switch to another campaign first."));
+    }
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Err(format!("{path} isn't a folder (it may be a link to one, or gone). Remove it from the list instead."));
+    }
+    let folder = fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
+    let key = |p: &Path| PathBuf::from(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_lowercase());
+    let holds = |p: &Path| key(p).starts_with(key(&folder));
+    if holds(library) || holds(&library.join("Templates")) || home.is_some_and(holds) {
+        return Err(format!("{name} is the Lorekeeper folder, or holds it or your home folder, so it can't be deleted from here. Remove it from the list instead."));
+    }
+    if !s.backup_folder.is_empty() && holds(Path::new(&s.backup_folder)) {
+        return Err(format!("{name} holds your backup folder, so it can't be deleted from here. Choose another backup folder first."));
+    }
+    if let Some(other) = s.campaigns.iter().find(|c| *c != path && holds(Path::new(c))) {
+        return Err(format!("{name} holds another campaign, {}. Delete or move that one first.", backup::backup_name(s, other)));
+    }
+    Ok(folder)
+}
+
+/// Delete campaign: moves the campaign's folder, with every note in it, to the Trash (see deletable for what's refused)
+/// and takes it off the list. A joined campaign's room is left on this computer as Remove does (guard_settings), and
+/// other members' private notes (a DM's copies) are deleted rather than kept in the Trash. The owner of a shared
+/// campaign is offered Stop sharing first by the window. Every shared campaign syncs, so its engine stops first and is
+/// waited for: nothing writes into the folder, or its state, while it goes. Only the settings window asks for it.
+#[tauri::command]
+async fn delete_campaign(app: AppHandle, window: tauri::Window, path: String) -> Result<(), String> {
+    if window.label() != "settings" {
+        return Err("Delete campaigns in Settings.".into());
+    }
+    let (library, home) = (library_dir(&app), app.path().home_dir().ok());
+    deletable(&current_settings(&app), &path, &library, home.as_deref())?;
+    let ended = shared::stop_for(&path).await;
+    let edit = shared::EDIT.lock().unwrap_or_else(|e| e.into_inner());
+    let old = current_settings(&app);
+    let trashed = if ended { Ok(()) } else { Err(format!("{path} is still syncing. Try again in a moment.")) }
+        .and_then(|_| deletable(&old, &path, &library, home.as_deref()))
+        .and_then(|folder| {
+            sync::drop_dm_copies(&folder);
+            move_to_trash(&folder).map_err(|e| format!("Couldn't move {path} to the Trash: {e}"))
+        });
+    if let Err(e) = trashed {
+        drop(edit);
+        shared::restart(&app); // still a campaign: it syncs again
+        return Err(e);
+    }
+    let mut new = Settings { campaigns: old.campaigns.iter().filter(|c| **c != path).cloned().collect(), ..old.clone() };
+    let forget = shared::guard_settings(&old, &mut new);
+    store_settings(&app, &new)?;
+    drop(edit);
+    shared::forget_rooms(&app, forget);
     Ok(())
 }
 
@@ -1443,8 +1714,9 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     let active = app.state::<Mutex<Settings>>().lock().unwrap().clone();
     let mut new = validate(Settings { vault_path: active.vault_path, ..settings })?;
     let old = current_settings(&app);
-    shared::guard_settings(&app, &old, &mut new);
+    let forget = shared::guard_settings(&old, &mut new);
     new.github_user = old.github_user.clone();
+    new.move_declined |= old.move_declined; // a window that hadn't heard of the answer can't take it back
     for p in cloud::ALL {
         new = new.with_cloud_user(p, old.cloud_user(p).clone());
     }
@@ -1465,6 +1737,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         set_launch_at_login(&app, new.launch_at_login)?;
     }
     store_settings(&app, &new)?;
+    shared::forget_rooms(&app, forget);
     if backup::backup_name(&new, &new.vault_path) != backup::backup_name(&old, &old.vault_path) {
         // A new backup name: every backup starts over in its new place, right away.
         for kind in [backup::Kind::Folder, backup::Kind::Github].into_iter().chain(cloud::ALL.map(backup::Kind::Cloud)) {
@@ -1502,7 +1775,9 @@ fn switch_campaign(app: AppHandle, path: String) -> Result<(), String> {
     prepare_campaign(&app, Path::new(&path)).map_err(|e| format!("{}: {e}", backup::campaign_name(&path)))?;
     store_settings(&app, &Settings { vault_path: path.clone(), ..old.clone() })?;
     allow_vault_images(&app, &path);
-    backup::left(&old.vault_path); // its last changes still get backed up
+    if !old.vault_path.is_empty() {
+        backup::left(&old.vault_path); // its last changes still get backed up
+    }
     emit_changed(&app);
     backup::request();
     Ok(())
@@ -1614,7 +1889,8 @@ async fn cloud_sign_out(app: AppHandle, provider: cloud::Provider) -> Result<(),
 
 #[tauri::command]
 fn open_vault_folder(app: AppHandle) {
-    open_external(notes_dir(&app));
+    let dir = notes_dir(&app);
+    open_external(if dir.is_absolute() { dir } else { library_dir(&app) });
 }
 
 // ---------- app ----------
@@ -1687,7 +1963,22 @@ pub fn run() {
         let _ = fs::write(std::env::temp_dir().join("lorekeeper-crash.log"), format!("Lorekeeper {}: {info}\n", env!("CARGO_PKG_VERSION")));
         default_hook(info);
     }));
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Windows and Linux start a new copy for each lorekeeper:// link (and each launch): it hands its arguments to the
+    // running one (the deep-link plugin first) and quits. First, as the plugin asks. Not for a test profile, so two
+    // profiles still run side by side (they ignore deep links).
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = if profile().is_none() {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().skip(1).any(|a| a.starts_with("lorekeeper:") || a == LOGIN_ARG) {
+                show_window(app, "main"); // opened again by hand
+            }
+        }))
+    } else {
+        builder
+    };
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
@@ -1720,6 +2011,9 @@ pub fn run() {
             pick_folder,
             open_vault_folder,
             switch_campaign,
+            create_campaign,
+            move_offer,
+            move_campaign,
             backup_status,
             github_sign_in_start,
             github_sign_in_wait,
@@ -1753,7 +2047,11 @@ pub fn run() {
             shared::sync_set_dm_reads,
             shared::sync_set_owner_dm,
             shared::sync_check_invite,
-            shared::sync_join
+            shared::sync_join,
+            shared::sync_stop_sharing,
+            shared::sync_leave,
+            deeplink::take_join_link,
+            delete_campaign
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon.
@@ -1763,11 +2061,13 @@ pub fn run() {
             let vault = default_vault(handle);
             let settings = load_settings(&settings_file(handle)?, &vault).unwrap_or_else(|e| {
                 notify(handle, "Using default settings", &format!("{e}. Fix the file, or change a setting to replace it."));
-                let vault = vault.to_string_lossy().into_owned();
-                Settings { vault_path: vault.clone(), campaigns: vec![vault], ..Settings::default() }
+                // As on a first run (see load_settings): notes in the Lorekeeper folder itself show, else no campaign.
+                let old = vault.join("Sessions").is_dir().then(|| vault.to_string_lossy().into_owned());
+                Settings { vault_path: old.clone().unwrap_or_default(), campaigns: old.into_iter().collect(), ..Settings::default() }
             });
             // A folder on an unplugged drive shouldn't stop the app from starting.
-            if let Err(e) = prepare_campaign(handle, Path::new(&settings.vault_path)) {
+            let open = Path::new(&settings.vault_path);
+            if let Err(e) = if open.is_absolute() { prepare_campaign(handle, open) } else { Ok(()) } {
                 notify(handle, "Notes folder unavailable", &format!("{}: {e}", settings.vault_path));
             }
             app.manage(Mutex::new(settings.clone()));
@@ -1789,6 +2089,7 @@ pub fn run() {
             }
             watch::start(handle.clone());
             shared::restart(handle);
+            deeplink::start(handle);
             for keys in register_shortcuts(handle, &settings) {
                 notify(handle, "Shortcut unavailable", &format!("{keys} couldn't be registered. Change it in Settings."));
             }
@@ -1848,6 +2149,62 @@ mod tests {
         for bad in ["..", ".", "a/b", "a\\b", "/tmp/x", "a b", "\u{fffd}", "caf\u{e9}", &"a".repeat(33)] {
             assert!(!valid_profile(bad), "{bad:?}");
         }
+    }
+
+    /// Delete campaign trashes only a campaign's own folder: never the open one, a link, the Lorekeeper folder, its
+    /// Templates, a folder above them or above home, or one holding another campaign. (It never trashes anything here.)
+    #[test]
+    fn only_a_campaigns_own_folder_can_be_deleted() {
+        let root = temp_dir("deletable");
+        let (library, home) = (root.join("Home/Documents/Lorekeeper"), root.join("Home"));
+        for d in ["Strahd", "Templates", "Elsewhere/Outer/Inner", "Elsewhere/Phandelver"] {
+            fs::create_dir_all(library.join(d)).unwrap();
+        }
+        let p = |rel: &str| library.join(rel).to_string_lossy().into_owned();
+        let mut s = Settings {
+            vault_path: p("Strahd"),
+            campaigns: [&library.to_string_lossy().into_owned(), &p("Strahd"), &p("Elsewhere/Outer"), &p("Elsewhere/Outer/Inner"), &p("Elsewhere/Phandelver")]
+                .map(|c| c.to_string())
+                .to_vec(),
+            ..Settings::default()
+        };
+        let check = |s: &Settings, path: &str| deletable(s, path, &library, Some(&home));
+        assert!(check(&s, &p("Elsewhere/Phandelver")).is_ok_and(|f| f.ends_with("Phandelver")));
+        assert!(check(&s, &p("Strahd")).unwrap_err().contains("is open"));
+        s.vault_path = p("Elsewhere/Phandelver");
+        assert!(check(&s, &p("Strahd")).is_ok());
+        assert!(check(&s, &library.to_string_lossy()).unwrap_err().contains("Lorekeeper folder"));
+        assert!(check(&s, &p("Elsewhere/Outer")).unwrap_err().contains("holds another campaign"));
+        assert!(check(&s, &p("Elsewhere/Outer/Inner")).is_ok());
+        assert!(check(&s, &p("Nowhere")).unwrap_err().contains("isn't one of your campaigns"));
+        // Nor one holding the backup folder (backups stay when a campaign goes).
+        fs::create_dir_all(library.join("Strahd/Backups")).unwrap(); // made when chosen (save_settings)
+        let backed = Settings { backup_folder: p("Strahd/Backups"), ..s.clone() };
+        assert!(check(&backed, &p("Strahd")).unwrap_err().contains("backup folder"));
+        // No campaign open (a first run, or the open one removed): the same refusals hold.
+        let none = Settings { vault_path: String::new(), ..s.clone() };
+        assert!(check(&none, &p("Strahd")).is_ok() && check(&none, &p("Elsewhere/Phandelver")).is_ok());
+        assert!(check(&none, &library.to_string_lossy()).unwrap_err().contains("Lorekeeper folder"));
+        assert!(check(&none, "").is_err());
+        // Folders that aren't campaigns of their own, or that hold the Lorekeeper folder or home, even when listed.
+        for listed in [library.join("Templates"), library.join("TEMPLATES"), library.parent().unwrap().to_path_buf(), home.clone(), root.clone()] {
+            let path = listed.to_string_lossy().into_owned();
+            let mut s = s.clone();
+            s.campaigns.push(path.clone());
+            assert!(check(&s, &path).is_err(), "{path}");
+        }
+        // A link to a folder is refused (only a real folder goes), and so is a folder that's gone.
+        #[cfg(unix)]
+        {
+            let link = root.join("Link");
+            std::os::unix::fs::symlink(library.join("Strahd"), &link).unwrap();
+            let mut s = s.clone();
+            s.campaigns.push(link.to_string_lossy().into_owned());
+            assert!(check(&s, &link.to_string_lossy()).unwrap_err().contains("isn't a folder"));
+        }
+        fs::remove_dir_all(library.join("Strahd")).unwrap();
+        assert!(check(&s, &p("Strahd")).unwrap_err().contains("isn't a folder"));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -2063,6 +2420,23 @@ mod tests {
         fs::remove_dir_all(&solo).unwrap();
     }
 
+    /// A DM who plays no character ("I'm the DM (no character)") writes DM.md, shared and private, with a plain author.
+    #[test]
+    fn a_dm_without_a_character_writes_dm_md() {
+        let dir = temp_dir("dm-notes");
+        let me = Some(DM_ME);
+        let (_, shared) = append_note(&dir, me, "the bridge is out").unwrap();
+        assert_eq!(shared.unwrap(), dir.join("Sessions/Session 1/DM.md"));
+        let text = fs::read_to_string(dir.join("Sessions/Session 1/DM.md")).unwrap();
+        assert!(text.contains("\nauthor: DM\n---\n") && !text.contains("[["), "{text}");
+        let (_, private) = append_note(&dir, me, "~the bridge was sabotaged").unwrap();
+        assert_eq!(private.unwrap(), dir.join("Private/Sessions/Session 1/DM.md"));
+        assert_eq!(session_name(&dir.join("Sessions/Session 1/DM.md")), "Session 1");
+        let s = Settings { vault_path: "/v".into(), sharing: [("/v".to_string(), Sharing { shared: true, me: DM_ME.into(), ..Sharing::default() })].into(), ..Settings::default() };
+        assert_eq!(author(&s), Ok(Some("DM".into())), "names the files and the display id");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn shared_campaigns_need_a_character() {
         let sharing = |shared: bool, me: &str| [("/v".to_string(), Sharing { shared, me: me.into(), ..Sharing::default() })].into();
@@ -2197,13 +2571,26 @@ mod tests {
         let (config, vault) = (dir.join("config/settings.json"), dir.join("Lorekeeper"));
         let vault_path = vault.to_string_lossy().into_owned();
 
-        // First run: defaults, pointing at the default vault, written to the config folder.
+        // First run: defaults with no campaign (never the Lorekeeper folder itself), written to the config folder, and
+        // still none the next time.
         let s = load_settings(&config, &vault).unwrap();
-        let one = Settings { vault_path: vault_path.clone(), campaigns: vec![vault_path.clone()], ..Settings::default() };
-        assert_eq!(s, one);
+        assert_eq!(s, Settings::default());
+        assert_eq!((s.vault_path.as_str(), s.campaigns.len()), ("", 0));
         assert_eq!((s.theme.as_str(), s.editor_font_size), ("system", 15));
         let written = fs::read_to_string(&config).unwrap();
         assert!(written.contains("\"editorFontSize\": 15") && !written.contains("launchAtLogin"));
+        assert_eq!(load_settings(&config, &vault).unwrap(), s);
+        assert!(!vault.exists(), "a first run makes no folders");
+        // No campaign is valid: settings still save.
+        assert!(validate(s.clone()).is_ok());
+        assert!(validate(Settings { campaigns: vec![vault_path.clone()], ..s.clone() }).is_ok(), "joined or added, not opened yet");
+
+        // A first run that finds notes in the Lorekeeper folder (a reinstall) opens them there, as before.
+        fs::remove_file(&config).unwrap();
+        fs::create_dir_all(vault.join("Sessions")).unwrap();
+        let one = Settings { vault_path: vault_path.clone(), campaigns: vec![vault_path.clone()], ..Settings::default() };
+        assert_eq!(load_settings(&config, &vault).unwrap(), one);
+        fs::remove_dir_all(&vault).unwrap();
 
         // A partial file keeps what it has and fills in the rest; settings that were removed are ignored.
         fs::write(&config, r#"{"theme":"dark","editorFontSize":18,"sessionView":"journal","notifications":false}"#).unwrap();
@@ -2254,6 +2641,95 @@ mod tests {
         assert!(!config.exists());
         assert_eq!(fs::read_to_string(vault.join("settings.json")).unwrap(), "{oops");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_campaign_is_a_folder_of_its_own_in_the_lorekeeper_folder() {
+        let library = temp_dir("new-campaign").join("Lorekeeper (test)");
+        let none = Settings::default();
+        let (path, s) = add_new_campaign(&library, "  Curse of Strahd ", &none).unwrap();
+        assert_eq!(path, library.join("Curse of Strahd"));
+        // Made as create_campaign makes it: the Lorekeeper folder holds Templates/ and the campaign's folder, nothing else.
+        fs::create_dir_all(&path).unwrap();
+        create_vault_folders(&path, &templates_home(&path, &library)).unwrap();
+        let mut top: Vec<String> = fs::read_dir(&library).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        top.sort();
+        assert_eq!(top, ["Curse of Strahd", "Templates"]);
+        assert!(path.join("NPCs").is_dir() && !path.join("Templates").exists());
+        fs::remove_dir_all(&library).unwrap();
+        assert_eq!((s.campaigns, s.vault_path.as_str()), (vec![path.to_string_lossy().into_owned()], ""), "added, opened by switch_campaign");
+        for bad in ["", "  ", "a/b", "a\\b", "Who?", ".hidden", "Side.", "Templates", "templates", "Sessions", "NPCs", "!!!"] {
+            assert!(add_new_campaign(&library, bad, &none).is_err(), "{bad:?}");
+        }
+        // Never an existing folder, nor a name another campaign has.
+        fs::create_dir_all(library.join("Taken")).unwrap();
+        assert!(add_new_campaign(&library, "Taken", &none).unwrap_err().contains("already a folder"));
+        let one = Settings { campaigns: vec!["/elsewhere/Strahd".into()], ..none.clone() };
+        assert!(add_new_campaign(&library, "strahd", &one).is_err());
+        fs::remove_dir_all(library.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_campaign_in_the_lorekeeper_folder_itself_moves_into_a_folder_of_its_own() {
+        let library = temp_dir("library-move").join("Lorekeeper");
+        let root = library.to_string_lossy().into_owned();
+        let side = library.join("Side").to_string_lossy().into_owned();
+        for dir in ["Sessions", "NPCs", "Templates", ".obsidian", ".lorekeeper", "Side/Sessions", "Old shared/Sessions", "Maps"] {
+            fs::create_dir_all(library.join(dir)).unwrap();
+        }
+        for file in ["Sessions/Session 1.md", "NPCs/Vex.md", "Templates/NPC.md", ".lorekeeper/campaign.json", "Side/Sessions/Session 1.md", "Maps/a.png"] {
+            fs::write(library.join(file), file).unwrap();
+        }
+        let s = Settings {
+            vault_path: root.clone(),
+            campaigns: vec![root.clone(), side.clone()],
+            sharing: [(root.clone(), Sharing { shared: true, me: "PCs/Arn.md".into(), ..Sharing::default() })].into(), // "Old shared": removed, forgotten
+            ..Settings::default()
+        };
+
+        // Offered once: with no name of its own, "My campaign"; with one, that.
+        assert_eq!(move_offer_for(&s, &library).as_deref(), Some("My campaign"));
+        let named = Settings { backup_names: [(root.clone(), "Strahd".into())].into(), ..s.clone() };
+        assert_eq!(move_offer_for(&named, &library).as_deref(), Some("Strahd"));
+        assert_eq!(move_offer_for(&Settings { move_declined: true, ..s.clone() }, &library), None, "you said no");
+        assert_eq!(move_offer_for(&Settings { vault_path: side.clone(), campaigns: vec![side.clone()], ..s.clone() }, &library), None);
+        let synced = Sharing { shared: true, room: "r".into(), ..Sharing::default() };
+        assert_eq!(move_offer_for(&Settings { sharing: [(root.clone(), synced)].into(), ..s.clone() }, &library), None, "a synced campaign isn't moved");
+
+        // Never over an existing folder: nothing moves.
+        assert!(move_into_folder(&library, "Side", &s).unwrap_err().contains("already a folder"));
+        assert!(move_into_folder(&library, "Templates", &s).is_err());
+        assert!(library.join("Sessions/Session 1.md").is_file() && library.join("Side/Sessions/Session 1.md").is_file());
+
+        let backups_before = backup::backup_name(&s, &root);
+        let (new, moved) = move_into_folder(&library, "My campaign", &s).unwrap();
+        let dest = library.join("My campaign");
+        let to = dest.to_string_lossy().into_owned();
+        // The notes, the sync folder and other folders moved; Templates, Obsidian's settings and other campaigns stayed.
+        for file in ["Sessions/Session 1.md", "NPCs/Vex.md", ".lorekeeper/campaign.json", "Maps/a.png"] {
+            assert_eq!(fs::read_to_string(dest.join(file)).unwrap(), file);
+            assert!(!library.join(file).exists(), "{file}");
+        }
+        for stays in ["Templates/NPC.md", "Side/Sessions/Session 1.md"] {
+            assert!(library.join(stays).is_file(), "{stays}");
+        }
+        assert!(library.join(".obsidian").is_dir() && library.join("Old shared/Sessions").is_dir() && !dest.join("Templates").exists());
+        // The settings follow, and the backups carry on under the same name.
+        assert_eq!((new.vault_path.as_str(), new.campaigns.clone()), (to.as_str(), vec![to.clone(), side.clone()]));
+        assert_eq!(new.sharing[&to].me, "PCs/Arn.md");
+        assert!(!new.sharing.contains_key(&root));
+        assert_eq!(backup::backup_name(&new, &to), backups_before);
+        assert_eq!(backups_before, "Lorekeeper");
+        assert!(validate(new.clone()).is_ok());
+        assert_eq!(move_offer_for(&new, &library), None, "nothing left to offer");
+
+        // A failed move puts back what moved.
+        put_back(&moved, &dest).unwrap();
+        assert!(library.join("Sessions/Session 1.md").is_file() && !dest.exists());
+        let named_before = backup::backup_name(&named, &root);
+        let (new, _) = move_into_folder(&library, "Strahd", &named).unwrap();
+        assert_eq!(backup::backup_name(&new, &library.join("Strahd").to_string_lossy()), named_before);
+        fs::remove_dir_all(library.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -2322,13 +2798,17 @@ mod tests {
         assert_eq!(validate(swapped.clone()).unwrap(), swapped);
         let kept = Settings { backup_names: names(&[("/gone/Side", "Side")]), ..ok.clone() };
         assert_eq!(validate(kept.clone()).unwrap(), kept);
-        // The PC you play in a shared campaign is a page in its PCs/ folder, or none yet.
+        // The PC you play in a shared campaign is a page in its PCs/ folder, none yet, or DM (no character).
         let playing = |me: &str| Settings { sharing: [(tmp.clone(), Sharing { shared: true, me: me.into(), ..Sharing::default() })].into(), ..ok.clone() };
-        for me in ["", "PCs/Sibling 5.md", "PCs/Retired/Arn.md"] {
+        for me in ["", "PCs/Sibling 5.md", "PCs/Retired/Arn.md", DM_ME, "PCs/DMitri.md"] {
             assert_eq!(validate(playing(me)).unwrap(), playing(me));
         }
-        for me in ["NPCs/Vex.md", "PCs/../secret.md", "PCs/Arn.txt", "/PCs/Arn.md", "PCs"] {
+        for me in ["NPCs/Vex.md", "PCs/../secret.md", "PCs/Arn.txt", "/PCs/Arn.md", "PCs", "dm", "DM.md"] {
             assert!(validate(playing(me)).is_err(), "{me} should be refused");
+        }
+        // A PC named DM would write to the DM's file (dm.md is the same file on a case-insensitive disk).
+        for me in ["PCs/DM.md", "PCs/dm.md", "PCs/Old/Dm.md"] {
+            assert!(validate(playing(me)).unwrap_err().contains("DM is kept for the DM's notes"), "{me} should be refused");
         }
         for s in bad {
             assert!(validate(s.clone()).is_err(), "{s:?} should be refused");

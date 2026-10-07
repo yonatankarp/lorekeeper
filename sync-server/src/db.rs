@@ -221,7 +221,7 @@ pub struct Access {
 /// A member's access, read now (never cached); None when they aren't in the room.
 pub fn access(c: &Connection, room: &str, member_id: &str) -> rusqlite::Result<Option<Access>> {
     let Some(m) = member(c, room, member_id)? else { return Ok(None) };
-    let dm_reads_private = dm_reads_private(c, room)?;
+    let Some(dm_reads_private) = dm_reads_private(c, room)? else { return Ok(None) };
     let members = if m.role.reads_private(m.owner_is_dm, dm_reads_private) {
         members(c, room)?.into_iter().map(|i| PresenceMember { member_id: i.member_id, member: i.member, role: i.role }).collect()
     } else {
@@ -230,8 +230,9 @@ pub fn access(c: &Connection, room: &str, member_id: &str) -> rusqlite::Result<O
     Ok(Some(Access { role: m.role, manage: m.manage, owner_is_dm: m.owner_is_dm, dm_reads_private, members }))
 }
 
-fn dm_reads_private(c: &Connection, room: &str) -> rusqlite::Result<bool> {
-    c.query_row("SELECT dm_reads_private FROM rooms WHERE room = ?1", [room], |r| r.get(0))
+/// None when the room is gone (deleted by its owner while a socket was reading).
+fn dm_reads_private(c: &Connection, room: &str) -> rusqlite::Result<Option<bool>> {
+    c.query_row("SELECT dm_reads_private FROM rooms WHERE room = ?1", [room], |r| r.get(0)).optional()
 }
 
 pub fn set_dm_reads_private(c: &Connection, room: &str, on: bool) -> rusqlite::Result<()> {
@@ -296,6 +297,17 @@ pub fn remove_member(c: &mut Connection, room: &str, member_id: &str) -> rusqlit
     tx.commit()
 }
 
+/// Deletes a room and everything in it (shared and private files, members and their tokens, invites) in one
+/// transaction: its tokens stop working at once and its bytes and files no longer count anywhere. The caller checks
+/// that the owner asked.
+pub fn delete_room(c: &mut Connection, room: &str) -> rusqlite::Result<()> {
+    let tx = c.transaction()?;
+    for table in ["files", "tokens", "invites", "rooms"] {
+        tx.execute(&format!("DELETE FROM {table} WHERE room = ?1"), [room])?;
+    }
+    tx.commit()
+}
+
 /// Members plus pending invites for new members (re-invites hand over a seat, they don't take one), for the cap.
 pub fn seats(c: &Connection, room: &str) -> rusqlite::Result<u64> {
     c.query_row(
@@ -308,13 +320,16 @@ pub fn seats(c: &Connection, room: &str) -> rusqlite::Result<u64> {
 
 /// Adds an invite, dropping the room's expired ones (used ones stay until they expire, so a second
 /// redeem still learns `invite_used`).
-pub fn create_invite(c: &Connection, room: &str, info: &InviteInfo) -> rusqlite::Result<()> {
+/// Stores an invite; false when the room is gone (its owner deleted it after the caller's token was checked), so no
+/// invite outlives its room.
+pub fn create_invite(c: &Connection, room: &str, info: &InviteInfo) -> rusqlite::Result<bool> {
     c.execute("DELETE FROM invites WHERE room = ?1 AND expires <= ?2", params![room, now_ms()])?;
-    c.execute(
-        "INSERT INTO invites (invite, room, created, expires, role, manage, member_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    let n = c.execute(
+        "INSERT INTO invites (invite, room, created, expires, role, manage, member_id)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE EXISTS (SELECT 1 FROM rooms WHERE room = ?2)",
         params![info.invite, room, now_ms(), info.expires, role_str(info.role), info.manage, info.member_id],
     )?;
-    Ok(())
+    Ok(n == 1)
 }
 
 pub fn pending_invites(c: &Connection, room: &str) -> rusqlite::Result<Vec<InviteInfo>> {
@@ -375,7 +390,9 @@ pub fn redeem(
     #[allow(clippy::type_complexity)]
     let row: Option<(i64, Option<i64>, String, bool, Option<String>)> = tx
         .query_row(
-            "SELECT expires, used, role, manage, member_id FROM invites WHERE room = ?1 AND invite = ?2",
+            // Only while the room is there: a token for a deleted room would be a member of nothing.
+            "SELECT expires, used, role, manage, member_id FROM invites
+             WHERE room = ?1 AND invite = ?2 AND EXISTS (SELECT 1 FROM rooms WHERE room = ?1)",
             [room, invite],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
@@ -503,6 +520,16 @@ pub fn write(
     Ok(Written::Ack(seq))
 }
 
+/// Which files a viewer may see (see [`changes`]): `?1` room, `?2` viewer, `?3` the lower of `?4` and `?6`, `?4` since,
+/// `?5` whether the viewer reads others' private files, `?6` dm_since. One predicate, so [`count_changes`] counts exactly
+/// what a replay sends (a count of anything else would tell a player about others' private notes).
+macro_rules! visible {
+    () => {
+        "room = ?1 AND seq > ?3
+           AND (((owner = '' OR owner = ?2) AND seq > ?4) OR (?5 AND owner <> '' AND owner <> ?2 AND seq > ?6))"
+    };
+}
+
 /// One changed file: (id, seq, blob, author) with author "" for a shared file.
 pub type Row = (String, u64, Option<Vec<u8>>, String);
 
@@ -521,17 +548,15 @@ pub fn changes(
     dm_since: u64,
     max_bytes: usize,
 ) -> rusqlite::Result<(u64, Vec<Row>, bool)> {
-    let seq: u64 = c.query_row("SELECT seq FROM rooms WHERE room = ?1", [room], |r| r.get(0))?;
+    // A room deleted meanwhile has no row: nothing to see, not a database error.
+    let Some(seq) = c.query_row("SELECT seq FROM rooms WHERE room = ?1", [room], |r| r.get(0)).optional()? else {
+        return Ok((0, Vec::new(), false));
+    };
     let Some(m) = member(c, room, viewer)? else { return Ok((seq, Vec::new(), false)) };
-    let reads = m.role.reads_private(m.owner_is_dm, dm_reads_private(c, room)?);
+    let reads = m.role.reads_private(m.owner_is_dm, dm_reads_private(c, room)?.unwrap_or(false));
     // Only a reader's dm_since means anything; anyone else's would only make the scan start further back.
     let dm_since = if reads { dm_since } else { since };
-    let mut st = c.prepare_cached(
-        "SELECT id, seq, blob, owner FROM files
-         WHERE room = ?1 AND seq > ?3
-           AND (((owner = '' OR owner = ?2) AND seq > ?4) OR (?5 AND owner <> '' AND owner <> ?2 AND seq > ?6))
-         ORDER BY seq LIMIT 501",
-    )?;
+    let mut st = c.prepare_cached(concat!("SELECT id, seq, blob, owner FROM files WHERE ", visible!(), " ORDER BY seq LIMIT 501"))?;
     let mut rows = st.query(params![room, viewer, since.min(dm_since), since, reads, dm_since])?;
     let (mut out, mut bytes, mut more) = (Vec::new(), 0usize, false);
     while let Some(r) = rows.next()? {
@@ -545,6 +570,15 @@ pub fn changes(
         out.push((r.get(0)?, r.get(1)?, blob, r.get(3)?));
     }
     Ok((seq, out, more))
+}
+
+/// How many changes a replay from `since` (and `dm_since`) holds: the rows [`changes`] would page through.
+pub fn count_changes(c: &Connection, room: &str, viewer: &str, since: u64, dm_since: u64) -> rusqlite::Result<u64> {
+    let Some(m) = member(c, room, viewer)? else { return Ok(0) };
+    let reads = m.role.reads_private(m.owner_is_dm, dm_reads_private(c, room)?.unwrap_or(false));
+    let dm_since = if reads { dm_since } else { since };
+    let mut st = c.prepare_cached(concat!("SELECT COUNT(*) FROM files WHERE ", visible!()))?;
+    st.query_row(params![room, viewer, since.min(dm_since), since, reads, dm_since], |r| r.get(0))
 }
 
 #[cfg(test)]
@@ -561,7 +595,7 @@ mod tests {
         create_room(&mut c, "r", &[1; 32], "o").unwrap();
         let invite = |c: &Connection, id: &str, target: Option<&str>| {
             let info = InviteInfo { invite: id.into(), expires: i64::MAX, role: Role::Player, manage: false, member_id: target.map(Into::into) };
-            create_invite(c, "r", &info).unwrap();
+            assert!(create_invite(c, "r", &info).unwrap());
         };
         invite(&c, "i1", None);
         assert!(matches!(redeem(&mut c, "r", "i1", &[2; 32], "m", "").unwrap(), Redeemed::Joined));
@@ -571,6 +605,40 @@ mod tests {
         assert!(!touch_token(&c, "r", &[2; 32]).unwrap(), "the old computer's token is gone");
         assert!(touch_token(&c, "r", &[3; 32]).unwrap());
         assert!(member(&c, "r", "m").unwrap().is_some(), "while the member lives on");
+    }
+
+    /// Deleting a room leaves no row of it in any table, and no other room's.
+    #[test]
+    fn deleting_a_room_leaves_nothing_of_it() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch(SCHEMA).unwrap();
+        migrate(&mut c).unwrap();
+        let limits = Limits { max_room_bytes: 1 << 20, max_files: 10 };
+        for room in ["r", "keep"] {
+            create_room(&mut c, room, &[room.len() as u8; 32], "o").unwrap();
+            let info = InviteInfo { invite: format!("i{room}"), expires: i64::MAX, role: Role::Player, manage: false, member_id: None };
+            assert!(create_invite(&c, room, &info).unwrap());
+            redeem(&mut c, room, &info.invite, &[room.len() as u8 + 10; 32], "m", "").unwrap();
+            assert!(matches!(write(&mut c, room, "o", "", "f", 0, Some(&[1; 40]), &limits).unwrap(), Written::Ack(_)));
+            assert!(matches!(write(&mut c, room, "m", "m", "p", 0, Some(&[2; 40]), &limits).unwrap(), Written::Ack(_)));
+        }
+        delete_room(&mut c, "r").unwrap();
+        // A manager's invite, checked before the delete and stored after it, isn't stored; one stored before can't be
+        // redeemed into the deleted room (its rows went with it, and a redeem needs the room).
+        let late = InviteInfo { invite: "late".into(), expires: i64::MAX, role: Role::Player, manage: false, member_id: None };
+        assert!(!create_invite(&c, "r", &late).unwrap());
+        c.execute("INSERT INTO invites (invite, room, created, expires) VALUES ('orphan', 'r', 0, ?1)", [i64::MAX]).unwrap();
+        assert!(matches!(redeem(&mut c, "r", "orphan", &[9; 32], "x", "").unwrap(), Redeemed::NotFound));
+        c.execute("DELETE FROM invites WHERE invite = 'orphan'", []).unwrap();
+        let count = |table: &str, room: &str| -> i64 {
+            c.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE room = ?1"), [room], |r| r.get(0)).unwrap()
+        };
+        for table in ["files", "tokens", "invites", "rooms"] {
+            assert_eq!(count(table, "r"), 0, "{table}");
+            assert!(count(table, "keep") > 0, "{table}");
+        }
+        assert_eq!(changes(&c, "r", "m", 0, 0, 1 << 20).unwrap(), (0, Vec::new(), false), "a deleted room reads as empty, not an error");
+        assert_eq!(access(&c, "r", "m").unwrap(), None);
     }
 
     /// A database from before roles and private notes keeps its rooms, members, invites and files: members become
@@ -599,7 +667,7 @@ mod tests {
         let (seq, rows, _) = changes(&c, "r", "m", 0, 0, 1 << 20).unwrap();
         assert_eq!(seq, 2);
         assert_eq!(rows, [("f".to_string(), 1, Some(vec![0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]), String::new()), ("g".to_string(), 2, None, String::new())]);
-        assert!(!dm_reads_private(&c, "r").unwrap());
+        assert_eq!(dm_reads_private(&c, "r").unwrap(), Some(false));
         // Writing works on the new key, and opening again runs nothing twice.
         let limits = Limits { max_room_bytes: 1 << 20, max_files: 10 };
         assert!(matches!(write(&mut c, "r", "m", "m", "f", 0, Some(&[1; 40]), &limits).unwrap(), Written::Ack(3)));

@@ -38,6 +38,14 @@
         <button id="delete" class="ghost icon-button" aria-label="Move page to the Trash" title="Move to the Trash (⌘⌫)" disabled></button>
       </header>
       <div id="notice" role="status" hidden><span id="notice-text"></span> <button id="notice-ok" class="ghost">OK</button></div>
+      <!-- A campaign kept in the Lorekeeper folder itself, from before each campaign had a folder (app.js, move_campaign). -->
+      <form id="move-offer" class="move-offer" aria-labelledby="move-offer-text" novalidate hidden>
+        <p id="move-offer-text">Your campaign's notes are loose in the Lorekeeper folder. Move them into a folder of their own, next to your other campaigns? Templates stay where they are, and backups carry on under the same name.</p>
+        <label>Folder name <input id="move-name" autocomplete="off" spellcheck="false" /></label>
+        <button id="move-go">Move notes</button>
+        <button type="button" id="move-no" class="ghost">Keep as is</button>
+        <p id="move-offer-error" class="move-offer-error" role="alert"></p>
+      </form>
       <div id="conflict" role="alert" hidden>
         This page changed outside the app while you were editing.
         <button id="take-theirs" class="ghost">Load their version</button>

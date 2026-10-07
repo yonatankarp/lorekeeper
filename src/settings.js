@@ -1,6 +1,7 @@
 import { applyTheme } from "./theme.js";
-import { onlineText, roleText, syncText } from "./sync-status.js";
-import { privateLabel } from "./vault.js";
+import { joinText, onlineText, roleText, syncText } from "./sync-status.js";
+import { DM, privateLabel } from "./vault.js";
+import { confirmClick } from "./confirm.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen, emitTo } = window.__TAURI__.event;
@@ -191,10 +192,12 @@ const campaignName = (path) => current.backupNames?.[path] || folderName(path);
 
 const pcs = new Map(); // campaign folder -> its PC pages (campaign_pcs)
 
-/** Fills an "I play" list with a campaign's PC pages, `me` chosen (kept even when its page isn't there). */
+/** Fills an "I play" list with "I'm the DM (no character)" and a campaign's PC pages, `me` chosen (kept even when its
+ * page isn't there). */
 function fillPcs(select, path, me) {
-  const options = [...new Set([...(pcs.get(path) ?? []), ...(me ? [me] : [])])];
-  select.replaceChildren(new Option("Choose…", ""), ...options.map((p) => new Option(p.replace(/^PCs\//, "").replace(/\.md$/i, ""), p)));
+  const options = [...new Set([...(pcs.get(path) ?? []), ...(me && me !== DM ? [me] : [])])];
+  select.replaceChildren(new Option("Choose…", ""), new Option("I'm the DM (no character)", DM),
+    ...options.map((p) => new Option(p.replace(/^PCs\//, "").replace(/\.md$/i, ""), p)));
   select.value = me;
 }
 
@@ -218,13 +221,13 @@ function renderSharing(row, s, path) {
   showSyncStatus(row, path);
 }
 
-/** What a shared campaign is doing, or what to do next. */
+/** What a shared campaign is doing (every shared campaign syncs, open or not), and what to do next. */
 function sharingText(path, row = true) {
   const sh = current.sharing?.[path] ?? {}, snap = snapshots.get(path);
-  if (row && sh.shared && !sh.removed && !sh.me) return `Pick your character: click ${sh.room ? "Party…" : "Share with party…"}`;
-  if (sh.shared && !sh.room && !sh.removed) return "Not shared yet.";
-  const online = path === current.vaultPath && sh.room ? onlineText(snap) : "";
-  return [syncText(snap, sh, path === current.vaultPath), online].filter(Boolean).join(" · ");
+  const pick = row && sh.shared && !sh.removed && !sh.me ? `Pick your character: click ${sh.room ? "Party…" : "Share with party…"}` : "";
+  if (sh.shared && !sh.room && !sh.removed) return pick || "Not shared yet.";
+  const online = sh.room ? onlineText(snap) : "";
+  return [syncText(snap, sh, campaignName(path)), online, pick].filter(Boolean).join(" · ");
 }
 
 function showSyncStatus(row, path) {
@@ -238,6 +241,7 @@ listen("sync-status", ({ payload }) => {
   const row = rowFor(payload.path);
   if (row && current) showSyncStatus(row, payload.path);
   if (partyPath === payload.path) renderParty();
+  if (joinPath === payload.path) showJoin();
 });
 
 async function loadSyncInfo() {
@@ -294,16 +298,36 @@ function renderParty() {
   $("party-key").hidden = !askKey;
   $("party-sync").textContent = setup ? "" : sharingText(path, false);
   if (document.activeElement !== select) fillPcs(select, path, setup ? select.value : sh.me);
-  $("party-no-pcs").hidden = select.options.length > 1;
+  $("party-no-pcs").hidden = select.options.length > 2 || select.value === DM; // more than Choose… and the DM
+  $("party-dm-hint").hidden = select.value !== DM;
+  $("party-dm-hint").textContent = select.value === DM ? dmHint(sh) : ""; // it describes the list
   $("party-invites").hidden = !(sh.room && manages(sh) && !sh.removed);
   renderPrivate(sh);
   $("party-pause").hidden = setup && (!sh.shared || unshare === path); // also an old never-shared one, so it can be turned off
   $("party-shared").checked = !!sh.shared;
+  const owner = sh.role === "owner";
+  $("party-end").hidden = !sh.room || !!sh.removed;
+  $("party-end-go").textContent = owner ? "Stop sharing" : "Leave";
+  $("party-end-help").textContent = owner
+    ? "Deletes the campaign from the sync server, everyone's private notes there included. Your players keep their copies but stop syncing. Your notes stay here."
+    : "Leaves the party: this computer stops syncing, and your private notes are deleted from the sync server. Your copy stays here.";
   $("party-cancel").hidden = $("party-share").hidden = !setup;
   $("party-cancel").disabled = $("party-shared").disabled = sharingNow; // closing mid-Share would switch sharing off under it
   $("players-close").hidden = setup;
   $("party-share").disabled = sharingNow || !select.value;
   select.disabled = sharingNow;
+}
+
+/**
+ * Under I play: "I'm the DM (no character)" only files your notes as the DM's. Reading private notes is separate (the
+ * owner's I'm the DM switch, or a DM's role), so the owner is pointed at the switch.
+ */
+function dmHint(sh) {
+  const notes = "Your notes show as the DM's, with no portrait.";
+  const owner = sh.role === "owner" || (!sh.room && !sh.removed); // sharing it makes you the owner
+  if (!owner) return `${notes} Whether you read your players' private notes is up to the campaign's owner.`;
+  if (sh.access?.ownerIsDm) return `${notes} You also read your players' private notes because I'm the DM is on under Private notes, a separate setting.`;
+  return `${notes} To read your players' private notes too, also turn on I'm the DM under Private notes${sh.room ? "" : " once the campaign is shared"}. It's a separate setting.`;
 }
 
 /**
@@ -491,8 +515,9 @@ async function loadPlayers() {
       b.type = "button";
       b.className = "ghost";
       b.textContent = text;
-      b.addEventListener("click", () => action(b));
+      if (action) b.addEventListener("click", () => action(b));
       li.append(b);
+      return b;
     };
     button("Re-invite", async () => {
       try {
@@ -504,17 +529,15 @@ async function loadPlayers() {
         fail(err);
       }
     });
-    button("Remove", async (b) => {
-      // Two clicks: the first asks, out loud too (the status line is live).
-      if (b.dataset.sure !== "yes") {
-        b.dataset.sure = "yes";
-        b.textContent = `Remove ${name}?`;
-        $("players-status").textContent = `Click Remove again to confirm removing ${name}.`;
-        return;
-      }
-      $("players-status").textContent = "";
-      await invoke("sync_remove_member", { path, memberId: p.memberId }).catch(fail);
-      loadPlayers();
+    // Two clicks: the first asks, out loud too (the status line is live).
+    confirmClick(button("Remove"), {
+      armedLabel: `Remove ${name}? Click again`,
+      prompt: `Click again to remove ${name}.`,
+      say: (text) => { if (text || $("players-status").textContent === `Click again to remove ${name}.`) $("players-status").textContent = text; }, // clears only its own prompt
+      act: async () => {
+        await invoke("sync_remove_member", { path, memberId: p.memberId }).catch(fail);
+        loadPlayers();
+      },
     });
     return li;
   }));
@@ -536,15 +559,140 @@ $("players-dialog").addEventListener("close", () => {
   partyPath = null;
 });
 
-// Join: paste a link, see which server it's for, then join. The link holds the key: cleared when the dialog closes.
+// ---------- asking before Stop sharing, Leave and Delete campaign ----------
+
+const trashName = isMac ? "Trash" : navigator.userAgent.includes("Windows") ? "Recycle Bin" : "Trash";
+for (const el of document.querySelectorAll(".trash-name")) el.textContent = trashName;
+
+/**
+ * Asks before something this window can't undo. `go` (and `alt`, a second choice) label the buttons; the chosen one's
+ * `run(choice)` runs with the dialog open, so it can't be clicked twice and an error shows in the dialog. Resolves true
+ * once a run succeeded, false when cancelled. Names in the text are set as text only.
+ */
+function confirmAction({ title, text, extra = "", go, alt = "", run }) {
+  const dialog = $("confirm-dialog"), buttons = ["confirm-cancel", "confirm-alt", "confirm-go"].map($);
+  $("confirm-title").textContent = title;
+  $("confirm-text").textContent = text;
+  $("confirm-extra").textContent = extra;
+  $("confirm-error").textContent = $("confirm-status").textContent = "";
+  $("confirm-go").textContent = go;
+  $("confirm-alt").textContent = alt;
+  $("confirm-alt").hidden = !alt;
+  let busy = false;
+  return new Promise((resolve) => {
+    const choose = async (choice) => {
+      if (busy) return;
+      busy = true;
+      for (const b of buttons) b.disabled = true;
+      $("confirm-error").textContent = "";
+      $("confirm-status").textContent = "Working…";
+      try {
+        await run(choice);
+        busy = false;
+        resolve(true);
+        dialog.close();
+      } catch (err) {
+        $("confirm-error").textContent = String(err);
+      }
+      busy = false;
+      $("confirm-status").textContent = "";
+      for (const b of buttons) b.disabled = false;
+    };
+    $("confirm-go").onclick = () => choose("go");
+    $("confirm-alt").onclick = () => choose("alt");
+    $("confirm-cancel").onclick = () => dialog.close();
+    dialog.oncancel = (e) => { if (busy) e.preventDefault(); };
+    dialog.onclose = () => resolve(false);
+    dialog.showModal();
+    $("confirm-cancel").focus(); // the safe choice first
+  });
+}
+
+/** The Party dialog's last button: the owner stops sharing, anyone else leaves. */
+$("party-end-go").addEventListener("click", async () => {
+  const path = partyPath, name = campaignName(path);
+  const owner = current.sharing?.[path]?.role === "owner";
+  const done = await confirmAction(owner ? {
+    title: `Stop sharing ${name}?`,
+    text: `Your players keep their copies of ${name}, but lose access: their copies stop syncing. ${name} is deleted from the sync server, and so are everyone's private notes there.`,
+    extra: "Your notes on this computer stay. You can share it again later; everyone then needs a new invite.",
+    go: "Stop sharing",
+    run: () => invoke("sync_stop_sharing", { path }),
+  } : {
+    title: `Leave ${name}?`,
+    text: `This computer stops syncing ${name}, and you leave its party. Your private notes are deleted from the sync server.`,
+    extra: "Your copy stays on this computer. To come back, ask the owner for a new invite.",
+    go: "Leave",
+    run: () => invoke("sync_leave", { path }),
+  });
+  if (!done) return;
+  if ($("players-dialog").open) $("players-dialog").close();
+  render(await invoke("get_settings"));
+});
+
+/** Delete campaign: to the Trash, after asking. The owner of a shared campaign is offered Stop sharing first. */
+async function deleteCampaign(path) {
+  const sh = current.sharing?.[path] ?? {}, name = campaignName(path);
+  const owned = sh.role === "owner" && !!sh.room;
+  let stopped = false;
+  const done = await confirmAction({
+    title: `Delete ${name}?`,
+    text: `This moves the folder ${path} to the ${trashName}, with every note in it, and takes ${name} off this list. You can put the folder back from the ${trashName}.`,
+    extra: owned ? `You share ${name}. Stop sharing it first, so it's deleted from the sync server too: your players keep their copies but lose access. Delete only leaves it on the server, and you can't manage it from Lorekeeper any more.` : "",
+    go: owned ? "Stop sharing and delete" : "Delete",
+    alt: owned ? "Delete only" : "",
+    run: async (choice) => {
+      if (owned && choice === "go" && !stopped) {
+        await invoke("sync_stop_sharing", { path });
+        stopped = true; // a failed delete after this doesn't stop sharing twice
+      }
+      await invoke("delete_campaign", { path });
+    },
+  });
+  if (done) render(await invoke("get_settings"));
+}
+
+// Join: paste a link, see which server it's for, then join. The dialog then shows how it's going: waiting for the owner's
+// notes, the campaign's name, the download, Done. The link holds the key: cleared once joined, or when the dialog closes.
 let joinChecked = null, joining = false;
+let joinProgress = null, joinPath = null; // the "sync-join" event's { waiting, name }, then the new campaign's folder
 
 function resetJoin() {
-  joinChecked = null;
-  $("join-confirm").hidden = true;
+  joinChecked = joinProgress = joinPath = null;
+  $("join-confirm").hidden = $("join-name-row").hidden = $("join-progress").hidden = true;
+  $("join-link-row").hidden = $("join-go").hidden = false;
   $("join-go").textContent = "Continue";
+  $("join-cancel").textContent = "Cancel";
+  $("join-name").value = "";
   $("join-error").textContent = $("join-status").textContent = "";
 }
+
+/** Join's progress line and bar (names come from the network: text only). */
+function showJoin() {
+  if (!joining && !joinPath) return;
+  const snap = joinPath ? snapshots.get(joinPath) : null, s = snap?.status;
+  const failed = ["stopped", "removed", "replaced"].includes(s?.state);
+  const { text, done } = joinText(joinProgress, snap);
+  $("join-status").textContent = failed ? "" : text;
+  if (failed) $("join-error").textContent = text;
+  const bar = $("join-progress");
+  bar.hidden = done || failed;
+  if (s?.state === "downloading" && s.total) {
+    bar.max = s.total;
+    bar.value = Math.min(s.done, s.total);
+  } else {
+    bar.removeAttribute("value"); // still going, how far unknown
+  }
+  if (done && $("join-go").hidden) {
+    $("join-go").textContent = "Pick your character…";
+    $("join-go").hidden = false;
+    $("join-go").focus();
+  }
+}
+listen("sync-join", ({ payload }) => {
+  joinProgress = payload;
+  showJoin();
+});
 
 $("join-open").addEventListener("click", () => {
   $("join-link").value = "";
@@ -559,39 +707,83 @@ $("join-dialog").addEventListener("close", () => {
   $("join-link").value = "";
   resetJoin();
 });
-$("join-go").addEventListener("click", async () => {
+/** Join's first step: reads the link without using it and shows which server it's for (warning when it isn't the
+ * usual one). The second click joins. */
+async function checkJoin() {
   const link = $("join-link").value.trim();
-  $("join-error").textContent = "";
-  if (!joinChecked) {
-    try {
-      const check = await invoke("sync_check_invite", { link });
-      joinChecked = link;
-      $("join-server").textContent = `This invite is for the sync server at ${check.server}.`;
-      $("join-warning").textContent = check.isDefault ? "" :
-        `That isn't Lorekeeper's usual server (${syncInfo?.defaultServer ?? "lorekeeper.yonatankarp.com"}). Join only if you know and trust whoever runs it.`;
-      $("join-confirm").hidden = false;
-      $("join-go").textContent = "Join";
-      $("join-go").focus();
-    } catch (err) {
-      $("join-error").textContent = String(err);
-    }
-    return;
-  }
-  joining = true;
-  $("join-go").disabled = $("join-cancel").disabled = true;
-  $("join-status").textContent = "Joining…";
   try {
-    const path = await invoke("sync_join", { link: joinChecked });
-    $("join-dialog").close();
-    render(await invoke("get_settings")); // the joined campaign, before anything saves on top of older settings
-    await addCampaign(path); // opens it: the download starts
-    openParty(path, "Downloading the campaign. Then pick the character you play.");
+    const check = await invoke("sync_check_invite", { link });
+    if ($("join-link").value.trim() !== link) return; // changed meanwhile
+    joinChecked = link;
+    $("join-server").textContent = `This invite is for the sync server at ${check.server}.`;
+    $("join-warning").textContent = check.isDefault ? "" :
+      `That isn't Lorekeeper's usual server (${syncInfo?.defaultServer ?? "lorekeeper.yonatankarp.com"}). Join only if you know and trust whoever runs it.`;
+    $("join-confirm").hidden = false;
+    $("join-go").textContent = "Join";
+    $("join-go").focus();
   } catch (err) {
-    $("join-status").textContent = "";
     $("join-error").textContent = String(err);
   }
+}
+
+// An invite opened from the join page (lorekeeper://, deeplink.rs): the link fills in the dialog and is checked, and
+// joining still takes a click on Join. The link isn't in the event; this window takes it, once.
+async function takeJoinLink() {
+  const pending = await invoke("take_join_link").catch(() => null);
+  if (!pending || joining) return;
+  selectTab($("tab-general"));
+  $("join-link").value = pending.link ?? "";
+  resetJoin();
+  if (!$("join-dialog").open) $("join-dialog").showModal();
+  if (pending.error) {
+    $("join-error").textContent = pending.error;
+    $("join-link").focus();
+    return;
+  }
+  await checkJoin();
+}
+listen("join-link", takeJoinLink);
+takeJoinLink(); // started by a link: it may have come before this window was listening
+
+$("join-go").addEventListener("click", async () => {
+  if (joinPath) { // done: on to picking your character
+    const path = joinPath;
+    $("join-dialog").close();
+    openParty(path, "Pick the character you play.");
+    return;
+  }
+  $("join-error").textContent = "";
+  if (!joinChecked) return checkJoin();
+  joining = true;
+  joinProgress = null;
+  $("join-go").disabled = $("join-cancel").disabled = $("join-link").disabled = $("join-name").disabled = true;
+  showJoin();
+  try {
+    const path = await invoke("sync_join", { link: joinChecked, name: $("join-name").value.trim() || null });
+    joinPath = path;
+    joinChecked = null;
+    $("join-link").value = ""; // it holds the campaign's key
+    $("join-link-row").hidden = $("join-confirm").hidden = $("join-name-row").hidden = $("join-go").hidden = true;
+    $("join-cancel").textContent = "Close"; // the download goes on; Settings and the sidebar show it too
+    joining = false;
+    showJoin();
+    render(await invoke("get_settings")); // the joined campaign, before anything saves on top of older settings
+    await addCampaign(path); // opens it
+  } catch (err) {
+    if (String(err) === "name_required") {
+      $("join-status").textContent = "";
+      $("join-name-row").hidden = false;
+      $("join-progress").hidden = true;
+      $("join-name").disabled = false;
+      $("join-name").focus();
+    } else {
+      $("join-status").textContent = "";
+      $("join-progress").hidden = true;
+      $("join-error").textContent = String(err);
+    }
+  }
   joining = false;
-  $("join-go").disabled = $("join-cancel").disabled = false;
+  $("join-go").disabled = $("join-cancel").disabled = $("join-link").disabled = $("join-name").disabled = false;
 });
 
 // PC pages arrive while a joined campaign downloads: refresh the I play list.
@@ -617,11 +809,15 @@ function renderCampaigns(s) {
     backupName.dataset.path = path;
     backupName.placeholder = folderName(path);
     backupName.addEventListener("change", () => save({ backupNames: { ...current.backupNames, [path]: backupName.value.trim() } }));
+    // The open campaign can't be removed or deleted: it says how, in place of the buttons.
     const remove = row.querySelector(".campaign-remove");
-    remove.disabled = active; // switch to another campaign first
+    remove.hidden = row.querySelector(".campaign-remove-hint").hidden = active;
     row.querySelector(".campaign-remove-why").hidden = !active;
     row.querySelector(".campaign-more").open = opened.has(path);
     remove.addEventListener("click", () => save({ campaigns: current.campaigns.filter((c) => c !== path) }));
+    const del = row.querySelector(".campaign-delete");
+    del.hidden = row.querySelector(".campaign-delete-hint").hidden = active;
+    del.addEventListener("click", () => deleteCampaign(path));
     renderSharing(row, s, path);
     $("campaign-add").before(row);
     if (typing?.dataset.path === path) backupName.focus();
@@ -639,11 +835,36 @@ function addCampaign(path) {
   return done;
 }
 
-$("choose").addEventListener("click", async () => {
+// Add campaign…: New campaign makes <Lorekeeper folder>/<name>/; Choose existing folder… adds a folder you have.
+$("choose").addEventListener("click", () => {
+  $("add-name").value = $("add-error").textContent = $("campaigns-error").textContent = "";
+  $("add-dialog").showModal();
+  $("add-name").focus();
+});
+$("add-cancel").addEventListener("click", () => $("add-dialog").close());
+$("add-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("add-error").textContent = "";
+  try {
+    const path = await invoke("create_campaign", { name: $("add-name").value });
+    $("add-dialog").close();
+    render(await invoke("get_settings")); // with the new campaign, before anything saves on top of older settings
+    await addCampaign(path); // opens it
+  } catch (err) {
+    $("add-error").textContent = String(err);
+  }
+});
+$("add-existing").addEventListener("click", async () => {
   const path = await invoke("pick_folder", { title: "Choose the new campaign's notes folder", start: "" });
   if (!path) return;
-  $("campaigns-error").textContent = "";
+  $("add-dialog").close();
   addCampaign(path).catch((err) => { $("campaigns-error").textContent = String(err); });
+});
+
+// The main window's first-run view: "Join a shared campaign…".
+listen("open-join", () => {
+  selectTab($("tab-general"));
+  if (!$("join-dialog").open) $("join-open").click();
 });
 
 // ---------- updates: the result shows in a native dialog ----------

@@ -168,7 +168,7 @@ input[type="text"] {
 .campaign-more { grid-column: 1 / -1; margin: 6px 0 0 -8px; }
 /* Flex on an inner box, not on <details> itself, which WebKit lays out unreliably. */
 .campaign-more-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 0 8px; }
-.campaign-more-body > .path, .campaign-more-body > .hint { flex-basis: 100%; margin: 0; }
+.campaign-more-body > .path, .campaign-more-body > .hint, .campaign-remove-why { flex-basis: 100%; margin: 0; }
 output { min-width: 5ch; color: var(--muted); font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; }
 input[role="switch"] {
   appearance: none;
@@ -215,12 +215,15 @@ input[role="switch"]:checked::before { transform: translateX(16px); background: 
 .restore-to { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .restore-to .path { flex: 1; min-width: 0; margin: 0; }
 #restore-pick .hint { margin: 0 0 12px; }
-#restore-progress { width: 100%; margin-top: 12px; accent-color: var(--accent); }
+#restore-progress, #join-progress { width: 100%; margin-top: 12px; accent-color: var(--accent); }
 #restore-status { margin: 8px 0; overflow-wrap: anywhere; }
 #restore-status:empty { display: none; }
 #restore-error:not(:empty) { margin-bottom: 12px; overflow-wrap: anywhere; }
 /* Shared campaigns: the Party and Join dialogs. The Party dialog scrolls inside the fixed-size window. */
-#players-dialog, #join-dialog { width: min(500px, calc(100vw - 32px)); }
+#players-dialog, #join-dialog, #add-dialog { width: min(500px, calc(100vw - 32px)); }
+#add-help { margin: -6px 0 8px; }
+#add-dialog .dialog-actions { flex-wrap: wrap; }
+#add-existing { margin-right: auto; }
 #players-dialog { max-height: calc(100vh - 32px); overflow-y: auto; }
 #party-intro, #party-no-pcs, #party-key .hint, #party-shared-help { margin: -6px 0 12px; }
 #party-intro { margin-top: 0; }
@@ -237,6 +240,8 @@ dialog label.party-inline { display: flex; align-items: center; gap: 6px; margin
 #player-list li > span { flex: 1 1 12em; }
 .sync-list li select { width: auto; }
 .sync-list li button { white-space: nowrap; }
+/* Remove, armed: "Remove <name>? Click again" (confirm.js) stands out from the ghost buttons around it. */
+.sync-list li button[data-armed] { border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 700; }
 #party-role { margin: 0 0 8px; }
 #party-private-help { margin: 0 0 8px; }
 dialog textarea {

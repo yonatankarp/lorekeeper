@@ -45,6 +45,8 @@ const READS_PER_MINUTE: u32 = 60;
 /// Most clients a rate limit tracks at once; past it (after dropping stale ones) new clients are
 /// refused until a window ends, so a flood of addresses can't grow the map without bound.
 const MAX_TRACKED: usize = 10_000;
+/// Room deletions plus leaves per client IP per hour.
+const DELETES_PER_HOUR: u32 = 20;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -171,6 +173,7 @@ pub(crate) struct Inner {
     reads: Windows<String>,
     creates: Windows<IpAddr>,
     redeems: Windows<IpAddr>,
+    deletes: Windows<IpAddr>,
     next_conn: AtomicU64,
     shutdown: watch::Sender<bool>,
 }
@@ -194,6 +197,7 @@ impl AppState {
             reads: Mutex::default(),
             creates: Mutex::default(),
             redeems: Mutex::default(),
+            deletes: Mutex::default(),
             next_conn: AtomicU64::new(1),
             shutdown: watch::Sender::new(false),
         })))
@@ -413,6 +417,13 @@ pub(crate) async fn write(
     }
 }
 
+/// How many changes a replay from `since` (others' private files from `dm_since`) holds; see [`db::count_changes`].
+pub(crate) async fn replay_total(state: &AppState, room: &str, viewer: &str, since: u64, dm_since: u64) -> Result<u64, ApiError> {
+    let max = i64::MAX as u64;
+    let (r, v, since, dm_since) = (room.to_string(), viewer.to_string(), since.min(max), dm_since.min(max));
+    state.db(move |c| db::count_changes(c, &r, &v, since, dm_since)).await
+}
+
 /// One page of the changes `viewer` may see after `since` (others' private files after `dm_since`); see
 /// [`db::changes`], where visibility is decided.
 pub(crate) async fn changes_page(
@@ -444,12 +455,14 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/join/{room}/{invite}", get(join_page))
         .route("/v1/rooms", post(create_room))
+        .route("/v1/rooms/{room}", delete(delete_room))
         .route("/v1/rooms/{room}/changes", get(changes))
         .route("/v1/rooms/{room}/live", get(live::upgrade))
         .route("/v1/rooms/{room}/invites", post(create_invite).get(list_invites))
         .route("/v1/rooms/{room}/invites/{invite}", delete(revoke_invite))
         .route("/v1/rooms/{room}/invites/{invite}/redeem", post(redeem))
         .route("/v1/rooms/{room}/members", get(members))
+        .route("/v1/rooms/{room}/members/me", delete(leave_room))
         .route("/v1/rooms/{room}/members/{member_id}", delete(remove_member).patch(update_member))
         .route("/v1/rooms/{room}/members/{member_id}/reinvite", post(reinvite))
         .route("/v1/rooms/{room}/settings", patch(update_settings))
@@ -510,18 +523,15 @@ fn body_or_default<T: serde::de::DeserializeOwned + Default>(body: &Bytes) -> Re
 async fn add_invite(state: &AppState, room: String, mut info: InviteInfo) -> Result<Response, ApiError> {
     info.expires = now_ms() + i64::from(state.0.config.invite_days) * 86_400_000;
     let stored = info.clone();
-    let created = state
+    state
         .db(move |c| {
             if stored.member_id.is_none() && db::seats(c, &room)? >= MAX_SEATS {
-                return Ok(false);
+                return Ok(Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "too_many_members")));
             }
-            db::create_invite(c, &room, &stored)?;
-            Ok(true)
+            // A room deleted since the token was checked answers as deleted rooms do.
+            Ok(if db::create_invite(c, &room, &stored)? { Ok(()) } else { Err(ApiError::UNAUTHORIZED) })
         })
-        .await?;
-    if !created {
-        return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "too_many_members"));
-    }
+        .await??;
     Ok((StatusCode::CREATED, Json(info)).into_response())
 }
 
@@ -634,7 +644,7 @@ async fn redeem(
             Ok(created())
         }
         db::Redeemed::Replaced(member_id) => {
-            live::kick(&state, &room, &member_id, live::REPLACED); // the member's old computer is signed out at once
+            live::kick(&state, &room, Some(&member_id), live::REPLACED); // the member's old computer is signed out at once
             Ok(created())
         }
         db::Redeemed::NotFound => Err(not_found),
@@ -667,8 +677,49 @@ async fn remove_member(
             Ok(Ok(()))
         })
         .await??;
-    live::kick(&state, &caller.room, &member_id, live::REVOKED);
+    live::kick(&state, &caller.room, Some(&member_id), live::REVOKED);
     live::access_changed(&state, &caller.room); // DMs drop their copies of the member's private notes
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The per-IP budget of room deletions and leaves; checked after the token, so only a room's members count against it.
+fn allow_delete(state: &AppState, headers: &HeaderMap, peer: SocketAddr) -> Result<(), ApiError> {
+    let ip = client_ip(state, headers, peer);
+    let ok = allow(&state.0.deletes, ip, DELETES_PER_HOUR, Duration::from_secs(3600));
+    ok.then_some(()).ok_or(ApiError::RATE_LIMITED)
+}
+
+/// A member leaves the room on their own: like a removal (their token stops working, their sockets close with 4001,
+/// their private space is deleted), asked by the member. The owner can't leave; they delete the room instead.
+async fn leave_room(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    caller: Caller,
+) -> Result<StatusCode, ApiError> {
+    if caller.role == Role::Owner {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "owner_cannot_leave"));
+    }
+    allow_delete(&state, &headers, peer)?;
+    let (room, id) = (caller.room.clone(), caller.member_id.clone());
+    state.db(move |c| db::remove_member(c, &room, &id)).await?;
+    live::kick(&state, &caller.room, Some(&caller.member_id), live::REVOKED);
+    live::access_changed(&state, &caller.room);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The owner deletes the room: every file (shared and private), member, token and invite goes in one transaction, then
+/// every socket closes with 4003. Deleting first means an upgrade racing it finds no token (touch_token) and gets 401.
+async fn delete_room(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Owner(caller): Owner,
+) -> Result<StatusCode, ApiError> {
+    allow_delete(&state, &headers, peer)?;
+    let room = caller.room.clone();
+    state.db(move |c| db::delete_room(c, &room)).await?;
+    live::kick(&state, &caller.room, None, live::DELETED);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -707,16 +758,35 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// What a browser shows for an invite link. It never touches the invite, and the page loads
-/// nothing, runs nothing and can't be framed.
+/// What a browser shows for an invite link. It never touches the invite, loads nothing and can't be framed. Its one
+/// script (allowed by its hash, nothing else runs) hands the link to the app as `lorekeeper://join?link=<the link>`,
+/// so the browser asks "Open Lorekeeper?". The key in the fragment goes only there: no request, no log, no storage.
 async fn join_page(State(state): State<AppState>) -> impl IntoResponse {
     let headers = [
-        (header::CONTENT_SECURITY_POLICY, "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"),
+        (header::CONTENT_SECURITY_POLICY, JOIN_CSP.as_str()),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::REFERRER_POLICY, "no-referrer"),
     ];
-    (headers, Html(JOIN_PAGE.replace("{server}", &escape(&state.0.config.public_url))))
+    let page = JOIN_PAGE.replace("{script}", JOIN_SCRIPT).replace("{server}", &escape(&state.0.config.public_url));
+    (headers, Html(page))
 }
+
+/// The join page's policy: its own script by hash, inline styles, nothing else.
+static JOIN_CSP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let hash = encode_blob(&Sha256::digest(JOIN_SCRIPT.as_bytes()));
+    format!("default-src 'none'; script-src 'sha256-{hash}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+});
+
+/// Runs only for a well-formed link: the path the server routed here and a 32-byte key after #.
+const JOIN_SCRIPT: &str = r#"(function () {
+  var path = location.pathname, key = location.hash;
+  if (!/^\/join\/[a-z2-7]{26}\/[a-z2-7]{26}$/.test(path) || !/^#[A-Za-z0-9_-]{43}$/.test(key)) return;
+  var url = "lorekeeper://join?link=" + encodeURIComponent(location.origin + path + key);
+  var open = document.getElementById("open");
+  open.href = url;
+  open.hidden = false;
+  location.replace(url);
+})();"#;
 
 const JOIN_PAGE: &str = r#"<!doctype html>
 <html lang="en">
@@ -726,24 +796,31 @@ const JOIN_PAGE: &str = r#"<!doctype html>
 <meta name="referrer" content="no-referrer">
 <title>Lorekeeper invite</title>
 <style>
-  :root { color-scheme: light dark; --bg: #f4ecd8; --card: #fbf6e9; --ink: #3b2f22; --muted: #7a6650; --accent: #8b2e1f; --line: #d9c9a3; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #1f1a14; --card: #2a231b; --ink: #ece2cc; --muted: #b3a284; --accent: #e07a5f; --line: #4a3f30; } }
+  :root { color-scheme: light dark; --bg: #f4ecd8; --card: #fbf6e9; --ink: #3b2f22; --muted: #7a6650; --accent: #8b2e1f; --line: #d9c9a3; --on-accent: #fbf6e9; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1f1a14; --card: #2a231b; --ink: #ece2cc; --muted: #b3a284; --accent: #e07a5f; --line: #4a3f30; --on-accent: #1f1a14; } }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink);
          font: 17px/1.55 Georgia, "Iowan Old Style", "Palatino Linotype", serif; }
   main { max-width: 32rem; margin: 16px; padding: 28px 30px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
   h1 { margin: 0 0 12px; font-size: 1.5rem; color: var(--accent); font-weight: normal; }
   p { margin: 0 0 12px; }
   b { font-weight: 600; }
+  a { color: var(--accent); }
+  .open { display: inline-block; padding: 8px 18px; border-radius: 8px; background: var(--accent); color: var(--on-accent); text-decoration: none; }
+  [hidden] { display: none !important; }
   small { color: var(--muted); }
 </style>
 </head>
 <body>
 <main>
   <h1>You've been invited to a shared campaign</h1>
-  <p>Open this invite in <b>Lorekeeper</b>: <b>Settings &gt; General &gt; Join a shared campaign</b>, then paste the whole link, including the part after <b>#</b>.</p>
+  <p><a id="open" class="open" hidden>Open in Lorekeeper</a></p>
+  <p>Your browser may ask to open Lorekeeper. Lorekeeper then shows the invite, and joins only when you click <b>Join</b>.</p>
+  <p>Don't have it yet? <a href="https://yonatankarp.com/lorekeeper/" rel="noreferrer">Download Lorekeeper</a>, then open this link again.</p>
+  <p>Or open the invite in Lorekeeper yourself: <b>Settings &gt; General &gt; Join a shared campaign</b>, then paste the whole link, including the part after <b>#</b>.</p>
   <p>The link holds the campaign's key. Keep it within your party.</p>
   <small>Lorekeeper sync server at {server}. It stores only encrypted notes it can't read.</small>
 </main>
+<script>{script}</script>
 </body>
 </html>
 "#;
