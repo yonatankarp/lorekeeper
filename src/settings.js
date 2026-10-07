@@ -121,7 +121,7 @@ const SHORTCUTS = ["quickNote", "capture", "newSession", "newPage"];
 let defaults = null;
 invoke("default_settings").then((d) => {
   defaults = Object.fromEntries(SHORTCUTS.map((k) => [k, d[k]]));
-  render(current);
+  if (current) render(current); // settings may not have loaded yet; their render reads `defaults`
 });
 $("shortcuts-reset").addEventListener("click", () => save(defaults, "shortcuts-reset"));
 
