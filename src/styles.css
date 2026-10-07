@@ -708,6 +708,20 @@ dialog label.ddb-row { display: flex; align-items: baseline; gap: 8px; margin: 0
 #obsidian-dialog .copied { display: block; min-height: 1.2em; font-size: 14px; color: var(--muted); }
 #obsidian-dialog .tip { margin: 0 0 16px; font-size: 15px; color: var(--muted); }
 #delete-body p { margin: 0 0 12px; font-size: 15.5px; }
+/* Cheat sheet: a long dialog whose body scrolls under a fixed heading and Close. */
+#cheat-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; overflow: hidden; }
+#cheat-dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+.cheat-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px 10px; border-bottom: 1px solid var(--line); }
+.cheat-head h2 { margin: 0; }
+.cheat-body { min-height: 0; overflow-y: auto; padding: 4px 20px 20px; font-size: 15px; }
+.cheat-body:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+.cheat-body h3 { margin: 18px 0 6px; color: var(--accent-text); font: 20px/1.2 var(--font-display); letter-spacing: 0.02em; }
+.cheat-table { width: 100%; border-collapse: collapse; }
+.cheat-table thead th { padding: 0 8px 4px 0; color: var(--muted); font: 13px var(--font-ui); text-align: left; }
+.cheat-table tbody :is(th, td) { padding: 6px 8px 6px 0; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
+.cheat-table tbody th { width: 34%; font-weight: 400; overflow-wrap: anywhere; }
+.cheat-table code { font: 13px ui-monospace, Menlo, Consolas, monospace; background: var(--hover); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+.cheat-note { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
 
 /* "Note deleted. Undo": bottom centre of the page, for a few seconds. */
 main { position: relative; }

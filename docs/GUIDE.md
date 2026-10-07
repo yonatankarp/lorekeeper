@@ -38,6 +38,8 @@ Start a note with a symbol to file it:
 
 In the note box, `@Mir` or `[[Mir` suggests page names; Tab turns it into a link (`@[[Mirela]]`).
 
+Every symbol, link and shortcut is on one page: **Help > Cheat Sheet** (`⌘/` / `Ctrl+/`), or the **Cheat sheet** button on an empty session. The same list is in [Cheat sheet](#cheat-sheet) below.
+
 If the current session's last note is over 12 hours old, the box offers the next session: `⌘Enter` / `Ctrl+Enter` saves the note there, Enter still saves to the current one.
 
 ## After the game
@@ -173,6 +175,99 @@ Backups run on each new session, every 30 minutes while notes change, and once a
 - **Shortcuts:** change the global shortcuts; a shortcut another app already uses is refused and the old one keeps working.
 - **Appearance:** Light (Tome), Dark (Dungeon) or Match my computer, and text size.
 - **Backups:** see above.
+
+## Cheat sheet
+
+In the app: **Help > Cheat Sheet**, `⌘/` / `Ctrl+/`. It shows the global shortcuts as you set them.
+
+### Note symbols
+
+Start a note with a symbol to file it. It works in the note box and at the start of any line on a session page. Notes show with their kind in the **Timeline** and grouped in the **Journal**.
+
+| Start with | Goes to |
+|---|---|
+| `@` | **NPCs**: `@[[Mirela]] runs the inn` |
+| `#` | **Loot**: `#Silver dagger` |
+| `!` | **Quests**: `!Find the missing miners` |
+| `?` | **Mysteries**: `?Who sent the letter` |
+| `"` or `“` | **Quotes**: `"Run!" - Vex`. Quotes keep their marks. |
+| no symbol | **What happened** |
+| `~` | **Private**, in the note box of a shared campaign: the note goes to your private notes for the session, still filed by the symbol after it (`~@[[Halia]] lies`). The box says who reads it. In a campaign of your own the `~` is dropped and the note is saved as usual. |
+
+On a session page, write loot as a list item (`- #Silver dagger`): a line starting with `#` is read as a heading and doesn't show as a note.
+
+### Links and images
+
+| Type | What it does |
+|---|---|
+| `[[Mirela]]` | A link to the page named Mirela, in any folder. Clicking a link to a page that doesn't exist yet opens **New page** to make it. |
+| `[[Baron Vex\|the Baron]]` | A link to Baron Vex that reads "the Baron". |
+| `[[NPCs/Vex]]` | A link to the Vex in NPCs, when two pages share a name. |
+| `@[[Mirela]]` | A mention: the `@` files the note under NPCs, the link lists it on Mirela's page under **Linked from**. `@Mirela` without brackets is not a link. |
+| `@Mir` or `[[Mir` | Suggests page names. Tab picks one and makes the link. |
+| `![[map.png]]` | Shows an image from the notes folder. `![[map.png\|300]]` sets its width, `![[map.png\|300x200]]` width and height. Paste or drop an image into the editor to save it in `Attachments/` and embed it. |
+| `![Map](Maps/map.png)` | A Markdown image, which works too. |
+| `[Site](https://example.com)` | A web link: it opens in your browser. |
+
+### Anywhere
+
+These work even while Lorekeeper is in the background. Change them in **Settings > Shortcuts**.
+
+| Keys | What it does |
+|---|---|
+| `⌘⌥N` / `Ctrl+Alt+N` | **Quick note**: a one-line note box, over any app |
+| `⌘⇧S` / `Ctrl+Shift+S` | **Save selection**: saves the selected text, or the clipboard |
+| off until you set it | **New session**, without opening a window |
+| off until you set it | **New page**: opens the New page dialog |
+
+### In the note box
+
+| Keys | What it does |
+|---|---|
+| `Enter` | Saves the note |
+| `⌘Enter` / `Ctrl+Enter` | Saves it to a new session, when the box offers one (the last note is over 12 hours old) |
+| `↑` in the empty box | Brings back the last note to fix: Enter saves the fix in place, Esc cancels |
+| `Tab` | Takes the suggested page name |
+| `↑` `↓` | Picks another suggestion |
+| `Esc` | Drops the suggestion, then closes the box without saving |
+
+### In Lorekeeper
+
+| Keys | What it does |
+|---|---|
+| `⌘K` / `Ctrl+K` | Search |
+| `⌘E` / `Ctrl+E` | Edit / Preview |
+| `⌘N` / `Ctrl+N` | New page |
+| `⌘⇧N` / `Ctrl+Shift+N` | New session |
+| `⌘⇧H` / `Ctrl+Shift+H` | Home |
+| `⌘[` `⌘]` / `Ctrl+[` `Ctrl+]` | Back, Forward |
+| `F2` | Rename the page |
+| `⌘⌫` / `Ctrl+Backspace` | Move the page to the Trash (outside text) |
+| `⌘Z` / `Ctrl+Z` | Undo, including deleting, renaming and moving pages |
+| `⌘⇧Z` / `Ctrl+Shift+Z` or `Ctrl+Y` | Redo |
+| `⌘,` / `Ctrl+,` | Settings |
+| `⌘+` `⌘-` `⌘0` / `Ctrl++` `Ctrl+-` `Ctrl+0` | Zoom in, zoom out, actual size |
+| `⌘/` / `Ctrl+/` | The cheat sheet |
+| `Esc` | Closes a dialog |
+
+### In the editor
+
+| Keys | What it does |
+|---|---|
+| `⌘B` / `Ctrl+B` | Bold |
+| `⌘I` / `Ctrl+I` | Italic |
+| `Tab` or `Enter` | Takes the suggested page name (type `[[` or `@` for suggestions) |
+| `Tab` `⇧Tab` / `Tab` `Shift+Tab` | Indents or outdents a list item |
+| `Enter` | Continues a list |
+| `⌘`-click / `Ctrl`-click | Follows a link on the line you're editing (elsewhere a click does) |
+
+### In search
+
+| Keys | What it does |
+|---|---|
+| `↓` `↑` | Moves through the results |
+| `Enter` | Opens the result |
+| `Esc` | Clears the search |
 
 ## Limits
 

@@ -2,6 +2,7 @@ import { applyTheme } from "./theme.js";
 import { joinText, onlineText, roleText, syncText } from "./sync-status.js";
 import { DM, privateLabel } from "./vault.js";
 import { confirmClick } from "./confirm.js";
+import { readable } from "./cheatsheet.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen, emitTo } = window.__TAURI__.event;
@@ -55,21 +56,7 @@ let savedTab = null;
 try { savedTab = localStorage.getItem("settings-tab"); } catch {}
 selectTab(tabs.find((t) => t.id === savedTab) ?? tabs[0]);
 
-// ---------- shortcuts: "CmdOrCtrl+Alt+N" shows as ⌘⌥N on macOS, Ctrl+Alt+N elsewhere ----------
-
-const MODS = isMac
-  ? { cmdorctrl: "⌘", cmd: "⌘", command: "⌘", super: "⌘", ctrl: "⌃", control: "⌃", alt: "⌥", option: "⌥", shift: "⇧" }
-  : { cmdorctrl: "Ctrl", ctrl: "Ctrl", control: "Ctrl", super: "Win", cmd: "Win", command: "Win", alt: "Alt", option: "Alt", shift: "Shift" };
-const KEYS = { ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Comma: ",", Period: ".", Slash: "/", Backslash: "\\",
-  Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Backquote: "`", Minus: "-", Equal: "=" };
-
-function readable(accel) {
-  return accel.split("+").map((part) => {
-    const mod = part.toLowerCase().replace(/^(command|cmd)or(control|ctrl)$/, "cmdorctrl");
-    const key = part.replace(/^(Key|Digit)(?=.)/, "");
-    return MODS[mod] ?? KEYS[key] ?? key;
-  }).join(isMac ? "" : "+");
-}
+// ---------- shortcuts: readable() in cheatsheet.js shows "CmdOrCtrl+Alt+N" as ⌘⌥N on macOS, Ctrl+Alt+N elsewhere ----------
 
 // A keydown as a Tauri accelerator. e.code, not e.key, so Option+N on a Mac is N and not "˜".
 function accelerator(e) {
@@ -137,7 +124,7 @@ function render(s) {
   current = s;
   applyTheme(s.theme);
   for (const key of ["quickNote", "capture", "newSession", "newPage"]) {
-    if (recording?.dataset.record !== key) $(`${key}-keys`).textContent = s[key] ? readable(s[key]) : "Not set";
+    if (recording?.dataset.record !== key) $(`${key}-keys`).textContent = s[key] ? readable(s[key], isMac) : "Not set";
   }
   for (const button of document.querySelectorAll("[data-clear]")) button.disabled = !s[button.dataset.clear];
   renderCampaigns(s);

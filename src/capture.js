@@ -1,5 +1,6 @@
 import { applyTheme } from "./theme.js";
 import { privateNote } from "./notes.js";
+import { NOTE_PREFIXES, PRIVATE_PREFIX } from "./cheatsheet.js";
 import { privateLabel } from "./vault.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -149,7 +150,8 @@ window.addEventListener("focus", () => invoke("session_status").then((s) => {
 function applySettings(s) {
   settings = s;
   applyTheme(s.theme);
-  input.placeholder = `Note…   @npc  #loot  !quest  ?mystery  "quote${privateText() ? "  ~private" : ""}`;
+  const symbols = NOTE_PREFIXES.map(({ keys, kind }) => keys[0] + kind);
+  input.placeholder = `Note…   ${[...symbols, ...(privateText() ? [`${PRIVATE_PREFIX}private`] : [])].join("  ")}`;
   showHint();
 }
 invoke("get_settings").then(applySettings);

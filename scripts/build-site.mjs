@@ -118,6 +118,7 @@ const NEXT = "0.7";
 const SOON = [
   ["pc", "Play with your party", `<p>Share a campaign with an invite link and everyone's notes land in one session timeline, each with who wrote it, and private notes stay with you (and the DM, if your party allows it). It syncs end-to-end encrypted, so the server can't read a word.</p>`],
   ["faction", "Characters and connections", `<p>Import the whole party from D&amp;D Beyond: class, level, background and portrait, refreshed after a level up. Home maps your NPCs, places and factions and who's linked to whom.</p>`],
+  ["note", "A cheat sheet", `<p>Every note symbol, link and shortcut on one page: <strong>Help &gt; Cheat Sheet</strong>, or <kbd>⌘/</kbd> (<kbd>Ctrl+/</kbd>).</p>`],
 ];
 
 const STEPS = [
