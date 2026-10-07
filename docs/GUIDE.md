@@ -116,7 +116,7 @@ The whole party can keep one campaign together: everyone jots notes during the g
 
 If the owner's notes haven't reached the sync server yet (say the owner shared the campaign and closed Lorekeeper right away), the dialog says **Waiting for the owner's notes to upload…**. After a minute it asks for a **Folder name**: ask the owner to open Lorekeeper and click **Join** again to wait some more, or type a name for the campaign's folder and click **Join**. Either way you don't need a new invite.
 
-Or just click the link: the invite page opens in your browser. Click **Open in Lorekeeper** (your browser may ask **Open Lorekeeper?** first), and Lorekeeper opens **Join a shared campaign** with the link filled in and its server shown. Nothing happens until you click **Join**. This works on a fresh install too, before you have a campaign. It needs Lorekeeper 0.7 or later; the page also has a **Download Lorekeeper** link. If your browser can't open Lorekeeper, paste the link as above.
+Or just click the link: the invite page asks your browser to open Lorekeeper (your browser may ask **Open Lorekeeper?** first; if nothing happens, click **Open in Lorekeeper** on the page), and Lorekeeper opens **Join a shared campaign** with the link filled in and its server shown. Nothing happens until you click **Join**. This works on a fresh install too, before you have a campaign. It needs Lorekeeper 0.7 or later; the page also has a **Download Lorekeeper** link. If your browser can't open Lorekeeper, paste the link as above.
 
 What changes in a shared campaign:
 
