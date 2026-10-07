@@ -192,9 +192,10 @@ test("quest status and the open quest list", () => {
     { path: "Quests/Quest 2.md", content: "---\nstatus: 'open'\n---\n" },
     { path: "Quests/Slay the dragon.md", content: "---\nstatus: failed\n---\n" },
     { path: "Quests/Later.md", content: "---\nstatus: on hold\n---\n" },
+    { path: "Quests/Map the mine.md", content: "---\nstatus: In progress\n---\n" },
     { path: "NPCs/Mirela.md", content: "---\nstatus: open\n---\n" }, // not a quest page
   ];
-  assert.deepEqual(openQuests(quests), ["Quests/Quest 2.md", "Quests/Quest 10.md", "Quests/Rescue Sildar.md"]);
+  assert.deepEqual(openQuests(quests), ["Quests/Map the mine.md", "Quests/Quest 2.md", "Quests/Quest 10.md", "Quests/Rescue Sildar.md"]);
   assert.deepEqual(openQuests([]), []);
 });
 

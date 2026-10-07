@@ -46,7 +46,8 @@ If the current session's last note is over 12 hours old, the box offers the next
 
 - **Sessions** open as a **Timeline** (every note with its time). **Journal** shows a recap of the session grouped by kind: what happened, NPCs, loot, quests, mysteries and quotes. Open quests are listed at the top.
 - **New page** (bottom of the sidebar, `⌘N` or `Ctrl+N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest, Lore or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
-- **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
+- **Quests** have a **Status** dropdown at the top of the page: **open**, **in progress**, **done** or **failed**. Open and in-progress quests are listed on **Home** with their status, and at the top of every session; done and failed ones get a check or a cross in the sidebar. **Edit > Undo** (`⌘Z` or `Ctrl+Z`) puts the old status back.
+- A quest's `reward` shows coins with their metal's icon: write amounts like `25gp`, `3 sp` or `120 cp` (`pp`, `gp`, `ep`, `sp` and `cp`).
 - **Edit** (the pencil at the top right, `⌘E` or `Ctrl+E`; **Done**, the check mark, goes back) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
 - **Rename** (`F2`, **File > Rename…**, or right-click the page) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
 - **Move** a page to another folder: drag it in the sidebar onto a folder (onto the list outside any folder for the top level), or use **File > Move to…** (or right-click it) and pick the **Folder**. The page stays open, `[[Name]]` links keep working, and a link with a folder in it (`[[NPCs/Vex]]`) follows the page. Links to another page with the same name get its folder, so they keep pointing there. A page never replaces one with the same name, sessions stay in `Sessions/` (and only sessions go there), and templates stay in `Templates/`. A moved page's icon follows its new folder unless it has a `type` property. **Edit > Undo** moves it back.
@@ -79,7 +80,7 @@ Documents/Lorekeeper/
 
 `Templates/` holds the starting text for new pages (`{{title}}` and `{{date}}` work), shared by every campaign in `Documents/Lorekeeper` and backed up as its own `Templates` folder. Edit them in any text editor. A campaign kept somewhere else uses its own `Templates/` if it has one. A template of your own, say `Templates/Monster.md`, adds **Monster** to **New page**; its pages go into a `Monsters` or `Monster` folder if you make one.
 
-**Connections:** Home maps your NPCs, PCs, places and factions and the `[[links]]` between them; each of those pages shows the ones a link away. A page shows its `portrait`, else the first picture in it, else its kind's icon. Click a page to open it; pinch (Windows and Linux: Ctrl+scroll) to zoom, drag to move, **Fit** (the corners button, or double-click) to see it all again. Sessions are left out, since they link to everyone.
+**Connections:** Home maps your NPCs, PCs, places and factions and the `[[links]]` between them; each of those pages shows the ones a link away. A page shows its `portrait`, else the first picture in it, else its kind's icon. Click a page to open it; scroll or pinch over it to zoom, drag to move, **Fit** (the corners button, or double-click) to see it all again. Sessions are left out, since they link to everyone.
 
 ## Campaigns
 

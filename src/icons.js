@@ -29,6 +29,10 @@ const PATHS = {
   // quest outcomes in the sidebar
   done: `<path d="M3 8.5l3 3 7-7"/>`,
   failed: `<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>`,
+  // hourglass: a quest in progress
+  progress: `<path d="M4 1.5h8M4 14.5h8M5 1.5c0 3 3 4 3 6.5S5 11.5 5 14.5M11 1.5c0 3-3 4-3 6.5s3 3.5 3 6.5"/><path d="M6.2 13.2 8 11.6l1.8 1.6z" fill="currentColor"/>`,
+  // coin, coloured by its metal (.coin-gp and so on): rewards
+  coin: `<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3.6"/>`,
   // open book: Home, the campaign's contents
   home: `<path d="M8 3.6C6.4 2.5 4.3 2 1.5 2.2v10.4c2.8-.2 4.9.3 6.5 1.4 1.6-1.1 3.7-1.6 6.5-1.4V2.2C11.7 2 9.6 2.5 8 3.6z"/><path d="M8 3.6V14"/>`,
   // Back / Forward
