@@ -1,4 +1,4 @@
-What's new in 0.7.3:
+What's new since 0.7.2:
 - Quests have a Status dropdown: open, in progress, done or failed. Home shows each open quest's status
 - Rewards show coins like D&D Beyond: write 25gp, 3 sp or 120 cp and each amount gets a coin of its metal
 - Zoom the Connections map with the mouse wheel, or pinch on a Mac trackpad

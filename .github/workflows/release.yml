@@ -10,15 +10,36 @@ on:
 permissions:
   contents: write
 
+# The platforms build in parallel between two one-off jobs: `draft` makes the one draft release first (left to the
+# builds, each made its own: v0.7.0 had two), and `updater` writes latest.json last (each build rewrote it, dropping
+# the others' platforms).
 jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v7
+      # A re-run reuses the draft for the tag. The update dialog shows the start of the notes (about 400 characters):
+      # keep "What's new" first in RELEASE_NOTES.md.
+      - id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          tag=${TAG:-v$version}
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate -q ".[] | select(.tag_name == \"$tag\" and .draft) | .id" | head -n1)
+          if [ -z "$id" ]; then
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" \
+              -f name="Lorekeeper $version" -F body=@RELEASE_NOTES.md -F draft=true -q .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: draft
     strategy:
       fail-fast: false
-      # One build at a time: run together, each looked for the draft before any existed and made its own
-      # (v0.7.0 had two drafts), and each rewrote latest.json, dropping the others' platforms.
-      # ponytail: about 3x slower; a job that creates the draft first and one that writes latest.json last would
-      # let them run in parallel again.
-      max-parallel: 1
       matrix:
         include:
           # One download per OS. "app" is needed on macOS for the updater's .app.tar.gz; the setup .exe
@@ -52,16 +73,6 @@ jobs:
         with:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
-      # The update dialog shows the start of these notes (about 400 characters): keep "What's new" first.
-      - name: Release notes
-        id: notes
-        shell: bash
-        run: |
-          {
-            echo 'body<<NOTES_EOF'
-            cat RELEASE_NOTES.md
-            echo 'NOTES_EOF'
-          } >> "$GITHUB_OUTPUT"
       # Tauri runs this signCommand on the app exe, the NSIS plugins, the uninstaller and the installer
       # while bundling, so the update .sig is made from the signed installer. Passwords stay in env
       # (jsign's "env:"), never in the config or on a command line.
@@ -94,8 +105,15 @@ jobs:
           ESIGNER_STOREPASS: ${{ secrets.ESIGNER_USERNAME }}|${{ secrets.ESIGNER_PASSWORD }}
           ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', '__VERSION__') }}
-          releaseName: Lorekeeper __VERSION__
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: true
+          releaseId: ${{ needs.draft.outputs.id }}
+          uploadUpdaterJson: false # the updater job writes it once every platform is up
           args: ${{ matrix.args }} ${{ env.SIGN_ARGS }}
+
+  updater:
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: node scripts/latest-json.mjs "$GITHUB_REPOSITORY" "${{ needs.draft.outputs.id }}" --upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

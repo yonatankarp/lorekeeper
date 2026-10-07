@@ -20,7 +20,7 @@ pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":fal
 ## CI and releases
 
 - `.github/workflows/ci.yml` runs `pnpm test` on pushes to `main` and on pull requests.
-- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release, building one platform at a time (about 3x slower, but parallel builds made two drafts and dropped platforms from `latest.json`): universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
+- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release: one job makes the draft, the platforms build in parallel into it, and a last job writes `latest.json` from their `.sig` files (`scripts/latest-json.mjs`), so builds can't make two drafts or drop each other's platforms. It builds a universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
 - `.github/workflows/sync-server.yml` tests `sync-protocol/` and `sync-server/` when they change, and on `main` publishes the server image to `ghcr.io/yonatankarp/lorekeeper-sync`.
 
 ## Sync server
