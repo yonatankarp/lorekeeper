@@ -110,7 +110,7 @@ details.more > .card { margin: 6px 0 0; color: var(--fg); font-size: 15px; }
 .row-label { min-width: 0; overflow-wrap: anywhere; }
 .row-label > span { display: block; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.card button { padding: 3px 12px; font-size: 16px; }
+.card button { padding: 3px 10px; font-size: 15px; }
 
 /* Kept in the page while empty so screen readers announce new text; no gaps while empty. */
 .error { margin: 0; color: var(--accent-text); font-size: 14px; }

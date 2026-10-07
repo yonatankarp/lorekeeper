@@ -27,7 +27,6 @@ const tauriWindow = window.__TAURI__.window?.getCurrentWindow();
 
 // notes: the pages shown (a shared session's folder is one, see pages in vault.js); files: every note as on disk.
 let vault = { folders: [], notes: [], files: [], conflicts: [], currentSession: "" };
-const canObsidian = () => vault.hasObsidian || vault.obsidianInstalled; // installed but no vault yet: the button explains how
 let templates = []; // Templates/ notes: used by "New page", hidden everywhere else
 let current = null; // open page path; null is Home
 const nav = navHistory(); // pages visited, for Back / Forward
@@ -57,8 +56,6 @@ const me = () => {
 const myFile = (path) => (note(path)?.parts && me() ? `${path}/${baseName(me())}.md` : null);
 /** The file Edit changes: in a shared session your own (see myFile), or its first when you haven't picked a character. */
 const editPath = (path = current) => (note(path)?.parts ? myFile(path) ?? note(path).parts[0]?.path ?? path : path);
-/** A file Obsidian can open for a page: in a shared session yours, or its first. */
-const obsidianPath = (path) => (note(editPath(path)) ? editPath(path) : note(path)?.parts?.[0]?.path ?? path);
 /** A session's notes in order: every player's, with authors, for a shared one, and the private ones you may read. */
 const sessionItems = (n) => (n.parts ? mergeTimelines([...n.parts, ...(n.private ?? [])]) : timeline(n.content));
 /** The open campaign's sharing settings, and who reads your private notes in it (see privateLabel). */
@@ -191,8 +188,8 @@ function propsHtml(props, path) {
     } else if (key === "dndbeyond") {
       // The sheet opens in the browser (the document click handler sends https links to open_url).
       html = sheetId(value)
-        ? `<a href="${escape(value)}">Character sheet</a> <button type="button" class="ghost props-action" data-ddb-refresh ` +
-          `title="Refresh from D&amp;D Beyond" aria-label="Refresh from D&amp;D Beyond">Refresh</button>`
+        ? `<a href="${escape(value)}">Character sheet</a> <button type="button" class="ghost icon-button props-action" data-ddb-refresh ` +
+          `title="Refresh from D&amp;D Beyond" aria-label="Refresh from D&amp;D Beyond">${icon("refresh")}</button>`
         : inlineLinks(value);
     } else if (path) {
       html = `<a class="wikilink" data-target="${escape(value)}" href="#">${icon(name)}${escape(value)}</a>`;
@@ -295,7 +292,7 @@ const legendHtml =
 const emptySessionHtml = (keys = globalKeys(settings)) => `<div class="empty-state">${icon("session")}<h2>No notes yet</h2>
   <p>Press <kbd>${escape(readable(keys.quickNote, mac))}</kbd> for a quick note, or <kbd>${escape(readable(keys.capture, mac))}</kbd> to save selected text (or the clipboard).</p>
   <p>Notes appear here live during the game. Start a note with a symbol to file it:</p>${legendHtml}
-  <p class="legend-note">A <kbd>!</kbd> note goes in this session's Quests section. To follow a quest across sessions, make a Quest page with + New page: open ones are listed at the top of every session.</p>
+  <p class="legend-note">A <kbd>!</kbd> note goes in this session's Quests section. To follow a quest across sessions, make a Quest page with New page: open ones are listed at the top of every session.</p>
   <p class="home-actions"><button type="button" class="button-link" data-action="cheatSheet">Cheat sheet</button></p></div>`;
 
 /**
@@ -361,7 +358,7 @@ function haveCampaign() {
 }
 
 /** Puts a zoomed or moved map back to showing everything (graph-view.js); the same markup is in index.html. */
-const FIT_BUTTON = `<button type="button" class="ghost graph-fit" title="Fit the whole map (or double-click it)" disabled>Fit</button>`;
+const FIT_BUTTON = `<button type="button" class="ghost icon-button graph-fit" aria-label="Fit" title="Fit the whole map (or double-click it)" disabled>${icon("fit")}</button>`;
 
 /** The campaign's contents page: latest session, open quests, the party, who and what came up lately, the sessions. */
 function homeHtml(graph) {
@@ -387,12 +384,9 @@ function homeHtml(graph) {
   if (latest) {
     const items = sessionItems(note(latest.path));
     cards.push(card("latest", "Latest session", "session", `
-      <h3 class="home-latest">${escape(latest.title)}</h3>
+      <h3 class="home-latest"><a href="#" data-path="${escape(latest.path)}">${escape(latest.title)}</a></h3>
       <p class="home-meta">${dated(latest, items.length)}</p>
-      ${items.length ? timelineHtml(items.slice(-5)) : `<p class="home-none">No notes yet. Press <kbd>⌘⌥N</kbd> during the game to jot one.</p>`}
-      <div class="home-actions">
-        <a href="#" class="button-link" data-path="${escape(latest.path)}">Open session</a>
-      </div>`, true));
+      ${items.length ? timelineHtml(items.slice(-5)) : `<p class="home-none">No notes yet. Press <kbd>${escape(readable(globalKeys(settings).quickNote, mac))}</kbd> during the game to jot one.</p>`}`, true));
   }
   if (quests.length) cards.push(card("quests", "Open quests", "quest", `<ul class="home-list">${quests.map((p) => `<li>${link(p, "quest")}</li>`).join("")}</ul>`));
   if (pcs.length) {
@@ -412,19 +406,18 @@ function homeHtml(graph) {
     const items = list.slice(0, 5).map((s) =>
       `<li><a href="#" data-path="${escape(s.path)}">${escape(s.title)}</a><span class="leader" aria-hidden="true"></span>` +
       `<span class="home-meta">${dated(s, s.count)}</span></li>`);
-    cards.push(card("sessions", "Sessions", "note", `<ul class="home-list contents">${items.join("")}</ul>
-      <button type="button" class="ghost" data-action="newSession">+ New session</button>`));
+    cards.push(card("sessions", "Sessions", "note", `<ul class="home-list contents">${items.join("")}</ul>`));
   }
   if (graph.edges.length) {
     const zoom = mac ? "Pinch" : "Ctrl+scroll";
     cards.push(card("map", "Connections", "faction", `<div class="graph-box"><canvas class="graph" role="img"
       aria-label="Map of ${graph.nodes.length} people, places and factions and who links to whom"></canvas>${FIT_BUTTON}</div>
-      <p class="home-meta">${zoom} to zoom, drag to move, Fit to see it all. Pages show their portrait or first picture.</p>`, true));
+      <p class="home-meta">${zoom} to zoom, drag to move, double-click to see it all. Pages show their portrait or first picture.</p>`, true));
   }
   if (!cards.length) {
     return `<div class="empty-state">${icon("home")}<h1>Welcome to Lorekeeper</h1>
       <p>This page gathers your campaign at a glance: the latest session, open quests, the party and who you've met.</p>
-      <p>Start a session, then press <kbd>⌘⌥N</kbd> during the game to jot a note.</p>
+      <p>Start a session, then press <kbd>${escape(readable(globalKeys(settings).quickNote, mac))}</kbd> during the game to jot a note.</p>
       <p class="home-actions"><button type="button" class="seal" data-action="newSession">+ New session</button>
       <button type="button" class="ghost" data-action="newPage">+ New page</button></p></div>`;
   }
@@ -464,14 +457,14 @@ function render() {
   $("forward").disabled = nav.find(1, alive, current) < 0;
   const copy = !!current && isDmCopy(current); // a player's private note on a DM's computer: read-only
   $("delete").disabled = !n || !!n.parts || copy; // a shared session is everyone's notes
-  $("rename").disabled = $("move").disabled = !n || keepsPlace(current) || copy;
-  for (const id of ["rename", "move", "delete"]) $(id).hidden = !n; // Home and the welcome page have no page to act on
+  $("delete").hidden = !n; // Home and the welcome page have no page to act on
   showPrivacy(n);
   $("backlinks").hidden = !n;
   $("connections").hidden = true; // until it has pages to show
   $("toggle").hidden = !n || copy;
-  $("obsidian").hidden = !n || !canObsidian() || copy;
-  $("toggle").textContent = editing ? "Done" : "Edit";
+  $("toggle").innerHTML = icon(editing ? "done" : "edit");
+  $("toggle").setAttribute("aria-label", editing ? "Done" : "Edit");
+  $("toggle").title = `${editing ? "Done" : "Edit"} (${readable("CmdOrCtrl+E", mac)})`;
   $("editor").hidden = !editing || !n;
   $("editor-hint").hidden = !editing || !n || !isSession(current);
   $("view").hidden = editing && !!n;
@@ -1232,8 +1225,6 @@ $("rename-form").addEventListener("submit", async (e) => {
   }
   $("rename-dialog").close();
 });
-$("rename").addEventListener("click", () => openRenameDialog(current));
-$("move").addEventListener("click", () => openRenameDialog(current, true));
 
 // Drag a page in the sidebar onto a folder, or onto the tree outside any folder for the top level; Move… (the Rename
 // dialog) does the same from the keyboard. dragDropEnabled is off in tauri.conf.json, so the webview gets these events.
@@ -1298,9 +1289,10 @@ function showPrivacy(n) {
   $("privacy").hidden = !movable;
   if (!movable) return;
   delete $("privacy").dataset.sure;
-  $("privacy").textContent = isPrivate(current) ? "Make shared" : "Make private";
-  $("privacy").title = isPrivate(current) ? "Move this page out of Private/: the whole party gets it"
-    : `Move this page into Private/ (${label}). Anyone who already synced it keeps the version they have`;
+  $("privacy").innerHTML = icon(isPrivate(current) ? "unlock" : "lock");
+  $("privacy").setAttribute("aria-label", isPrivate(current) ? "Make shared" : "Make private");
+  $("privacy").title = isPrivate(current) ? "Make shared: move this page out of Private/, and the whole party gets it"
+    : `Make private: move this page into Private/ (${label}). Anyone who already synced it keeps the version they have`;
 }
 
 /**
@@ -1322,7 +1314,8 @@ $("privacy").addEventListener("click", async () => {
   // Sharing a private page is for everyone at once: the first click asks.
   if (isPrivate(from) && $("privacy").dataset.sure !== "yes") {
     $("privacy").dataset.sure = "yes";
-    $("privacy").textContent = "Share it with the party?";
+    $("privacy").textContent = "Share it with the party?"; // the next render puts the icon back
+    $("privacy").setAttribute("aria-label", "Share it with the party?");
     return;
   }
   try {
@@ -1351,35 +1344,6 @@ $("notice-ok").addEventListener("click", async () => {
   $("notice").hidden = true;
   if (!sh) return;
   await invoke("save_settings", { settings: { ...settings, sharing: { ...settings.sharing, [path]: { ...sh, privateNotice: false } } } }).catch(say);
-});
-
-// ---------- Obsidian ----------
-
-let guidePath = null; // the page the guide was opened for
-/** Opens `path` in Obsidian, or explains how to add the notes folder as a vault; `launch` also starts Obsidian. */
-async function openInObsidian(path, launch = false) {
-  let r;
-  try {
-    r = await invoke("open_in_obsidian", { path, launch });
-  } catch (err) {
-    return say(err);
-  }
-  if (!r.needsVault) return $("obsidian-dialog").open && $("obsidian-dialog").close();
-  if ($("obsidian-dialog").open) return;
-  guidePath = path;
-  $("obsidian-path").textContent = r.path;
-  $("obsidian-copied").textContent = "";
-  $("obsidian-launch").hidden = !r.installed;
-  $("obsidian-dialog").showModal();
-}
-
-$("obsidian").addEventListener("click", () => openInObsidian(obsidianPath(current)));
-$("obsidian-launch").addEventListener("click", () => openInObsidian(guidePath, true));
-$("obsidian-copy").addEventListener("click", () => {
-  const text = $("obsidian-path").textContent;
-  navigator.clipboard.writeText(text)
-    .catch(() => invoke("plugin:clipboard-manager|write_text", { text }))
-    .then(() => ($("obsidian-copied").textContent = "Copied"), (err) => ($("obsidian-copied").textContent = `Copy failed: ${err}`));
 });
 
 $("new-page").addEventListener("click", () => openNewDialog());
@@ -1432,7 +1396,6 @@ const actions = {
   newPage: () => $("new-dialog").open || (haveCampaign() && openNewDialog()),
   newSession: () => haveCampaign() && $("new-session").click(),
   joinCampaign: () => invoke("open_settings").then(() => emitTo("settings", "open-join")).catch(say),
-  obsidian: () => current && canObsidian() && $("obsidian").click(),
   settings: () => invoke("open_settings").catch(say),
   cheatSheet: () => ($("cheat-dialog").open ? $("cheat-dialog").close() : modal() || openCheatSheet()),
   home: () => modal() || open(null),
@@ -1521,7 +1484,6 @@ async function buildMenu() {
         item("New Page", "newPage", "CmdOrCtrl+N"),
         item("New Session", "newSession", "CmdOrCtrl+Shift+N"),
         sep,
-        item("Open in Obsidian", "obsidian"),
         item("Rename…", "renamePage", "F2"),
         item("Move to…", "movePage"),
         item("Move to Trash…", "deletePage"), // ⌘⌫ comes from the keydown handler, so text fields keep it
@@ -1564,7 +1526,6 @@ $("sidebar").addEventListener("contextmenu", (e) => {
   const items = file !== undefined
     ? [
         { text: "Open", action: () => open(file) },
-        ...(canObsidian() ? [{ text: "Open in Obsidian", action: () => openInObsidian(obsidianPath(file)) }] : []),
         { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
@@ -1704,10 +1665,20 @@ $("campaign").addEventListener("click", () => {
 // From the tray menu and from Settings after adding a campaign.
 listen("switch-campaign", (e) => switchCampaign(e.payload));
 
+// Shortcuts in tooltips and the search box, the way this OS writes them (⌘K on macOS, Ctrl+K elsewhere).
+for (const el of document.querySelectorAll("[data-shortcut]")) {
+  const keys = readable(el.dataset.shortcut, mac);
+  if (el.placeholder) el.placeholder += `  ${keys}`;
+  else el.title += ` (${keys})`;
+}
 $("home").insertAdjacentHTML("afterbegin", icon("home"));
+$("new-page").insertAdjacentHTML("afterbegin", icon("note"));
+$("new-session").insertAdjacentHTML("afterbegin", icon("session"));
 $("back").innerHTML = icon("back");
 $("forward").innerHTML = icon("forward");
 $("delete").innerHTML = icon("trash");
+$("notice-ok").innerHTML = icon("close");
+$("connections").querySelector(".graph-fit").innerHTML = icon("fit");
 // A pinch is Ctrl+scroll, which Tauri's zoom script (and WebView2) turn into zooming the whole window, a step per
 // event; the map takes pinches for itself first. The app zooms with Cmd/Ctrl +, - and 0 only.
 document.addEventListener("wheel", (e) => {

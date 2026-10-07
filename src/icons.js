@@ -16,8 +16,10 @@ const PATHS = {
   location: `<path d="M3.5 14.5V2.5H5.5V4.5h1.5v-2h2v2h1.5v-2h2v12z"/><path d="M6.8 14.5v-2.8a1.2 1.2 0 0 1 2.4 0v2.8"/>`,
   // round potion flask
   item: `<path d="M6.3 1.5h3.4M7 1.5v4.1a4.5 4.5 0 1 0 2 0V1.5"/><path d="M4 10.5h8"/>`,
-  // padlock: private notes
+  // padlock: private notes, and Make private
   lock: `<rect x="3.5" y="7" width="9" height="7.5" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/><circle cx="8" cy="10.6" r=".9" fill="currentColor"/>`,
+  // open padlock: Make shared
+  unlock: `<rect x="3.5" y="7" width="9" height="7.5" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 4.9-.7"/><circle cx="8" cy="10.6" r=".9" fill="currentColor"/>`,
   // pennant on a pole
   faction: `<path d="M3.5 14.5v-13M3.5 2.5h9l-2 3 2 3h-9"/>`,
   // closed tome with a clasp
@@ -32,6 +34,20 @@ const PATHS = {
   // Back / Forward
   back: `<path d="M10 3 5 8l5 5"/>`,
   forward: `<path d="M6 3l5 5-5 5"/>`,
+  // pencil: Edit
+  edit: `<path d="M11 2.5l2.5 2.5-8 8H3v-2.5z"/><path d="M9.5 4l2.5 2.5"/>`,
+  // four corners: fit the map
+  fit: `<path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>`,
+  // circling arrow: refresh
+  refresh: `<path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M11.8 1.8v2.8H9"/>`,
+  // two sheets: copy
+  copy: `<rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M10.5 5.5v-3h-8v8h3"/>`,
+  // arrow out of a box: open in the browser
+  external: `<path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5"/><path d="M11.5 9.5v4h-9v-9h4"/>`,
+  // folder: show in Finder / Explorer
+  folder: `<path d="M1.5 3.5h4.5l1.5 1.5h7v8.5h-13z"/>`,
+  // cross: dismiss, turn off
+  close: `<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>`,
   // waste bin: delete
   trash: `<path d="M2.5 4.5h11M6.5 4.5V2.5h3v2M4 4.5l.7 9h6.6l.7-9M6.7 7v4.5M9.3 7v4.5"/>`,
   // d20, face on

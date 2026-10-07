@@ -9,6 +9,7 @@ import {
 import { PREFIX as KINDS } from "./notes.js";
 import { splitFrontmatter } from "./vault.js";
 import { cycleHeading, diff, linkTarget, nameQuery, togglePrefix } from "./editor-text.js";
+import { readable } from "./cheatsheet.js";
 
 const external = Annotation.define(); // setValue/append: text from disk, not the user's edit
 const quiet = [external.of(true), Transaction.addToHistory.of(false)]; // and undo never removes it
@@ -245,8 +246,8 @@ const pageCompletions = (pageNames) => (cx) => {
 };
 
 const TOOLS = [
-  ["Bold", "⌘B", "B", wrap("**")],
-  ["Italic", "⌘I", "I", wrap("*")],
+  ["Bold", "CmdOrCtrl+B", "B", wrap("**")],
+  ["Italic", "CmdOrCtrl+I", "I", wrap("*")],
   ["Heading", "", "H", eachLine(cycleHeading)],
   ["Bulleted list", "", "•", eachLine((t) => togglePrefix(t, "- "))],
   ["Checkbox", "", "☐", eachLine((t) => togglePrefix(t, "- [ ] "))],
@@ -265,7 +266,7 @@ function toolbar(view) {
     b.type = "button";
     b.className = "ghost";
     b.textContent = text;
-    b.title = shortcut ? `${label} (${shortcut})` : label;
+    b.title = shortcut ? `${label} (${readable(shortcut, document.documentElement.dataset.platform === "macos")})` : label;
     b.setAttribute("aria-label", label);
     b.tabIndex = bar.children.length ? -1 : 0;
     b.addEventListener("click", () => {

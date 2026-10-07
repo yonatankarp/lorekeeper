@@ -21,7 +21,7 @@ On macOS, allow **Accessibility** the first time you use `⌘⇧S` (System Setti
 | off until you set it | New session, without opening a window. |
 | off until you set it | New page, opens the New page dialog. |
 
-Change them in **Settings > Shortcuts**. The save-selection shortcut must include `⌘` / `Ctrl`.
+Change them in **Settings > Shortcuts** with the pencil next to each (**Change**). The save-selection shortcut must include `⌘` / `Ctrl`.
 
 The note box, and on macOS **Settings…** and **Open Lorekeeper…** from the menu bar icon, take you back to the app you were in (Discord, say) when you close them.
 
@@ -45,13 +45,13 @@ If the current session's last note is over 12 hours old, the box offers the next
 ## After the game
 
 - **Sessions** open as a **Timeline** (every note with its time). **Journal** shows a recap of the session grouped by kind: what happened, NPCs, loot, quests, mysteries and quotes. Open quests are listed at the top.
-- **+ New page** (`⌘N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest, Lore or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
+- **New page** (bottom of the sidebar, `⌘N` or `Ctrl+N`): pick what you're making (NPC, PC, Location, Item, Faction, Quest, Lore or a plain note) and name it. It goes into the right folder with the right starting text. Clicking a `[[link]]` to a page that doesn't exist yet does the same.
 - **Quests** have a `status`: change it to `done` or `failed` when the party finishes one.
-- **Edit** (`⌘E`) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
-- **Rename** (`F2`) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
-- **Move** a page to another folder: drag it in the sidebar onto a folder (onto the list outside any folder for the top level), or use **Move** (**File > Move to…**, or right-click it) and pick the **Folder**. The page stays open, `[[Name]]` links keep working, and a link with a folder in it (`[[NPCs/Vex]]`) follows the page. Links to another page with the same name get its folder, so they keep pointing there. A page never replaces one with the same name, sessions stay in `Sessions/` (and only sessions go there), and templates stay in `Templates/`. A moved page's icon follows its new folder unless it has a `type` property. **Edit > Undo** moves it back.
-- **Right-click** a page in the sidebar for **Open**, **Open in Obsidian**, **Show Vault in Finder** (**Show Vault in Explorer** on Windows, **Open Vault Folder** on Linux), **Copy Link** (`[[Name]]`), **Rename…**, **Move to…** and **Delete…**, or a folder for **New Page Here…** (**New Session** on `Sessions/`). Sessions keep their "Session N" names and stay in `Sessions/`, so they don't offer **Rename…** or **Move to…**, and a shared session holds everyone's notes, so it doesn't offer **Delete…** either. In the editor and text fields, right-click gives the usual **Cut**, **Copy** and **Paste**.
-- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and embedded as `![[Pasted image 20261005143012.png]]`, the way Obsidian does it; the page shows the image. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB.
+- **Edit** (the pencil at the top right, `⌘E` or `Ctrl+E`; **Done**, the check mark, goes back) is a live-preview Markdown editor. Your text is never reformatted, and hotkey notes that arrive while you type are kept.
+- **Rename** (`F2`, **File > Rename…**, or right-click the page) changes a page's name, and every `[[link]]` to it, in sessions and pages alike, follows the new name. **Edit > Undo** (`⌘Z`) renames it back and puts the links back too.
+- **Move** a page to another folder: drag it in the sidebar onto a folder (onto the list outside any folder for the top level), or use **File > Move to…** (or right-click it) and pick the **Folder**. The page stays open, `[[Name]]` links keep working, and a link with a folder in it (`[[NPCs/Vex]]`) follows the page. Links to another page with the same name get its folder, so they keep pointing there. A page never replaces one with the same name, sessions stay in `Sessions/` (and only sessions go there), and templates stay in `Templates/`. A moved page's icon follows its new folder unless it has a `type` property. **Edit > Undo** moves it back.
+- **Right-click** a page in the sidebar for **Open**, **Show Vault in Finder** (**Show Vault in Explorer** on Windows, **Open Vault Folder** on Linux), **Copy Link** (`[[Name]]`), **Rename…**, **Move to…** and **Delete…**, or a folder for **New Page Here…** (**New Session** on `Sessions/`). Sessions keep their "Session N" names and stay in `Sessions/`, so they don't offer **Rename…** or **Move to…**, and a shared session holds everyone's notes, so it doesn't offer **Delete…** either. In the editor and text fields, right-click gives the usual **Cut**, **Copy** and **Paste**.
+- **Images** (maps, handouts): paste or drop one into the editor. It's saved in the notes folder's `Attachments/` and embedded as `![[Pasted image 20261005143012.png]]` (the same syntax Obsidian uses); the page shows the image. Add `|300` for a width (`![[map.png|300]]`); `![alt](Maps/map.png)` works too. PNG, JPG, GIF, WebP and SVG, up to 20 MB.
 - **Linked from** at the bottom of every page lists the sessions and pages that mention it.
 - `⌘K` searches, `⌘,` opens Settings, `⌘+` / `⌘−` zoom.
 
@@ -60,8 +60,8 @@ If the current session's last note is over 12 hours old, the box offers the next
 PC pages can come straight from D&D Beyond character sheets:
 
 1. **Sign in** (once): **Settings > General > D&D Beyond > Sign in…** opens D&D Beyond's own sign-in page. Your password goes to D&D Beyond, never to Lorekeeper. Google sign-in is often refused in app windows like this one; use a Wizards, Apple or Twitch login instead. Public characters work without signing in; campaigns and "Campaign Only" characters need it.
-2. **Import:** **+ New page**, choose **PC**, then **Import from D&D Beyond…**. Paste a character link (`dndbeyond.com/characters/…`) or a campaign link (`dndbeyond.com/campaigns/…`) and click **Look up**. A character brings the rest of its campaign's party along. Tick the characters you want and click **Import**. Each one updates its page in `PCs/` (the one linking to its sheet, else the one with its name) or gets a new page from the PC template.
-3. **Refresh:** on a PC page, **Refresh** next to **Character sheet** reads the character again, say after a level up. **Edit > Undo** puts the page back, after an import too.
+2. **Import:** **New page**, choose **PC**, then **Import from D&D Beyond…**. Paste a character link (`dndbeyond.com/characters/…`) or a campaign link (`dndbeyond.com/campaigns/…`) and click **Look up**. A character brings the rest of its campaign's party along. Tick the characters you want and click **Import**. Each one updates its page in `PCs/` (the one linking to its sheet, else the one with its name) or gets a new page from the PC template.
+3. **Refresh:** on a PC page, **Refresh** (the circling arrow next to **Character sheet**) reads the character again, say after a level up. **Edit > Undo** puts the page back, after an import too.
 
 What D&D Beyond updates: `race`, `class` (with subclass), `level`, `background`, `alignment` and the `dndbeyond` sheet link. `player` and the `portrait` (saved into `Attachments/`) are only filled in when empty, so a player's real name you typed stays. **Appearance** and **Personality** are written from the sheet only while those sections are empty. Nothing else changes: your other properties and notes are never touched.
 
@@ -77,11 +77,9 @@ Documents/Lorekeeper/
 
 `Lore/` is for anything that isn't a person, place or thing: gods, history, legends.
 
-`Templates/` holds the starting text for new pages (Obsidian's `{{title}}` and `{{date}}` work), shared by every campaign in `Documents/Lorekeeper` and backed up as its own `Templates` folder. Edit them in Obsidian or any editor. A campaign kept somewhere else uses its own `Templates/` if it has one. A template of your own, say `Templates/Monster.md`, adds **Monster** to **+ New page**; its pages go into a `Monsters` or `Monster` folder if you make one.
+`Templates/` holds the starting text for new pages (`{{title}}` and `{{date}}` work), shared by every campaign in `Documents/Lorekeeper` and backed up as its own `Templates` folder. Edit them in any text editor. A campaign kept somewhere else uses its own `Templates/` if it has one. A template of your own, say `Templates/Monster.md`, adds **Monster** to **New page**; its pages go into a `Monsters` or `Monster` folder if you make one.
 
-**Connections:** Home maps your NPCs, PCs, places and factions and the `[[links]]` between them; each of those pages shows the ones a link away. A page shows its `portrait`, else the first picture in it, else its kind's icon. Click a page to open it; pinch (Windows and Linux: Ctrl+scroll) to zoom, drag to move, **Fit** (or double-click) to see it all again. Sessions are left out, since they link to everyone.
-
-**Obsidian:** open the notes folder as a vault (or put it inside an existing vault) and the **Obsidian** button opens pages there. Until then the button shows how.
+**Connections:** Home maps your NPCs, PCs, places and factions and the `[[links]]` between them; each of those pages shows the ones a link away. A page shows its `portrait`, else the first picture in it, else its kind's icon. Click a page to open it; pinch (Windows and Linux: Ctrl+scroll) to zoom, drag to move, **Fit** (the corners button, or double-click) to see it all again. Sessions are left out, since they link to everyone.
 
 ## Campaigns
 
@@ -131,11 +129,11 @@ What changes in a shared campaign:
 
 **Private notes.** In a shared campaign, the **Private** folder in the sidebar (with a padlock) holds notes that are yours alone: what your character suspects, plans the party shouldn't know yet. They sync, encrypted, to your other computers only, or also to the DM if the campaign's owner allows it; the other players never get them, and neither does the owner unless the owner is the DM. Every place that shows them says which: **Private: only you** or **Private: you and the DM**.
 
-- **+ New page** has a **Private** switch: the page goes into `Private/` (an NPC into `Private/NPCs/`).
+- **New page** has a **Private** switch: the page goes into `Private/` (an NPC into `Private/NPCs/`).
 - In the note box, start a note with `~` to make it private: `~@Halia lies about the mine` goes into your private notes for this session (`Private/Sessions/Session 4/Sibling 5.md`), filed under NPCs as usual. The box shows who will read it.
 - A session shows your private notes in its Timeline and Journal with a padlock, next to everyone's shared ones.
-- **Make private** / **Make shared** in a page's header moves it into `Private/` or out of it (making it shared asks first: the whole party gets it, and **Edit > Undo** (`⌘Z` or `Ctrl+Z`) never shares a page). Links keep working. Making a page private keeps your changes from then on to yourself, but doesn't take back the version players already synced: it stays in their trash.
-- Private notes are files in your campaign folder, so your backups include them, and Obsidian sees them too.
+- **Make private** / **Make shared** (the padlock in a page's header) moves it into `Private/` or out of it (making it shared asks first: the whole party gets it, and **Edit > Undo** (`⌘Z` or `Ctrl+Z`) never shares a page). Links keep working. Making a page private keeps your changes from then on to yourself, but doesn't take back the version players already synced: it stays in their trash.
+- Private notes are files in your campaign folder, so your backups include them, and other apps on your computer can read them too.
 
 **Roles: owner, DM and player.** Whoever shares the campaign is its **owner**, which on its own is just a player who looks after the party. Everyone else joins as a **Player** or a **DM**, as their invite said. In **Party…**, the owner can change anyone's role next to their name, and invite a DM who **Can manage players**: invites players and DMs, cancels invites, removes or re-invites players. Under **Private notes**, the owner chooses **Private notes visible to: the player only** or **the player and the DM**, and turns on **I'm the DM** if they run the game themselves (only then do they read private notes as the DM). "The DM" means everyone with the DM role, so with the player and the DM chosen, whoever the owner makes a DM (or a DM who manages players invites as one) reads private notes too. Everyone else sees their role and that setting there; when it changes, Lorekeeper tells them once.
 
@@ -153,7 +151,7 @@ It's not a live co-editor: two people changing the same page at the same time (s
 
 **Stop sharing** (the owner): **Party…**, then **Stop sharing**, and **Stop sharing** again in the dialog that asks. The campaign is deleted from the sync server, with everyone's private notes there, and every player's sync stops at once: Lorekeeper tells them "The owner stopped sharing" the campaign, and their copy stays on their computer. Yours stays too, as a campaign of your own; share it again later and everyone needs a new invite. A player whose computer was off at the time sees **Removed from this campaign** when it next connects. **Delete campaign** on a campaign you share offers **Stop sharing and delete** first; **Delete only** leaves it on the server, where you can't manage it any more.
 
-Keep the campaign folder where it is: Lorekeeper syncs one folder per campaign, and a folder it can't find doesn't sync until it's back. You can still keep the folder in a cloud drive or open it in Obsidian.
+Keep the campaign folder where it is: Lorekeeper syncs one folder per campaign, and a folder it can't find doesn't sync until it's back. You can still keep the folder in a cloud drive or open it in another app.
 
 ## Backups
 
@@ -165,7 +163,7 @@ Keep the campaign folder where it is: Lorekeeper syncs one folder per campaign, 
 
 **To restore**, click **Restore…** next to a backup (it restores the campaign that's open), pick a day (folder), a version (GitHub) or the current backup (Dropbox, Google Drive), and choose where the restored notes go. They're downloaded into a new folder (by default `<campaign> restored <date>` next to your notes folder); your notes folder and the backup are never changed. Then **Show in Finder** (Explorer on Windows) to copy back what you need, or **Open as a new campaign** to switch to it. It then backs up on its own like any other campaign, so it never touches the backup it came from. You can also restore by hand: copy from a dated folder, download from the Dropbox or Google Drive website, or use **Code > Download ZIP** on GitHub (the campaign is its own folder in it).
 
-To look at a backup of the campaign that's open: **Show in Finder** (Explorer on Windows) for the backup folder, or **Open in Dropbox**, **Open in Google Drive** or **Open on GitHub**, which open it in your browser.
+To look at a backup of the campaign that's open: the folder button (**Show in Finder**, or Explorer on Windows) for the backup folder, or the arrow button (**Open in Dropbox**, **Open in Google Drive** or **Open on GitHub**), which opens it in your browser.
 
 Backups run on each new session, every 30 minutes while notes change, and once a day. Keeping the notes folder itself in a cloud drive syncs it, but sync isn't a backup: deletions sync too.
 

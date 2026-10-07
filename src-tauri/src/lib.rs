@@ -27,14 +27,13 @@ mod dndbeyond;
 mod dropbox;
 mod gdrive;
 mod github;
-mod obsidian;
 mod restore;
 mod shared;
 mod sync;
 mod updater;
 mod watch;
 
-// ---------- notes on disk: an Obsidian-compatible vault (default <Documents>/Lorekeeper) ----------
+// ---------- notes on disk: a Markdown vault (default <Documents>/Lorekeeper) ----------
 //   Sessions/Session N.md   written by the hotkeys
 //   Sessions/Session N/<PC>.md   the same in a campaign shared with your party: one file per player
 //   Private/...   in a shared campaign, your private notes (same layout; synced to your own private space only)
@@ -467,8 +466,6 @@ struct Vault {
     /// Image files, for ![[map.png]] embeds.
     images: Vec<String>,
     current_session: String,
-    has_obsidian: bool,
-    obsidian_installed: bool,
     /// A DM's copies of players' private notes: member id -> PC name (see add_dm_copies).
     dm_players: BTreeMap<String, String>,
 }
@@ -856,36 +853,6 @@ fn open_external(target: impl AsRef<std::ffi::OsStr>) {
     let _ = std::process::Command::new(cmd).arg(target).spawn();
 }
 
-/// A file of the newest session to open, without making one (in a shared campaign that would start a session for
-/// everyone): your own, else its Session N.md, else a teammate's.
-fn latest_file(dir: &Path, me: Option<&str>) -> Option<PathBuf> {
-    let n = latest_session(dir).ok().filter(|&n| n > 0)?;
-    let first = || fs::read_dir(session_folder(dir, n)).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "md"));
-    [notes_file(dir, n, me), session_path(dir, n)].into_iter().find(|p| p.is_file()).or_else(first)
-}
-
-/// Opens the current session in Obsidian once the notes folder is in a vault. Otherwise starts Obsidian
-/// with the folder's path on the clipboard, ready for "Open folder as vault", or shows the folder.
-fn open_notes(app: &AppHandle) {
-    let dir = notes_dir(app);
-    if !dir.is_absolute() {
-        show_window(app, "main"); // its first-run view: create or join a campaign
-    } else if obsidian::vault_root(&dir).is_some() {
-        let me = author(&app.state::<Mutex<Settings>>().lock().unwrap()).ok().flatten();
-        match latest_file(&dir, me.as_deref()) {
-            Some(session) => obsidian::open(&session),
-            None => open_external(&dir),
-        }
-    } else if obsidian::installed() {
-        obsidian::launch();
-        let _ = app.clipboard().write_text(dir.to_string_lossy());
-        notify(app, "Add your notes to Obsidian", "Click “Open folder as vault” and choose the folder (its path is copied).");
-    } else {
-        open_external(&dir);
-        notify(app, "Obsidian isn't installed", "Get it free at obsidian.md. Showing the notes folder instead.");
-    }
-}
-
 /// Presses Cmd+C (macOS) / Ctrl+C in whatever app is in front.
 fn send_copy() -> Result<(), String> {
     use enigo::{Direction::*, Enigo, Key, Keyboard, Settings};
@@ -1166,8 +1133,6 @@ fn read_vault(app: AppHandle) -> Result<Vault, String> {
         let folder = session_folder(&root, n);
         vault.current_session = rel_path(&root, &if folder.is_dir() { folder } else { session_path(&root, n) });
     }
-    vault.has_obsidian = obsidian::vault_root(&root).is_some();
-    vault.obsidian_installed = obsidian::installed();
     add_shared_templates(&root, &library_dir(&app), &mut vault);
     add_dm_copies(&root, &mut vault);
     Ok(vault)
@@ -1673,23 +1638,6 @@ fn pc_pages(root: &Path) -> Vec<String> {
     pcs
 }
 
-/// Opens a page in Obsidian. Outside a vault it can't, so the window shows how to add the notes folder;
-/// `launch` (the guide's "Open Obsidian" button) also starts Obsidian then.
-#[tauri::command]
-fn open_in_obsidian(app: AppHandle, path: String, launch: Option<bool>) -> Result<obsidian::Opened, String> {
-    let root = notes_dir(&app);
-    let file = vault_file(&root, &path)?;
-    if obsidian::vault_root(&root).is_some() {
-        obsidian::open(&file);
-        return Ok(obsidian::Opened::Opened { opened: true });
-    }
-    let installed = obsidian::installed();
-    if installed && launch == Some(true) {
-        obsidian::launch();
-    }
-    Ok(obsidian::Opened::NeedsVault { needs_vault: true, path: root.to_string_lossy().into_owned(), installed })
-}
-
 /// Opens web links from notes in the browser; anything else is refused.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -1906,14 +1854,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let autostart = app.autolaunch().is_enabled().unwrap_or(false);
     let review = MenuItem::with_id(app, "review", "Open Lorekeeper…", true, None::<&str>)?;
     let new = MenuItem::with_id(app, "new", "New Session", true, None::<&str>)?;
-    let folder = MenuItem::with_id(app, "folder", "Open in Obsidian", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let update = MenuItem::with_id(app, "update", "Check for Updates…", true, None::<&str>)?;
     let login = CheckMenuItem::with_id(app, "login", "Launch at Login", true, autostart, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let campaigns = Submenu::with_id(app, "campaigns", "Campaign", true)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&review, &new, &folder, &campaigns, &sep, &settings, &update, &login, &quit])?;
+    let menu = Menu::with_items(app, &[&review, &new, &campaigns, &sep, &settings, &update, &login, &quit])?;
     app.manage(login); // for set_launch_at_login
     app.manage(campaigns); // for fill_campaign_menu
     fill_campaign_menu(app);
@@ -1934,7 +1881,6 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "review" => show_from_menu(app, "main"),
             "new" => start_new_session(app),
-            "folder" => open_notes(app),
             "settings" => show_from_menu(app, "settings"),
             "update" => updater::check(app, true),
             "login" => {
@@ -2010,7 +1956,6 @@ pub fn run() {
             start_session,
             session_status,
             campaign_pcs,
-            open_in_obsidian,
             open_url,
             get_settings,
             save_settings,
@@ -2359,10 +2304,6 @@ mod tests {
         fs::File::options().write(true).open(session_folder(&dir, 5).join("Mirela.md")).unwrap().set_modified(old).unwrap();
         assert_eq!(new_session(&dir, Some("Vex")).unwrap(), session_folder(&dir, 6).join("Vex.md"));
         assert!(fs::read_to_string(session_folder(&dir, 6).join("Vex.md")).unwrap().contains("session: 6\n"));
-        // Open in Obsidian never makes a file: yours, else a teammate's.
-        assert_eq!(latest_file(&dir, Some("Vex")), Some(session_folder(&dir, 6).join("Vex.md")));
-        assert_eq!(latest_file(&dir, me), Some(session_folder(&dir, 6).join("Vex.md")));
-        assert!(!session_folder(&dir, 6).join("Sibling 5.md").exists());
 
         // Shared never appends to a Session N.md from before sharing: the next session starts as a folder.
         let solo = temp_dir("shared-from-solo");
