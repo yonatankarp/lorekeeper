@@ -876,15 +876,16 @@ async fn join_page_is_locked_down() {
     for never in ["fetch", "XMLHttpRequest", "sendBeacon", "console", "Storage", "cookie", "open(", "http", "src", "innerHTML", "postMessage"] {
         assert!(!script.contains(never), "{never}");
     }
-    // It never opens the app by itself (a browser without Lorekeeper 0.7+ would show an error on arrival): it only
-    // fills in the button, and the player clicks it.
+    // It opens the app's link, fills in the button for when the browser didn't ask, and navigates nowhere else.
     assert!(script.contains("open.href = url;") && script.contains("open.hidden = false;"));
-    for never in ["location.replace", "location.assign", "location.href", "location =", "location=", "replace(", "assign(", "click(", "setTimeout", "dispatchEvent"] {
-        assert!(!script.contains(never), "navigates by itself: {never}");
+    assert_eq!(script.matches("location.replace(url);").count(), 1);
+    assert_eq!(script.matches("replace(").count(), 1, "the one navigation is to the app's link");
+    for never in ["location.assign", "location.href", "location =", "location=", "assign(", "click(", "setTimeout", "dispatchEvent"] {
+        assert!(!script.contains(never), "navigates elsewhere: {never}");
     }
     // The fallbacks: the button the script fills, the download page, and pasting by hand.
     assert!(page.contains("id=\"open\"") && page.contains("Open in Lorekeeper"));
-    assert!(page.contains("Click <b>Open in Lorekeeper</b>. Your browser may ask to open Lorekeeper."));
+    assert!(page.contains("Your browser may ask to open Lorekeeper. If nothing happens, click <b>Open in Lorekeeper</b>."));
     assert!(page.contains("Needs Lorekeeper 0.7 or later. Don't have it, or have an older version? <a href=\"https://yonatankarp.com/lorekeeper/\" rel=\"noreferrer\">Download Lorekeeper</a>, then open this link again."));
     assert!(page.contains("Keep it within your party."));
     assert!(!page.contains("http-equiv"), "no meta refresh");
