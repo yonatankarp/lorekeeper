@@ -244,7 +244,7 @@ fn save_state(file: &Path, state: &State) -> io::Result<()> {
 /// What the engine reports. Called from the engine's task; keep it quick.
 pub trait Sink: Send + Sync + 'static {
     fn status(&self, status: &Status);
-    /// Who else is connected: their names, decrypted.
+    /// Who else is connected: their names, decrypted. Empty once the engine ended, whatever stopped it.
     fn presence(&self, names: &[String]);
     /// Something the player should know (a file too big to sync, a refused change). Never contains file names or
     /// secrets.
@@ -346,7 +346,11 @@ impl Engine {
 /// An engine and the task that runs it; the caller spawns the task on its tokio runtime.
 pub fn engine(cfg: Config, sink: Arc<dyn Sink>) -> (Engine, impl Future<Output = ()> + Send + 'static) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (Engine { tx }, run(cfg, sink, rx))
+    let ended = sink.clone();
+    (Engine { tx }, async move {
+        run(cfg, sink, rx).await;
+        ended.presence(&[]); // every way it stops (Stop, Leave, a close code) leaves nobody shown online
+    })
 }
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
