@@ -454,6 +454,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(|| async { Redirect::temporary("https://yonatankarp.com/lorekeeper/") }))
         .route("/healthz", get(|| async { "ok" }))
         .route("/join/{room}/{invite}", get(join_page))
+        .route("/icon.png", get(icon))
         .route("/v1/rooms", post(create_room))
         .route("/v1/rooms/{room}", delete(delete_room))
         .route("/v1/rooms/{room}/changes", get(changes))
@@ -758,7 +759,8 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// What a browser shows for an invite link. It never touches the invite, loads nothing and can't be framed. Its one
+/// What a browser shows for an invite link. It never touches the invite, loads only the app's icon from this server
+/// and can't be framed. Its one
 /// script (allowed by its hash, nothing else runs) hands the link to the app as `lorekeeper://join?link=<the link>`,
 /// so the browser asks "Open Lorekeeper?", and puts it on the **Open in Lorekeeper** button too. A browser without
 /// Lorekeeper 0.7+ may show an error for that; the page says what's needed. The key in the fragment goes only there:
@@ -773,10 +775,20 @@ async fn join_page(State(state): State<AppState>) -> impl IntoResponse {
     (headers, Html(page))
 }
 
-/// The join page's policy: its own script by hash, inline styles, nothing else.
+/// The app's icon, for the join page: built in, so the page loads nothing from anywhere else.
+async fn icon() -> impl IntoResponse {
+    let headers = [
+        (header::CONTENT_TYPE, "image/png"),
+        (header::CACHE_CONTROL, "public, max-age=86400"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+    ];
+    (headers, &include_bytes!("../assets/icon.png")[..])
+}
+
+/// The join page's policy: its own script by hash, inline styles, the icon from this server, nothing else.
 static JOIN_CSP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let hash = encode_blob(&Sha256::digest(JOIN_SCRIPT.as_bytes()));
-    format!("default-src 'none'; script-src 'sha256-{hash}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+    format!("default-src 'none'; script-src 'sha256-{hash}'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 });
 
 /// Runs only for a well-formed link: the path the server routed here and a 32-byte key after #. It fills in and shows
@@ -798,12 +810,14 @@ const JOIN_PAGE: &str = r#"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>Lorekeeper invite</title>
+<link rel="icon" href="/icon.png">
 <style>
   :root { color-scheme: light dark; --bg: #f4ecd8; --card: #fbf6e9; --ink: #3b2f22; --muted: #7a6650; --accent: #8b2e1f; --line: #d9c9a3; --on-accent: #fbf6e9; }
   @media (prefers-color-scheme: dark) { :root { --bg: #1f1a14; --card: #2a231b; --ink: #ece2cc; --muted: #b3a284; --accent: #e07a5f; --line: #4a3f30; --on-accent: #1f1a14; } }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink);
          font: 17px/1.55 Georgia, "Iowan Old Style", "Palatino Linotype", serif; }
   main { max-width: 32rem; margin: 16px; padding: 28px 30px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  .logo { display: block; margin: 0 0 14px; }
   h1 { margin: 0 0 12px; font-size: 1.5rem; color: var(--accent); font-weight: normal; }
   p { margin: 0 0 12px; }
   b { font-weight: 600; }
@@ -815,6 +829,7 @@ const JOIN_PAGE: &str = r#"<!doctype html>
 </head>
 <body>
 <main>
+  <img class="logo" src="/icon.png" width="64" height="64" alt="Lorekeeper">
   <h1>You've been invited to a shared campaign</h1>
   <p><a id="open" class="open" hidden>Open in Lorekeeper</a></p>
   <p>Your browser may ask to open Lorekeeper. If nothing happens, click <b>Open in Lorekeeper</b>. Lorekeeper then shows the invite, and joins only when you click <b>Join</b>.</p>
