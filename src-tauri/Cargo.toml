@@ -35,6 +35,8 @@ ring = "0.17"
 base64 = "0.23"
 tauri-plugin-updater = "2"
 trash = "5.2.9"
+# lorekeeper:// invite links from the join page (deeplink.rs).
+tauri-plugin-deep-link = "2"
 # Shared campaigns (sync.rs): the protocol crate, and a WebSocket client on Tauri's tokio runtime with rustls and
 # ring, the same TLS as ureq (no OpenSSL).
 sync-protocol = { path = "../sync-protocol" }
@@ -80,6 +82,10 @@ objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorksp
 # O_NOFOLLOW when sync reads files to upload.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Windows and Linux start a new process for each lorekeeper:// link: it hands the link to the running copy and quits.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

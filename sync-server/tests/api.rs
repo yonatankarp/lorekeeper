@@ -184,9 +184,12 @@ impl Ws {
         let mut all = Vec::new();
         loop {
             match self.recv().await {
-                ServerMessage::Changes { changes, more, .. } => {
+                ServerMessage::Changes { changes, more, total, .. } => {
                     all.extend(changes);
                     if !more {
+                        // The count the replay announced is what it sent: never a file this member may not see (the
+                        // tests write nothing during a replay).
+                        assert_eq!(total, Some(all.len() as u64), "replay total");
                         break;
                     }
                 }
@@ -855,10 +858,28 @@ async fn join_page_is_locked_down() {
     let uri = format!("/join/{}/{}", random_id(), random_id());
     let res = app.oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let csp = res.headers()["content-security-policy"].to_str().unwrap();
+    let csp = res.headers()["content-security-policy"].to_str().unwrap().to_string();
     assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"), "{csp}");
     assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(res.headers()["referrer-policy"], "no-referrer");
     assert!(!res.headers().contains_key("access-control-allow-origin"), "no CORS anywhere");
+    let page = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+
+    // Exactly one script, allowed by its hash: no inline script runs but this one, and nothing loads.
+    assert_eq!(page.matches("<script").count(), 1);
+    let script = page.split("<script>").nth(1).unwrap().split("</script>").next().unwrap();
+    let hash = encode_blob(&<sha2::Sha256 as sha2::Digest>::digest(script.as_bytes()));
+    assert!(csp.contains(&format!("script-src 'sha256-{hash}';")), "{csp}");
+    assert!(!csp.contains("unsafe-eval") && !csp.contains("script-src 'unsafe-inline'"), "{csp}");
+    // It hands the link to the app and nowhere else: no request, no log, no storage, no other page.
+    assert!(script.contains("\"lorekeeper://join?link=\" + encodeURIComponent(location.origin + path + key)"));
+    for never in ["fetch", "XMLHttpRequest", "sendBeacon", "console", "Storage", "cookie", "open(", "http", "src", "innerHTML", "postMessage"] {
+        assert!(!script.contains(never), "{never}");
+    }
+    // The fallbacks: the button the script fills, the download page, and pasting by hand.
+    assert!(page.contains("id=\"open\"") && page.contains("Open in Lorekeeper"));
+    assert!(page.contains("<a href=\"https://yonatankarp.com/lorekeeper/\" rel=\"noreferrer\">Download Lorekeeper</a>"));
+    assert!(page.contains("Join a shared campaign") && page.contains("the part after <b>#</b>"));
 }
 
 // ---------- private notes, roles and re-invites ----------
@@ -1339,4 +1360,115 @@ async fn removal_deletes_the_private_space() {
     assert!(replay.is_empty());
     so.drain().await;
     assert!(matches!(so.put(3, "Lore/Big.md", 0, &"y".repeat(1500)).await, ServerMessage::Ack { .. }));
+}
+
+// ---------- deleting a room and leaving it ----------
+
+/// Only the owner deletes a room. Everything in it goes at once: files (shared and private), members, tokens and
+/// invites; every socket closes with 4003; afterwards the room answers like one that never existed, and the
+/// server-wide connection budget it held is free again.
+#[tokio::test]
+async fn the_owner_deletes_the_room_and_everything_in_it() {
+    let s = start(|c| {
+        busy(c);
+        c.max_connections_total = 4;
+    })
+    .await;
+    let (room, owner) = s.room().await;
+    let manager = s.join(&room, &owner, "dm", true, "enc(M)").await;
+    let player = s.join(&room, &owner, "player", false, "enc(P)").await;
+    let (_, pending) = s.http("POST", &format!("/v1/rooms/{room}/invites"), Some(&owner), &[], None).await;
+    let pending = pending["invite"].as_str().unwrap().to_string();
+    let (mut so, mut sm, mut sp) = (s.ws(&room, &owner).await, s.ws(&room, &manager).await, s.ws(&room, &player).await);
+    so.hello(0, "enc(O)").await;
+    sm.hello(0, "enc(M)").await;
+    sp.hello(0, "enc(P)").await;
+    so.drain().await; // presence
+    assert!(matches!(so.put(1, "Lore/World.md", 0, "shared").await, ServerMessage::Ack { .. }));
+    sp.drain().await;
+    assert!(matches!(sp.private(2, "Secrets.md", 0, "mine").await.0, ServerMessage::Ack { .. }));
+
+    // Managers and players can't; nothing changes.
+    let room_url = format!("/v1/rooms/{room}");
+    let owner_only = (StatusCode::FORBIDDEN, json!({ "error": "owner_only" }));
+    assert_eq!(s.http("DELETE", &room_url, Some(&manager), &[], None).await, owner_only);
+    assert_eq!(s.http("DELETE", &room_url, Some(&player), &[], None).await, owner_only);
+    assert_eq!(s.http("DELETE", &room_url, None, &[], None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(s.http("DELETE", &format!("/v1/rooms/{}", random_id()), Some(&owner), &[], None).await.0, StatusCode::UNAUTHORIZED);
+    assert!(s.changes_text(&room, &player, 0).await.contains("\"seq\":2"));
+
+    // The owner can: every socket closes with 4003.
+    assert_eq!(s.http("DELETE", &room_url, Some(&owner), &[], None).await.0, StatusCode::NO_CONTENT);
+    for ws in [&mut so, &mut sm, &mut sp] {
+        while ws.next().await.is_some() {}
+        assert_eq!(ws.closed, Some(4003));
+    }
+    // Gone like a room that never existed: every token is refused, and the invite with it.
+    let unauthorized = (StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" }));
+    for token in [&owner, &manager, &player] {
+        assert_eq!(s.http("GET", &format!("{room_url}/changes"), Some(token), &[], None).await, unauthorized);
+        assert_eq!(s.ws_status(&room, Some(token)).await, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(s.http("DELETE", &room_url, Some(&owner), &[], None).await, unauthorized);
+    assert_eq!(s.redeem(&room, &pending, "x").await.0, StatusCode::NOT_FOUND);
+    // The connections it held are free: another room fills the server's budget of 4 again.
+    let (room2, owner2) = s.room().await;
+    let mut socks = Vec::new();
+    for _ in 0..4 {
+        let mut ws = s.ws(&room2, &owner2).await;
+        ws.hello(0, "enc(O2)").await;
+        socks.push(ws);
+    }
+    assert_eq!(s.ws_status(&room2, Some(&owner2)).await, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A member leaves on their own: their token stops working, their sockets close with 4001, their private notes go,
+/// and DMs who read them are told. Nobody else is touched; the owner can't leave (they delete the room).
+#[tokio::test]
+async fn a_member_leaves_on_their_own() {
+    let s = start(busy).await;
+    let (room, owner) = s.room().await;
+    let dm = s.join(&room, &owner, "dm", false, "enc(D)").await;
+    let a = s.join(&room, &owner, "player", false, "enc(A)").await;
+    let b = s.join(&room, &owner, "player", false, "enc(B)").await;
+    assert_eq!(s.set_dm_reads(&room, &owner, true).await.0, StatusCode::OK);
+    let (mut sa, mut sd) = (s.ws(&room, &a).await, s.ws(&room, &dm).await);
+    sa.hello(0, "enc(A)").await;
+    sd.hello(0, "enc(D)").await;
+    let (_, _, pblob) = sa.private(1, "Secrets.md", 0, "mine").await;
+    sd.drain().await;
+    let me = format!("/v1/rooms/{room}/members/me");
+
+    assert_eq!(s.http("DELETE", &me, Some(&owner), &[], None).await, (StatusCode::BAD_REQUEST, json!({ "error": "owner_cannot_leave" })));
+    assert_eq!(s.http("DELETE", &me, None, &[], None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(s.http("DELETE", &me, Some(&a), &[], None).await.0, StatusCode::NO_CONTENT);
+    while sa.next().await.is_some() {}
+    assert_eq!(sa.closed, Some(4001));
+    assert_eq!(s.http("DELETE", &me, Some(&a), &[], None).await.0, StatusCode::UNAUTHORIZED, "the token is gone");
+    let msgs = sd.drain().await;
+    assert!(msgs.iter().any(|m| matches!(m, ServerMessage::Access { members, .. } if members.len() == 3)), "{msgs:?}");
+    assert!(!s.changes_text(&room, &dm, 0).await.contains(&pblob), "their private notes went");
+    // Everyone else stays.
+    let (_, list) = s.http("GET", &format!("/v1/rooms/{room}/members"), Some(&owner), &[], None).await;
+    assert_eq!(list.as_array().unwrap().len(), 3);
+    assert_eq!(s.http("GET", &format!("/v1/rooms/{room}/changes"), Some(&b), &[], None).await.0, StatusCode::OK);
+}
+
+/// Deleting rooms and leaving them share a per-IP budget of 20 an hour.
+#[tokio::test]
+async fn deletes_are_rate_limited_per_ip() {
+    let s = start(|c| {
+        open_config(c);
+        c.rooms_per_hour = 100;
+    })
+    .await;
+    for _ in 0..20 {
+        let (room, owner) = s.room().await;
+        assert_eq!(s.http("DELETE", &format!("/v1/rooms/{room}"), Some(&owner), &[], None).await.0, StatusCode::NO_CONTENT);
+    }
+    let (room, owner) = s.room().await;
+    let player = s.member(&room, &owner, "p").await;
+    assert_eq!(s.http("DELETE", &format!("/v1/rooms/{room}"), Some(&owner), &[], None).await.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(s.http("DELETE", &format!("/v1/rooms/{room}/members/me"), Some(&player), &[], None).await.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(s.http("GET", &format!("/v1/rooms/{room}/changes"), Some(&owner), &[], None).await.0, StatusCode::OK, "the room stays");
 }

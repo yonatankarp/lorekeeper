@@ -578,8 +578,15 @@ pub struct PresenceMember {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ServerMessage {
-    /// A replay batch after `hello`; the last one has `more: false`.
-    Changes { seq: u64, changes: Vec<Change>, more: bool },
+    /// A replay batch after `hello`; the last one has `more: false`. `total`: how many changes the whole replay holds
+    /// (counted when it starts; live writes meanwhile can add a few), for a progress bar. Servers before it leave it out.
+    Changes {
+        seq: u64,
+        changes: Vec<Change>,
+        more: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+    },
     /// A live write by another connection.
     Change(Change),
     Presence { members: Vec<PresenceMember> },
@@ -914,8 +921,12 @@ mod tests {
             r#"{"type":"presence","members":[{"member_id":"m","member":"n","role":"owner"}]}"#
         );
         assert_eq!(
-            json(&ServerMessage::Changes { seq: 3, changes: vec![change], more: false }),
+            json(&ServerMessage::Changes { seq: 3, changes: vec![change.clone()], more: false, total: None }),
             r#"{"type":"changes","seq":3,"changes":[{"id":"i","seq":3,"blob":null}],"more":false}"#
+        );
+        assert_eq!(
+            json(&ServerMessage::Changes { seq: 3, changes: vec![change], more: false, total: Some(1) }),
+            r#"{"type":"changes","seq":3,"changes":[{"id":"i","seq":3,"blob":null}],"more":false,"total":1}"#
         );
         let access = ServerMessage::Access { member_id: "m".into(), role: Role::Dm, manage: true, owner_is_dm: false, dm_reads_private: false, members: vec![] };
         assert_eq!(json(&access), r#"{"type":"access","member_id":"m","role":"dm","manage":true,"owner_is_dm":false,"dm_reads_private":false}"#);

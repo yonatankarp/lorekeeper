@@ -524,7 +524,11 @@ pub fn open_backup(app: AppHandle, source: Source) -> Result<(), String> {
 #[tauri::command]
 pub fn restore_target(app: AppHandle, parent: String) -> String {
     let vault = PathBuf::from(settings(&app).vault_path);
-    let parent = if parent.is_empty() { vault.parent().unwrap_or(&vault).to_path_buf() } else { PathBuf::from(parent) };
+    let parent = match vault.parent() {
+        _ if !parent.is_empty() => PathBuf::from(parent),
+        Some(dir) if vault.is_absolute() => dir.to_path_buf(),
+        _ => crate::library_dir(&app), // no campaign open yet
+    };
     suggest(&parent, &backup::campaign_name(&vault.to_string_lossy()), Local::now().date_naive()).to_string_lossy().into_owned()
 }
 

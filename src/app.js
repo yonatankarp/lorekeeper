@@ -1,11 +1,11 @@
 // The Lorekeeper window: browse the vault, read and edit pages, follow [[links]], search, backlinks.
 import { marked } from "./vendor/marked.esm.js";
 import { createEditor } from "./editor.js";
-import { escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
+import { authorLink, escape, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, stripLinks, timeline, toHtml } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, questStatus, recentlyMentioned, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  dmCopyOf, isDmCopy, isPrivate, privateLabel, unprivate,
+  DM, dmCopyOf, isDmCopy, isPrivate, privateLabel, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -16,7 +16,7 @@ import { ATTACHMENTS, freeName, imageLabel, isImage, imageTarget, pastedName, re
 import { onlineText, syncText } from "./sync-status.js";
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+const { listen, emitTo } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 const { platform } = document.documentElement.dataset; // set by platform.js
 const mac = platform === "macos";
@@ -163,14 +163,16 @@ const STATUS_ICONS = { done: "done", failed: "failed", dead: "failed" };
 const prettyDate = (v) =>
   /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : null;
 
-/** A note's author in a shared session: their name linking to their PC page, with its portrait small when it has one. */
+/** A note's author in a shared session: their name linking to their PC page, with its portrait small when it has one
+ * (the DM without a character is plain "DM": see authorLink). */
 function authorHtml(author) {
   if (!author) return "";
+  if (author === DM) return authorLink(author); // never a PC page named DM, nor its portrait
   const page = pcPath(author, paths());
   const value = page ? splitFrontmatter(note(page).content).props.find(([k]) => k.toLowerCase() === "portrait")?.[1] ?? "" : "";
   const target = imageTarget(value);
   const pic = target && resolveImage(target, vault.images ?? []) ? `<span class="author-portrait">${imageHtml(target, "")}</span>` : "";
-  return `<a class="wikilink author" data-target="${escape(page ? page.replace(/\.md$/i, "") : author)}" href="#">${pic}${escape(author)}</a>`;
+  return authorLink(author, page ? page.replace(/\.md$/i, "") : author, pic);
 }
 
 /** A page's properties, as a small stat block: see shownProps. */
@@ -337,6 +339,24 @@ function sessionHtml(n) {
 
 // ---------- home ----------
 
+/** Before there's a campaign: make one, or join one a friend shares (the Join dialog is in Settings). */
+const firstRunHtml = `<div class="empty-state first-run">${icon("home")}<h1>Welcome to Lorekeeper</h1>
+  <p>Each campaign keeps its notes in a folder of its own, in the Lorekeeper folder in Documents. Start with one.</p>
+  <form id="first-run-form" class="first-run-form" novalidate>
+    <label>Campaign name <input id="first-run-name" autocomplete="off" spellcheck="false" placeholder="Curse of Strahd" /></label>
+    <button class="seal">Create campaign</button>
+  </form>
+  <p id="first-run-error" class="first-run-error" role="alert"></p>
+  <p>Playing in a campaign someone shared with you?</p>
+  <p><button type="button" class="ghost" data-action="joinCampaign">Join a shared campaign…</button></p></div>`;
+
+/** Hotkeys and buttons that make pages need a campaign: false (and says so) before there is one. */
+function haveCampaign() {
+  if (settings.vaultPath) return true;
+  say("Create or join a campaign first");
+  return false;
+}
+
 /** Puts a zoomed or moved map back to showing everything (graph-view.js); the same markup is in index.html. */
 const FIT_BUTTON = `<button type="button" class="ghost graph-fit" title="Fit the whole map (or double-click it)" disabled>Fit</button>`;
 
@@ -452,6 +472,8 @@ function render() {
   $("editor-hint").hidden = !editing || !n || !isSession(current);
   $("view").hidden = editing && !!n;
 
+  $("new-page").disabled = $("new-session").disabled = !settings.vaultPath;
+  if (startView(settings) === "first-run") return setView(firstRunHtml);
   const graph = !n || GRAPH_KINDS.includes(kindOf(current)) ? connections(vault.notes, vault.images ?? []) : null;
   if (!n) {
     setView(homeHtml(graph));
@@ -1396,8 +1418,9 @@ const zoomKey = (key) => () => window.dispatchEvent(new KeyboardEvent("keydown",
 const actions = {
   search: () => $("search").focus(),
   toggle: () => current && $("toggle").click(),
-  newPage: () => $("new-dialog").open || openNewDialog(),
-  newSession: () => $("new-session").click(),
+  newPage: () => $("new-dialog").open || (haveCampaign() && openNewDialog()),
+  newSession: () => haveCampaign() && $("new-session").click(),
+  joinCampaign: () => invoke("open_settings").then(() => emitTo("settings", "open-join")).catch(say),
   obsidian: () => current && canObsidian() && $("obsidian").click(),
   settings: () => invoke("open_settings").catch(say),
   home: () => modal() || open(null),
@@ -1574,10 +1597,50 @@ function applySettings(next) {
     refresh();
   }
   else render();
-  $("campaign").textContent = campaignName(settings.vaultPath);
+  $("campaign").textContent = settings.vaultPath ? campaignName(settings.vaultPath) : "No campaign";
   showSync();
   showNotice();
+  showMoveOffer();
 }
+
+// ---------- the Lorekeeper folder: Templates/ and a folder per campaign ----------
+
+$("view").addEventListener("submit", async (e) => {
+  if (e.target.id !== "first-run-form") return;
+  e.preventDefault();
+  $("first-run-error").textContent = "";
+  try {
+    await switchCampaign(await invoke("create_campaign", { name: $("first-run-name").value }));
+  } catch (err) {
+    $("first-run-error").textContent = String(err);
+  }
+});
+
+/** Offers, until you answer, to move a campaign kept in the Lorekeeper folder itself into a folder of its own. */
+async function showMoveOffer() {
+  const offer = settings.vaultPath ? await invoke("move_offer").catch(() => null) : null;
+  const shown = !$("move-offer").hidden;
+  $("move-offer").hidden = startView(settings, offer) !== "move";
+  if (offer && !shown) $("move-name").value = offer;
+}
+
+$("move-offer").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("move-offer-error").textContent = "";
+  await flush(); // the open page is saved where it is, then moves with the rest
+  if (inConflict) return ($("move-offer-error").textContent = "Keep your version or load theirs first.");
+  try {
+    const path = await invoke("move_campaign", { name: $("move-name").value });
+    $("move-offer").hidden = true;
+    say(`Moved your notes to ${path}`);
+  } catch (err) {
+    $("move-offer-error").textContent = String(err);
+  }
+});
+$("move-no").addEventListener("click", () => {
+  $("move-offer").hidden = true;
+  invoke("save_settings", { settings: { ...settings, moveDeclined: true } }).catch(say);
+});
 
 // ---------- a shared campaign's sync status and who's online (shared.rs), in the sidebar's footer ----------
 
@@ -1585,7 +1648,7 @@ const syncSnapshots = new Map();
 /** Teammates' names come from the network: set as text only. */
 function showSync() {
   const path = settings.vaultPath, snap = syncSnapshots.get(path);
-  const text = [syncText(snap, settings.sharing?.[path], true), onlineText(snap)].filter(Boolean).join(" · ");
+  const text = [syncText(snap, settings.sharing?.[path], campaignName(path)), onlineText(snap)].filter(Boolean).join(" · ");
   $("sync-line").textContent = text;
   $("sync-line").hidden = !text;
 }
@@ -1653,7 +1716,7 @@ $("editor-hint").innerHTML = Object.entries(KINDS)
 listen("vault-changed", refresh);
 listen("settings-changed", (e) => applySettings(e.payload));
 // The global New Page hotkey (Rust shows this window first).
-listen("new-page", () => $("new-dialog").open || openNewDialog());
+listen("new-page", actions.newPage);
 window.addEventListener("focus", refresh);
 window.addEventListener("beforeunload", flush);
 

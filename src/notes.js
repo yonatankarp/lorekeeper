@@ -1,7 +1,7 @@
 // Turns a session file into a timeline and sections grouped by kind (the Journal view).
 // Hotkey notes look like "- 21:43 @Mirela the innkeeper"; the first character picks the section.
 // Hand-written bullets and paragraphs count too, so nothing typed in the editor is silently dropped.
-import { authorOf, baseName, isPrivate, naturally, pcPath, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
+import { authorOf, baseName, DM, isPrivate, naturally, pcPath, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
 import { IMAGE_EMBED } from "./images.js";
 
 export const SECTIONS = [
@@ -117,14 +117,16 @@ export function mergeTimelines(parts) {
 
 /**
  * parse() for a shared session: the merged notes grouped by kind, each followed by its author as a link to their PC page
- * (`paths`: the vault's pages), "... ([[PCs/Sibling 5|Sibling 5]])". Image-only notes get no author. A private note
- * (from a file in Private/ or a DM's copy) is { text, lock: true, path }, for toHtml to mark.
+ * (`paths`: the vault's pages), "... ([[PCs/Sibling 5|Sibling 5]])", or "... (DM)" for a DM without a character. Image-only
+ * notes get no author. A private note (from a file in Private/ or a DM's copy) is { text, lock: true, path }, for toHtml
+ * to mark.
  */
 export function parseMerged(parts, paths = []) {
   const groups = Object.fromEntries(SECTIONS.map(([key]) => [key, []]));
   for (const { kind, text, author, path } of mergeTimelines(parts)) {
-    const page = author && (pcPath(author, paths)?.replace(/\.md$/i, "") ?? author);
-    const shown = page && text.replace(IMAGE_EMBED, "").trim() ? `${text} ([[${page}|${author}]])` : text;
+    const page = author && author !== DM && (pcPath(author, paths)?.replace(/\.md$/i, "") ?? author);
+    const by = author === DM ? DM : page && `[[${page}|${author}]]`;
+    const shown = by && text.replace(IMAGE_EMBED, "").trim() ? `${text} (${by})` : text;
     groups[kind].push(isPrivate(path) ? { text: shown, lock: true, path } : shown);
   }
   return { title: parts.map((p) => parse(p.content).title).find(Boolean) ?? "", groups };
@@ -133,8 +135,16 @@ export function parseMerged(parts, paths = []) {
 /** The start of `pc`'s own file in shared session folder `folder`, as lib.rs writes it (start_file). */
 export function playerFile(folder, pc, date) {
   const n = baseName(folder).replace(/^Session /, "");
-  return `---\nsession: ${n}\ndate: ${date}\nauthor: "[[${pc}]]"\n---\n# Session ${n} - ${date}\n\n`;
+  const author = pc === DM ? DM : `"[[${pc}]]"`; // the DM has no PC page to link to
+  return `---\nsession: ${n}\ndate: ${date}\nauthor: ${author}\n---\n# Session ${n} - ${date}\n\n`;
 }
+
+/**
+ * A note's author in the timeline, as HTML: a link to `page` (their PC page, or their name) with `picHtml` (their
+ * portrait) before the name; the DM without a character is plain "DM", with no link or portrait.
+ */
+export const authorLink = (author, page, picHtml = "") =>
+  author === DM ? `<span class="author">${DM}</span>` : `<a class="wikilink author" data-target="${escape(page)}" href="#">${picHtml}${escape(author)}</a>`;
 
 /**
  * Escapes text and renders its [[links]] with `link(target, labelHtml, match)` (target raw, label escaped; match[1]

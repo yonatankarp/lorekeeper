@@ -20,7 +20,7 @@ use tokio::sync::{watch, Notify};
 use tokio::time::{interval_at, timeout, Instant, Interval};
 
 use crate::{
-    allow_read, authenticate, bearer, changes_page, db, lock, write, ApiError, AppState, Caller, Outcome, MAX_MEMBER_LEN,
+    allow_read, authenticate, bearer, changes_page, db, lock, replay_total, write, ApiError, AppState, Caller, Outcome, MAX_MEMBER_LEN,
 };
 
 const PING_EVERY: Duration = Duration::from_secs(30);
@@ -37,9 +37,11 @@ const MESSAGES_PER_MINUTE: u32 = 600;
 /// Live sockets per member (their devices), so one token can't take a room's or the server's
 /// whole share.
 const MEMBER_CONNECTIONS: usize = 8;
-/// Close codes: the member was removed, or re-invited and signed in on another computer.
+/// Close codes: the member was removed (or left), re-invited and signed in on another computer, or the owner deleted
+/// the room.
 pub(crate) const REVOKED: u16 = 4001;
 pub(crate) const REPLACED: u16 = 4002;
+pub(crate) const DELETED: u16 = 4003;
 
 /// Rooms' hubs, and the number of sockets in all of them (for the server-wide cap).
 #[derive(Default)]
@@ -104,10 +106,11 @@ pub(crate) fn access_changed(state: &AppState, room: &str) {
     }
 }
 
-/// Closes a member's sockets with `code` (removed, or signed in elsewhere).
-pub(crate) fn kick(state: &AppState, room: &str, member_id: &str, code: u16) {
+/// Closes a member's sockets with `code` (removed, or signed in elsewhere); every socket of the room when `member_id`
+/// is None (the room was deleted).
+pub(crate) fn kick(state: &AppState, room: &str, member_id: Option<&str>, code: u16) {
     if let Some(hub) = lock(&state.0.hubs).0.get(room) {
-        for c in hub.conns.values().filter(|c| c.member_id == member_id) {
+        for c in hub.conns.values().filter(|c| member_id.is_none_or(|m| c.member_id == m)) {
             c.kick.code.store(code, Ordering::Relaxed);
             c.kick.notify.notify_one();
         }
@@ -271,7 +274,12 @@ async fn run(mut socket: WebSocket, mut slot: Slot, caller: Caller) {
             biased;
             _ = kick.notify.notified() => {
                 let code = kick.code.load(Ordering::Relaxed);
-                close(&mut socket, code, if code == REPLACED { "replaced" } else { "revoked" }).await;
+                let reason = match code {
+                    REPLACED => "replaced",
+                    DELETED => "campaign deleted by its owner",
+                    _ => "revoked",
+                };
+                close(&mut socket, code, reason).await;
                 break;
             }
             _ = async { shutdown.wait_for(|down| *down).await.map(|_| ()) } => {
@@ -399,6 +407,8 @@ async fn handle(state: &AppState, socket: &mut WebSocket, slot: &mut Slot, s: &m
             slot.set(Some(member), access.role);
             s.access = Some(access);
             let (mut since, mut dm_since) = (since, dm_since.unwrap_or(since));
+            // For the app's progress ("Downloading 120 of 340 files"); a count that fails only loses that.
+            let total = replay_total(state, &s.caller.room, &s.caller.member_id, since, dm_since).await.ok();
             loop {
                 let Ok(page) = changes_page(state, &s.caller.room, &s.caller.member_id, since, dm_since).await else {
                     return send(socket, &error(None, "internal")).await;
@@ -408,7 +418,7 @@ async fn handle(state: &AppState, socket: &mut WebSocket, slot: &mut Slot, s: &m
                     s.last_sent = s.last_sent.max(last.seq);
                 }
                 let more = page.more;
-                if !send(socket, &ServerMessage::Changes { seq: page.seq, changes: page.changes, more }).await {
+                if !send(socket, &ServerMessage::Changes { seq: page.seq, changes: page.changes, more, total }).await {
                     return false;
                 }
                 if !more {

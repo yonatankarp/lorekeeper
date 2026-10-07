@@ -46,12 +46,14 @@ pub(crate) fn changed_by_others(old: &Stamps, new: &Stamps, own: &[PathBuf]) -> 
     old.keys().chain(new.keys()).any(|p| old.get(p) != new.get(p) && !own.contains(p))
 }
 
-/// Looks at the open campaign every 3 seconds (only file sizes and times, so it's cheap). A campaign switch starts over
-/// quietly, since switching refreshes the windows itself.
+/// Looks at the open campaign every 3 seconds (only file sizes and times, so it's cheap), and at every other campaign
+/// that syncs, whose local changes (an edit in Obsidian) its engine pushes. A campaign switch starts over quietly, since
+/// switching refreshes the windows itself.
 /// ponytail: an outside change to a file the app wrote in the same 3 seconds is missed until the next change or focus.
 pub(crate) fn start(app: AppHandle) {
     thread::spawn(move || {
         let (mut root, mut last) = (PathBuf::new(), Stamps::new());
+        let mut others: BTreeMap<PathBuf, Stamps> = BTreeMap::new();
         loop {
             thread::sleep(Duration::from_secs(3));
             let dir = crate::notes_dir(&app);
@@ -62,9 +64,18 @@ pub(crate) fn start(app: AppHandle) {
                 let _ = app.emit("vault-changed", ());
             }
             if dir == root && last != now {
-                crate::shared::poke(); // anything changed, the app's own writes too: a shared campaign syncs it
+                crate::shared::poke(&dir); // anything changed, the app's own writes too: a shared campaign syncs it
             }
             (root, last) = (dir, now);
+            let synced: Vec<PathBuf> = crate::shared::synced().into_iter().filter(|p| *p != root).collect();
+            others.retain(|p, _| synced.contains(p));
+            for path in synced {
+                let now = stamps(&path);
+                if others.get(&path).is_some_and(|last| *last != now) {
+                    crate::shared::poke(&path);
+                }
+                others.insert(path, now);
+            }
         }
     });
 }

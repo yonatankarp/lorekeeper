@@ -360,11 +360,11 @@ fn run(app: &AppHandle) {
     STATUS.lock().unwrap().running = true;
     publish(app);
     let mut vaults: Vec<String> = LEFT.lock().unwrap().drain(..).filter(|v| *v != settings.vault_path).collect();
-    vaults.push(settings.vault_path.clone());
+    vaults.extend(Some(settings.vault_path.clone()).filter(|v| !v.is_empty())); // "" = no campaign yet
     // The shared templates (see templates_home) back up next to the campaigns, as their own "Templates" folder.
     let library = crate::library_dir(app);
     let shared = library.join("Templates");
-    if shared.is_dir() && Path::new(&settings.vault_path) != library && crate::templates_home(Path::new(&settings.vault_path), &library) == library {
+    if shared.is_dir() && !settings.vault_path.is_empty() && Path::new(&settings.vault_path) != library && crate::templates_home(Path::new(&settings.vault_path), &library) == library {
         vaults.push(shared.to_string_lossy().into_owned());
     }
     for kind in due {

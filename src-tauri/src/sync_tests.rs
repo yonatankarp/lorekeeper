@@ -93,6 +93,7 @@ fn a_hostile_server_cant_grow_memory_or_flood_the_windows() {
         key: Zeroizing::new(key),
         token: Zeroizing::new("t".into()),
         name: "Me".into(),
+        nested: Vec::new(),
     };
     let rec = Arc::new(Rec::default());
     let mut core = Core::new(cfg, rec.clone(), dir.canonicalize().unwrap());
@@ -253,10 +254,16 @@ fn start(room: &Room, root: &Path, state_file: &Path, token: &str, name: &str) -
         key: Zeroizing::new(room.key),
         token: Zeroizing::new(token.into()),
         name: name.into(),
+        nested: Vec::new(),
     };
+    start_with(cfg)
+}
+
+fn start_with(cfg: Config) -> Peer {
+    let (root, state_file) = (cfg.root.clone(), cfg.state_file.clone());
     let rec = Arc::new(Rec::default());
     let (engine, task) = engine(cfg, rec.clone());
-    Peer { root: root.to_path_buf(), state_file: state_file.to_path_buf(), rec, engine, task: tokio::spawn(task) }
+    Peer { root, state_file, rec, engine, task: tokio::spawn(task) }
 }
 
 impl Peer {
@@ -355,11 +362,15 @@ async fn two_players_sync_through_the_server() {
     assert_eq!(blocking(move || redeem(&u, &r, &i, "")).await.unwrap_err().code, "invite_used");
 
     // Join: the campaign's name comes first, then everything downloads.
-    let name = fetch_name(&url, &room.room, &room.key, &member_token).await;
-    assert_eq!(name.as_deref(), Some("Curse of Strahd"));
+    let name = wait_for_name(&url, &room.room, &room.key, &member_token, Duration::from_secs(15), || panic!("the name is there")).await;
+    assert_eq!(name, Ok("Curse of Strahd".into()));
     let member_state = base.join("member-state.json");
     let member = start(&room, &member_dir, &member_state, &member_token, "Syloth");
     until("the first download", || member.rec.last() == Some(Status::Synced)).await;
+    // The download said how far it got, of how many: the owner's 6 files that sync (the metadata among them).
+    let statuses = member.rec.statuses.lock().unwrap().clone();
+    assert!(statuses.contains(&Status::Downloading { done: 6, total: Some(6) }), "{statuses:?}");
+    assert!(statuses.iter().all(|s| !matches!(s, Status::Downloading { done, total: Some(t) } if done > t)), "{statuses:?}");
     assert_eq!(member.tree(), owner.tree());
     assert_eq!(fs::read(member_dir.join("Attachments/map.png")).unwrap(), portrait);
     assert_eq!(metadata_name(&fs::read(member_dir.join(METADATA)).unwrap()).as_deref(), Some("Curse of Strahd"));
@@ -590,6 +601,57 @@ async fn hostile_names_neither_stall_sync_nor_reach_templates() {
     assert_eq!(fs::read_to_string(dir.join("Templates/NPC.md")).unwrap(), "my own template");
     let synced = load_state(&state, &room.key);
     assert!(synced.files.keys().all(|p| folded(p.split('/').next().unwrap()) != "templates" && !p.contains('~')), "{:?}", synced.files.keys());
+}
+
+/// A campaign folder that holds another campaign (one kept in the Lorekeeper folder itself, which holds every campaign
+/// made or joined since) syncs none of the other's files, its private notes included, and nothing from its party lands
+/// in the other's folder, in any case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_campaign_inside_the_folder_stays_out_of_its_room() {
+    let base = temp("nested");
+    let db = base.with_extension("db");
+    let _cleanup = Cleanup(vec![base.clone(), db.clone()]);
+    let (_server, url) = start_server(&db).await;
+    let u = url.clone();
+    let created = blocking(move || create_room(&u, Some(CREATE_KEY))).await.unwrap();
+    let room = Room { server: url.clone(), room: created.room.clone(), key: random_secret() };
+    let token = created.owner_token.clone();
+    let (outer, other) = (base.join("Lorekeeper"), base.join("other"));
+    fs::create_dir_all(&other).unwrap();
+    for (rel, text) in [("Lore/World.md", "shared"), ("Strahd/Lore/Castle.md", "theirs"), ("Strahd/Private/Secrets.md", "private")] {
+        fs::create_dir_all(outer.join(rel).parent().unwrap()).unwrap();
+        fs::write(outer.join(rel), text).unwrap();
+    }
+    let cfg = |root: &Path, state: &str, nested: &[&str]| Config {
+        root: root.to_path_buf(),
+        state_file: base.join(state),
+        server: room.server.clone(),
+        room: room.room.clone(),
+        key: Zeroizing::new(room.key),
+        token: Zeroizing::new(token.clone()),
+        name: String::new(),
+        nested: nested.iter().map(|n| n.to_string()).collect(),
+    };
+    let owner = start_with(cfg(&outer, "outer.json", &["Strahd"]));
+    let peer = start_with(cfg(&other, "other.json", &[]));
+    until("the shared page", || peer.read("Lore/World.md").as_deref() == Some("shared")).await;
+    until("synced", || owner.rec.last() == Some(Status::Synced)).await;
+
+    // Someone in the party writes into the other campaign's folder, by any spelling: it never lands there.
+    put_sealed(&room, &token, &[("Strahd/Lore/Castle.md", "planted"), ("strahd/Planted.md", "planted"), ("Lore/Marker.md", "after them")]).await;
+    until("the page after them", || owner.read("Lore/Marker.md").as_deref() == Some("after them")).await;
+    owner.write("Strahd/Lore/New.md", "theirs too");
+    owner.write("Lore/Second.md", "after it");
+    until("the second page", || peer.read("Lore/Second.md").as_deref() == Some("after it")).await;
+    until("synced", || owner.rec.last() == Some(Status::Synced)).await;
+    owner.stop().await;
+    peer.stop().await;
+
+    assert_eq!(fs::read_to_string(outer.join("Strahd/Lore/Castle.md")).unwrap(), "theirs");
+    assert!(!outer.join("Strahd/Planted.md").exists() && !outer.join("strahd/Planted.md").exists());
+    assert!(!other.join("Strahd/Private/Secrets.md").exists() && !other.join("Strahd/Lore/New.md").exists());
+    let synced = load_state(&base.join("outer.json"), &room.key);
+    assert!(synced.files.keys().all(|p| !p.to_lowercase().starts_with("strahd/")), "{:?}", synced.files.keys());
 }
 
 /// Writes pages into the room as any party member could (sealed with the key, over their current versions),
@@ -887,4 +949,144 @@ async fn private_notes_stay_private_and_follow_a_reinvite() {
         peer.stop().await;
     }
     tokio::time::timeout(Duration::from_secs(5), p.task).await.expect("a replaced engine stops").unwrap();
+}
+
+/// One computer syncs two shared campaigns at once, each with its own engine, state and statuses: the one that isn't
+/// open uploads as soon as it's shared. A player who joins before the owner's notes arrived waits for the campaign's
+/// name (being told it's waiting) instead of making a folder with a stand-in name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_campaigns_sync_at_once_and_join_waits_for_the_name() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let base = temp("two");
+    let db = base.with_extension("db");
+    let _cleanup = Cleanup(vec![base.clone(), db.clone()]);
+    let (_server, url) = start_server(&db).await;
+    let dirs = ["mine-a", "mine-b", "friend-a", "friend-b"].map(|d| base.join(d));
+    for d in &dirs {
+        fs::create_dir_all(d).unwrap();
+    }
+    let [mine_a, mine_b, friend_a, friend_b] = dirs.clone();
+    let new_room = || {
+        let u = url.clone();
+        blocking(move || create_room(&u, Some(CREATE_KEY)))
+    };
+    let (a, b) = (new_room().await.unwrap(), new_room().await.unwrap());
+    let room_a = Room { server: url.clone(), room: a.room.clone(), key: random_secret() };
+    let room_b = Room { server: url.clone(), room: b.room.clone(), key: random_secret() };
+    let join = |room: &Room, owner_token: &str| {
+        let (u, r, t) = (url.clone(), room.room.clone(), owner_token.to_string());
+        blocking(move || {
+            let invite = create_invite(&u, &r, &t, Role::Player, false).unwrap().invite;
+            redeem(&u, &r, &invite, "").unwrap().token
+        })
+    };
+    let (friend_a_token, friend_b_token) = (join(&room_a, &a.owner_token).await, join(&room_b, &b.owner_token).await);
+
+    // A friend joins B before anything of it is on the server: the replay ends without the name, so they wait.
+    let told = Arc::new(AtomicBool::new(false));
+    let waiting = {
+        let (told, r, token) = (told.clone(), room_b.clone(), friend_b_token.clone());
+        tokio::spawn(async move {
+            wait_for_name(&r.server, &r.room, &r.key, &token, Duration::from_secs(15), move || told.store(true, Ordering::SeqCst)).await
+        })
+    };
+    until("the join says it's waiting", || told.load(Ordering::SeqCst)).await;
+    assert!(!waiting.is_finished());
+
+    // Both campaigns are shared from this computer; both engines run at once and upload.
+    for (dir, name, page) in [(&mine_a, "Alpha", "NPCs/Ana.md"), (&mine_b, "Beta", "NPCs/Bo.md")] {
+        fs::create_dir_all(dir.join(".lorekeeper")).unwrap();
+        fs::write(dir.join(METADATA), format!(r#"{{"name":"{name}"}}"#)).unwrap();
+        fs::create_dir_all(dir.join("NPCs")).unwrap();
+        fs::write(dir.join(page), name).unwrap();
+    }
+    let me_a = start(&room_a, &mine_a, &base.join("mine-a.json"), &a.owner_token, "Arn");
+    let me_b = start(&room_b, &mine_b, &base.join("mine-b.json"), &b.owner_token, "Arn");
+    assert_eq!(waiting.await.unwrap(), Ok("Beta".into()), "the name arrives live, and the wait ends");
+
+    let fa = start(&room_a, &friend_a, &base.join("friend-a.json"), &friend_a_token, "Fay");
+    let fb = start(&room_b, &friend_b, &base.join("friend-b.json"), &friend_b_token, "Fay");
+    until("both campaigns downloaded", || fa.read("NPCs/Ana.md").as_deref() == Some("Alpha") && fb.read("NPCs/Bo.md").as_deref() == Some("Beta")).await;
+    assert!(fa.read("NPCs/Bo.md").is_none() && fb.read("NPCs/Ana.md").is_none(), "each campaign keeps to its own folder");
+
+    // Writes in both at once reach each campaign's own party.
+    me_a.write("Lore/A.md", "in alpha");
+    me_b.write("Lore/B.md", "in beta");
+    until("both writes", || fa.read("Lore/A.md").as_deref() == Some("in alpha") && fb.read("Lore/B.md").as_deref() == Some("in beta")).await;
+    until("all synced", || [&me_a, &me_b, &fa, &fb].iter().all(|p| p.rec.last() == Some(Status::Synced))).await;
+    assert_eq!(me_a.tree(), fa.tree());
+    assert_eq!(me_b.tree(), fb.tree());
+    for p in [me_a, me_b, fa, fb] {
+        p.stop().await;
+    }
+
+    // A room whose name never comes: the wait ends at its limit. One whose name can't be a folder's: at once.
+    let c = new_room().await.unwrap();
+    let room_c = Room { server: url.clone(), room: c.room.clone(), key: random_secret() };
+    let token_c = join(&room_c, &c.owner_token).await;
+    let started = Instant::now();
+    assert_eq!(wait_for_name(&url, &room_c.room, &room_c.key, &token_c, Duration::from_millis(500), || {}).await, Err(NoName::Missing));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    put_sealed(&room_c, &c.owner_token, &[(METADATA, r#"{"name":"CON"}"#)]).await;
+    let started = Instant::now();
+    assert_eq!(wait_for_name(&url, &room_c.room, &room_c.key, &token_c, Duration::from_secs(15), || {}).await, Err(NoName::Missing));
+    assert!(started.elapsed() < Duration::from_secs(5), "an unusable name isn't waited for");
+    // A server that doesn't answer isn't the owner's notes missing: the window says so instead of asking for a name.
+    let nowhere = "http://127.0.0.1:9"; // the discard port: nothing listens
+    let gone = wait_for_name(nowhere, &room_c.room, &room_c.key, &token_c, Duration::from_millis(500), || panic!("never connected")).await;
+    assert_eq!(gone, Err(NoName::Unreachable));
+}
+
+/// Leave and Stop sharing: a member who leaves is out (their engine stops as removed), and when the owner deletes the
+/// room every player's engine stops for good with Deleted while their files stay. Asking again finds nothing (401),
+/// which the app takes as done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leaving_and_stopping_sharing() {
+    let base = temp("unshare");
+    let db = base.with_extension("db");
+    let _cleanup = Cleanup(vec![base.clone(), db.clone()]);
+    let (_server, url) = start_server(&db).await;
+    let u = url.clone();
+    let created = blocking(move || create_room(&u, Some(CREATE_KEY))).await.unwrap();
+    let room = Room { server: url.clone(), room: created.room.clone(), key: random_secret() };
+    let owner_token = created.owner_token.clone();
+    let join = || {
+        let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
+        blocking(move || {
+            let invite = create_invite(&u, &r, &t, Role::Player, false).unwrap().invite;
+            redeem(&u, &r, &invite, "").unwrap().token
+        })
+    };
+    let (a_token, b_token) = (join().await, join().await);
+    let dirs: Vec<PathBuf> = ["owner", "a", "b"].iter().map(|d| base.join(d)).collect();
+    for d in &dirs {
+        fs::create_dir_all(d).unwrap();
+    }
+    let owner = start(&room, &dirs[0], &base.join("owner.json"), &owner_token, "Lorelei");
+    owner.write("NPCs/Vex.md", "# Vex");
+    let a = start(&room, &dirs[1], &base.join("a.json"), &a_token, "Syloth");
+    let b = start(&room, &dirs[2], &base.join("b.json"), &b_token, "Ezmerelda");
+    until("both players have Vex", || a.read("NPCs/Vex.md").is_some() && b.read("NPCs/Vex.md").is_some()).await;
+
+    // B leaves: B's engine stops as removed; A syncs on.
+    let (u, r, t) = (url.clone(), room.room.clone(), b_token.clone());
+    blocking(move || leave_room(&u, &r, &t)).await.unwrap();
+    until("the leaver's engine stops", || b.rec.last() == Some(Status::Removed)).await;
+    let (u, r, t) = (url.clone(), room.room.clone(), b_token.clone());
+    assert_eq!(blocking(move || leave_room(&u, &r, &t)).await.unwrap_err().status, 401, "already gone");
+    let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
+    assert_eq!(blocking(move || leave_room(&u, &r, &t)).await.unwrap_err().code, "owner_cannot_leave");
+    let (u, r, t) = (url.clone(), room.room.clone(), a_token.clone());
+    assert_eq!(blocking(move || delete_room(&u, &r, &t)).await.unwrap_err().code, "owner_only");
+
+    // The owner stops sharing: their own engine first (as the app does), then the room goes.
+    owner.stop().await;
+    let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
+    blocking(move || delete_room(&u, &r, &t)).await.unwrap();
+    until("the player hears the owner stopped sharing", || a.rec.last() == Some(Status::Deleted)).await;
+    tokio::time::timeout(Duration::from_secs(5), a.task).await.expect("a deleted room's engine stops").unwrap();
+    assert_eq!(fs::read_to_string(dirs[1].join("NPCs/Vex.md")).unwrap(), "# Vex", "the player's copy stays");
+    let (u, r, t) = (url.clone(), room.room.clone(), owner_token.clone());
+    assert_eq!(blocking(move || delete_room(&u, &r, &t)).await.unwrap_err().status, 401, "already gone");
+    tokio::time::timeout(Duration::from_secs(5), b.task).await.expect("the leaver's engine stopped").unwrap();
 }

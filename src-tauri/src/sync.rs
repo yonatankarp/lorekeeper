@@ -282,7 +282,9 @@ impl Access {
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum Status {
     Connecting,
-    /// Catching up (count 0) or sending `count` local changes.
+    /// Catching up: `done` of the replay's changes applied, of `total` (None from a server that doesn't say).
+    Downloading { done: u64, total: Option<u64> },
+    /// Sending `count` local changes.
     Syncing { count: usize },
     Synced,
     Offline,
@@ -290,8 +292,13 @@ pub enum Status {
     Removed,
     /// A re-invite made another computer this member: sync stopped here for good, local files kept.
     Replaced,
+    /// The owner stopped sharing the campaign (the server deleted its room, close code 4003): sync stopped for good,
+    /// local files kept.
+    Deleted,
     /// Sync stopped and won't retry; `reason` says why.
     Stopped { reason: String },
+    /// Not syncing for now: more shared campaigns than the app syncs at once (shared.rs). Never from the engine.
+    Queued,
 }
 
 pub struct Config {
@@ -304,6 +311,15 @@ pub struct Config {
     pub token: Zeroizing<String>,
     /// Your PC's name; sent sealed with the room key so only the party can read it.
     pub name: String,
+    /// Other campaigns' folders inside this one (relative, `/` separators): theirs, never this room's. Nothing under
+    /// them goes up, and nothing that arrives lands in them.
+    pub nested: Vec<String>,
+}
+
+/// Whether `rel` is in one of the `nested` campaign folders, compared as a case-insensitive disk would.
+pub(crate) fn in_nested(nested: &[String], rel: &str) -> bool {
+    let rel = folded(rel);
+    nested.iter().map(|n| folded(n)).any(|n| rel.strip_prefix(&n).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')))
 }
 
 enum Cmd {
@@ -340,6 +356,7 @@ enum End {
     Dropped,
     Removed,
     Replaced,
+    Deleted,
     Fatal(String),
 }
 
@@ -379,9 +396,23 @@ struct Push {
     /// Conflicts per path since its last ack; past MAX_RETRIES the path waits for the next connection, so a
     /// server that keeps answering conflict can't make the engine spin.
     retries: HashMap<String, u32>,
+    /// The replay's changes applied so far, of `total` (what the server said it holds), for the progress status.
+    got: u64,
+    total: Option<u64>,
+    /// When progress was last reported: at most every PROGRESS_EVERY, so a big room doesn't send an event per file.
+    reported: Option<Instant>,
 }
 
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
 const MAX_RETRIES: u32 = 5;
+
+impl Push {
+    /// The replay's progress; live writes during it can bring more changes than the server counted.
+    fn progress(&self) -> Status {
+        Status::Downloading { done: self.total.map_or(self.got, |t| self.got.min(t)), total: self.total }
+    }
+}
 
 struct Core {
     cfg: Config,
@@ -430,12 +461,24 @@ async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<C
     let mut backoff = Duration::from_secs(1);
     loop {
         let began = Instant::now();
-        let end = match connect(&core.cfg).await {
-            Ok(ws) => core.session(ws, &mut rx).await,
-            Err(Some(401)) => End::Removed,
-            Err(_) => End::Dropped,
+        // Stop doesn't wait for a connect that hangs (up to CONNECT_TIMEOUT): the app waits for engines to end.
+        let connected = {
+            let connecting = connect(&core.cfg);
+            tokio::pin!(connecting);
+            loop {
+                tokio::select! {
+                    c = &mut connecting => break Some(c),
+                    cmd = rx.recv() => if matches!(cmd, None | Some(Cmd::Stop)) { break None },
+                }
+            }
         };
-        if matches!(end, End::Removed | End::Replaced) {
+        let end = match connected {
+            None => End::Stop,
+            Some(Ok(ws)) => core.session(ws, &mut rx).await,
+            Some(Err(Some(401))) => End::Removed,
+            Some(Err(_)) => End::Dropped,
+        };
+        if matches!(end, End::Removed | End::Replaced | End::Deleted) {
             // Other members' private notes aren't this computer's to keep any more.
             core.drop_copies(None);
         }
@@ -444,6 +487,7 @@ async fn run(cfg: Config, sink: Arc<dyn Sink>, mut rx: mpsc::UnboundedReceiver<C
             End::Stop => return,
             End::Removed => return core.report(&Status::Removed),
             End::Replaced => return core.report(&Status::Replaced),
+            End::Deleted => return core.report(&Status::Deleted),
             End::Fatal(reason) => return core.report(&Status::Stopped { reason }),
             End::Dropped => core.report(&Status::Offline),
         }
@@ -536,7 +580,7 @@ impl Core {
         if send(&mut ws, &hello).await.is_err() {
             return End::Dropped;
         }
-        self.report(&Status::Syncing { count: 0 });
+        self.report(&Status::Downloading { done: 0, total: None });
         let mut s = Push { next_req: 1, ..Push::default() };
         let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
         let mut last_heard = Instant::now();
@@ -580,6 +624,7 @@ impl Core {
                             return match frame.map(|f| u16::from(f.code)) {
                                 Some(4001) => End::Removed,
                                 Some(4002) => End::Replaced,
+                                Some(4003) => End::Deleted,
                                 _ => End::Dropped,
                             };
                         }
@@ -615,7 +660,7 @@ impl Core {
             }
             let count = s.queue.len() + s.inflight.len();
             let status = if !s.replay_done {
-                Status::Syncing { count: 0 }
+                s.progress()
             } else if count > 0 {
                 Status::Syncing { count }
             } else {
@@ -628,10 +673,17 @@ impl Core {
     /// One message from the server. Err ends the connection.
     fn handle(&mut self, msg: ServerMessage, s: &mut Push) -> Result<(), End> {
         match msg {
-            ServerMessage::Changes { changes, more, .. } => {
+            ServerMessage::Changes { changes, more, total, .. } => {
+                s.total = s.total.or(total);
                 for c in changes {
                     self.apply(c, true)?;
+                    s.got += 1;
+                    if s.reported.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
+                        s.reported = Some(Instant::now());
+                        self.report(&s.progress());
+                    }
                 }
+                self.report(&s.progress()); // each page's end, the last one's too ("120 of 120")
                 if !more {
                     s.replay_done = true;
                     s.rescan = true;
@@ -916,6 +968,7 @@ impl Core {
         if walk(&self.root, "", &mut disk) > 0 {
             self.warn("Some pages or images have names that don't work on every computer (a ? or :, or a name like CON) and stay on this computer only.");
         }
+        disk.retain(|rel, _| !in_nested(&self.cfg.nested, rel));
         if disk.len() > MAX_FILES {
             return Err(End::Fatal("The campaign has more files than sync handles (20,000).".into()));
         }
@@ -949,7 +1002,7 @@ impl Core {
             self.warn("The campaign folder looks incomplete, so deletions aren't synced.");
         } else {
             // DM copies aren't on the disk list (they never go up): their absence is no deletion.
-            let pushed = |p: &str| matches!(place(p), Some(Place::Shared | Place::Own(_)));
+            let pushed = |p: &str| matches!(place(p), Some(Place::Shared | Place::Own(_))) && !in_nested(&self.cfg.nested, p);
             out.extend(self.state.files.iter().filter(|(p, e)| !e.gone && !disk.contains_key(*p) && pushed(p)).map(|(p, _)| p.clone()));
         }
         Ok(out)
@@ -957,6 +1010,9 @@ impl Core {
 
     /// The message for one queued path, worked out now (the file may have changed since the scan).
     fn prepare(&mut self, path: &str, req: u64) -> Option<(ClientMessage, Flight)> {
+        if in_nested(&self.cfg.nested, path) {
+            return None; // another campaign's file
+        }
         // What goes into the blob, and where: a private file only once this connection's server said who we are.
         let (inner, space) = match place(path)? {
             Place::Shared => (path, Space::Shared),
@@ -1080,6 +1136,10 @@ impl Core {
                 return None;
             }
         };
+        if in_nested(&self.cfg.nested, &rel) {
+            self.warn("Skipped a file in a folder that holds another of your campaigns.");
+            return None;
+        }
         Some((rel, file))
     }
 
@@ -1382,9 +1442,39 @@ pub(crate) fn drop_dm_copies(root: &Path) {
     let _ = fs::remove_dir_all(path);
 }
 
-/// Joining: reads the replay just until the campaign's metadata file and returns its name (None when it isn't
-/// there or can't be read in time). Nothing is written.
-pub async fn fetch_name(server: &str, room: &str, key: &[u8; SECRET_LEN], token: &str) -> Option<String> {
+/// What a look for the campaign's name found.
+enum Named {
+    Found(String),
+    /// The metadata file is there but holds no name that can be a folder's: waiting longer won't help.
+    Unusable,
+    /// Not there yet, or the connection dropped.
+    NotYet,
+}
+
+/// The name in a version of the metadata file. One not sealed by the party (the server's own delete, a blob that doesn't
+/// open) isn't the party's word: the owner's version goes back up over it, so the wait goes on.
+fn named(key: &[u8; SECRET_LEN], room: &str, change: Change) -> Named {
+    let Some(blob) = change.blob else { return Named::NotYet };
+    let Some(file) = decode_blob(&blob).ok().and_then(|bytes| open(key, room, &change.id, &bytes).ok()) else { return Named::NotYet };
+    match metadata_name(&file.content).filter(|_| !file.deleted) {
+        Some(name) => Named::Found(name),
+        None => Named::Unusable,
+    }
+}
+
+/// Joining: waits for the campaign's metadata file and returns its name, safe as a folder name. Reads the replay, then
+/// live changes (the owner's first upload may still be on its way), reconnecting when the connection drops; calls
+/// `waiting` once the replay ended without it (nothing of the owner's notes has arrived yet). None when there's no
+/// usable name within `wait`: NoName::Unreachable when no connection got through at all. Nothing is written; the socket
+/// closes before this returns.
+pub async fn wait_for_name(
+    server: &str,
+    room: &str,
+    key: &[u8; SECRET_LEN],
+    token: &str,
+    wait: Duration,
+    waiting: impl Fn() + Send,
+) -> Result<String, NoName> {
     let cfg = Config {
         root: PathBuf::new(),
         state_file: PathBuf::new(),
@@ -1393,28 +1483,68 @@ pub async fn fetch_name(server: &str, room: &str, key: &[u8; SECRET_LEN], token:
         key: Zeroizing::new(*key),
         token: Zeroizing::new(token.into()),
         name: String::new(),
+        nested: Vec::new(),
     };
-    let core_connect = async {
-        let mut ws = connect(&cfg).await.ok()?;
-        send(&mut ws, &ClientMessage::Hello { since: 0, member: String::new(), dm_since: None }).await.ok()?;
-        let id = file_id(key, METADATA);
-        while let Some(Ok(msg)) = ws.next().await {
-            let Message::Text(text) = msg else { continue };
-            let Ok(ServerMessage::Changes { changes, more, .. }) = serde_json::from_str(text.as_str()) else { continue };
-            let found = changes.into_iter().find(|c| c.id == id).and_then(|c| c.blob);
-            if let Some(blob) = found {
-                let _ = ws.close(None).await;
-                let file = open(key, room, &id, &decode_blob(&blob).ok()?).ok()?;
-                return metadata_name(&file.content);
+    let id = file_id(key, METADATA);
+    let mut reached = false;
+    let look = async {
+        loop {
+            if let Ok(mut ws) = connect(&cfg).await {
+                reached = true;
+                let found = look_for_name(&mut ws, key, room, &id, &waiting).await;
+                let _ = tokio::time::timeout(Duration::from_secs(5), ws.close(None)).await;
+                match found {
+                    Named::Found(name) => return Ok(name),
+                    Named::Unusable => return Err(NoName::Missing),
+                    Named::NotYet => {}
+                }
             }
-            if !more {
-                break;
-            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        let _ = ws.close(None).await;
-        None
     };
-    tokio::time::timeout(Duration::from_secs(30), core_connect).await.ok().flatten()
+    let found = tokio::time::timeout(wait, look).await;
+    found.unwrap_or(Err(if reached { NoName::Missing } else { NoName::Unreachable }))
+}
+
+/// Why wait_for_name has no name.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NoName {
+    /// Not there in time, or not one that can be a folder's.
+    Missing,
+    /// The sync server never answered (or refused the token).
+    Unreachable,
+}
+
+/// One connection's look for the metadata file (see wait_for_name).
+async fn look_for_name(ws: &mut Ws, key: &[u8; SECRET_LEN], room: &str, id: &str, waiting: &(impl Fn() + Send)) -> Named {
+    if send(ws, &ClientMessage::Hello { since: 0, member: String::new(), dm_since: None }).await.is_err() {
+        return Named::NotYet;
+    }
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+    loop {
+        tokio::select! {
+            msg = ws.next() => {
+                let Some(Ok(msg)) = msg else { return Named::NotYet };
+                let Message::Text(text) = msg else { continue };
+                match serde_json::from_str::<ServerMessage>(text.as_str()) {
+                    Ok(ServerMessage::Changes { changes, more, .. }) => {
+                        let found = changes.into_iter().find(|c| c.id == id).map(|c| named(key, room, c));
+                        match found {
+                            Some(Named::NotYet) | None if !more => waiting(),
+                            Some(Named::NotYet) | None => {}
+                            Some(found) => return found,
+                        }
+                    }
+                    Ok(ServerMessage::Change(c)) if c.id == id => match named(key, room, c) {
+                        Named::NotYet => {}
+                        found => return found,
+                    },
+                    _ => {}
+                }
+            }
+            _ = ping.tick() => if send(ws, &ClientMessage::Ping).await.is_err() { return Named::NotYet },
+        }
+    }
 }
 
 // ---------- the HTTP API (rooms, invites, members) ----------
@@ -1456,6 +1586,7 @@ impl std::fmt::Display for ApiError {
             (_, "rate_limited") => "Too many tries for now. Wait a while and try again.",
             (_, "cannot_remove_owner") => "The campaign's owner can't be removed.",
             (_, "not_found") => "That player isn't in the campaign anymore.",
+            (_, "owner_cannot_leave") => "The campaign's owner can't leave it. Stop sharing it instead.",
             _ => return write!(f, "The sync server refused ({}).", self.status),
         };
         f.write_str(text)
@@ -1585,6 +1716,16 @@ pub fn members(server: &str, room: &str, token: &str) -> Result<Vec<MemberInfo>,
 
 pub fn remove_member(server: &str, room: &str, token: &str, member_id: &str) -> Result<(), ApiError> {
     api("DELETE", &format!("{server}/v1/rooms/{room}/members/{member_id}"), Some(token), None, None).map(|_| ())
+}
+
+/// The owner deletes the room: every file on the server, private ones included, and every member's access.
+pub fn delete_room(server: &str, room: &str, token: &str) -> Result<(), ApiError> {
+    api("DELETE", &format!("{server}/v1/rooms/{room}"), Some(token), None, None).map(|_| ())
+}
+
+/// A member leaves the room (their token stops working and their private notes are deleted from the server).
+pub fn leave_room(server: &str, room: &str, token: &str) -> Result<(), ApiError> {
+    api("DELETE", &format!("{server}/v1/rooms/{room}/members/me"), Some(token), None, None).map(|_| ())
 }
 
 #[cfg(test)]

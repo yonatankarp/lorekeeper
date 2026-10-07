@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
-  authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel,
+  authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel, startView,
 } from "./vault.js";
 
 test("private notes: your own in Private/, a DM's read-only copies of the players' in .lorekeeper/dm/", () => {
@@ -386,4 +386,12 @@ test("Lorekeeper sync's conflict copies are flagged next to their original", () 
     { path: "NPCs/Vex (conflict 2026-10-06 2015 2).md", of: "NPCs/Vex.md" },
     { path: "NPCs/Vex (conflict 2026-10-06 2015).md", of: "NPCs/Vex.md" },
   ]);
+});
+
+test("the main window starts with a campaign, the first-run view, or the offer to move one", () => {
+  assert.equal(startView({ vaultPath: "", campaigns: [] }), "first-run");
+  assert.equal(startView({}), "first-run", "no settings yet");
+  assert.equal(startView({ vaultPath: "", campaigns: ["/d/Lorekeeper/Strahd"] }, "x"), "first-run", "joined, not opened yet");
+  assert.equal(startView({ vaultPath: "/d/Lorekeeper", campaigns: ["/d/Lorekeeper"] }, "My campaign"), "move");
+  assert.equal(startView({ vaultPath: "/d/Lorekeeper/Strahd" }, null), "campaign");
 });

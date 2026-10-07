@@ -150,6 +150,9 @@ export const isSessionFolder = (path) => SESSION_FOLDER.test(path);
 /** A player's file's author: "Sessions/Session 4/Sibling 5.md" (or a private one) is Sibling 5's; "" for any other path. */
 export const authorOf = (path) => (/^Sessions\/Session \d+\/[^/]+\.md$/i.test(path) || PRIVATE_PART.test(path) ? baseName(path) : "");
 
+/** `me` (and the author) of a DM who plays no character: their file is "Sessions/Session 4/DM.md" (DM_ME in lib.rs). */
+export const DM = "DM";
+
 /**
  * The pages the app shows for the notes on disk (`files`, [{ path, content }]) and the vault's `folders`. A shared session's
  * folder is one page, "Sessions/Session 4", made of its players' files (plus a Session 4.md written next to it); a sync
@@ -433,3 +436,10 @@ export function characterProps(md, c, portrait = "") {
   const props = setProps(md, Object.fromEntries(Object.entries(updates).filter(([, v]) => v)), { onlyIfEmpty: ["player", "portrait"] });
   return fillSection(fillSection(props, "Appearance", c.appearance), "Personality", c.personality);
 }
+
+/**
+ * What the main window shows: "first-run" before you have a campaign open (create or join one), "move" (the open
+ * campaign, with the offer to move a campaign out of the Lorekeeper folder itself; `offer` is move_offer's folder name),
+ * else "campaign".
+ */
+export const startView = (settings, offer) => (!settings?.vaultPath ? "first-run" : offer ? "move" : "campaign");

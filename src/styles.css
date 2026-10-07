@@ -393,6 +393,15 @@ main { display: flex; flex-direction: column; min-width: 0; height: 100vh; backg
 }
 /* The private-notes setting changed: shown once (see showNotice in app.js). */
 #notice { display: flex; align-items: center; gap: 10px; padding: 8px 20px; background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+/* The offer to move a campaign out of the Lorekeeper folder itself, and the first-run view's Create campaign. */
+.move-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 20px; background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+.move-offer p { flex-basis: 100%; margin: 0; }
+.move-offer label, .first-run-form label { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+:is(.move-offer, .first-run-form) input { padding: 5px 9px; border: 1px solid var(--control-border); border-radius: 7px; background: var(--bg); color: var(--fg); font: 15px var(--font-ui); }
+.first-run-form { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 10px; margin: 18px 0 6px; }
+:is(.move-offer-error, .first-run-error) { margin: 0; color: var(--accent-text); overflow-wrap: anywhere; }
+.move-offer-error:empty { display: none; }
+.first-run-error { min-height: 1.2em; }
 /* Private notes: a padlock next to the page, the note or the folder, with the label as its tooltip. */
 .lock { color: var(--muted); white-space: nowrap; }
 .lock .icon { margin: 0 0.2em; vertical-align: -0.1em; }

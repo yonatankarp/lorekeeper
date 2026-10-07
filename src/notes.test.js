@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, privateNote, removeLine, sessions, timeline, toHtml } from "./notes.js";
+import { authorLink, insertLine, linkify, mergeTimelines, parse, parseMerged, playerFile, privateNote, removeLine, sessions, timeline, toHtml } from "./notes.js";
 
 test("a quick note starting with ~ is private, and keeps its prefix for filing", () => {
   assert.deepEqual(privateNote("~@Halia lies"), { private: true, text: "@Halia lies" });
@@ -165,4 +165,22 @@ test("the Journal of a shared session names each note's author", () => {
 test("the sessions list counts a shared session's notes from every player", () => {
   assert.deepEqual(sessions(pages(shared)), [{ path: "Sessions/Session 4", title: "Session 4", date: "2026-10-06", count: 7 }]);
   assert.equal(playerFile("Sessions/Session 12", "Arn", "2026-10-06"), '---\nsession: 12\ndate: 2026-10-06\nauthor: "[[Arn]]"\n---\n# Session 12 - 2026-10-06\n\n');
+});
+
+test("a DM without a character is DM: no link, no portrait, even beside a PC page named DM", () => {
+  const parts = [
+    { path: "Sessions/Session 5/DM.md", content: playerFile("Sessions/Session 5", "DM", "2026-10-07") + "- 20:00 The bridge is out\n- 20:30 ![[bridge.png]]\n" },
+    { path: "Private/Sessions/Session 5/DM.md", content: "- 20:10 ?It was sabotaged\n" },
+    { path: "Sessions/Session 5/Arn.md", content: "- 20:05 @Halia waves\n" },
+  ];
+  assert.equal(playerFile("Sessions/Session 5", "DM", "2026-10-07"), "---\nsession: 5\ndate: 2026-10-07\nauthor: DM\n---\n# Session 5 - 2026-10-07\n\n");
+  assert.deepEqual(mergeTimelines(parts).map((n) => n.author), ["DM", "Arn", "DM", "DM"]);
+  const { groups } = parseMerged(parts, ["PCs/DM.md", "PCs/Arn.md"]);
+  assert.deepEqual(groups.event, ["The bridge is out (DM)", "![[bridge.png]]"]);
+  assert.deepEqual(groups.mystery, [{ text: "It was sabotaged (DM)", lock: true, path: "Private/Sessions/Session 5/DM.md" }]);
+  assert.deepEqual(groups.npc, ["Halia waves ([[PCs/Arn|Arn]])"]);
+  // The timeline's author: a PC links to their page with their portrait; the DM is plain text, whatever it's given.
+  assert.equal(authorLink("DM", "PCs/DM", '<span class="author-portrait"><img></span>'), '<span class="author">DM</span>');
+  assert.equal(authorLink("Arn", "PCs/Arn", "<img>"), '<a class="wikilink author" data-target="PCs/Arn" href="#"><img>Arn</a>');
+  assert.equal(authorLink("<b>", "<b>"), '<a class="wikilink author" data-target="&lt;b&gt;" href="#">&lt;b&gt;</a>');
 });

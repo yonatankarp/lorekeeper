@@ -57,8 +57,11 @@
               <label class="campaign-backup"><span>Name<span class="sr-only campaign-sr"></span></span>
                 <input type="text" class="campaign-backup-name" spellcheck="false" autocomplete="off" /></label>
               <p class="hint">Shown in the sidebar and the tray. Backups are kept under this name, so a new name starts a new backup (the old one stays).</p>
-              <button type="button" class="ghost campaign-remove">Remove<span class="sr-only campaign-sr"></span></button>
-              <p class="hint">Removing only takes the campaign off this list. Its notes and backups stay where they are.<span class="campaign-remove-why"> To remove the open campaign, switch to another one first.</span></p>
+              <button type="button" class="ghost campaign-remove">Remove from list<span class="sr-only campaign-sr"></span></button>
+              <p class="hint campaign-remove-hint">Removing only takes the campaign off this list. Its notes and backups stay where they are.</p>
+              <button type="button" class="ghost campaign-delete">Delete campaign<span class="sr-only campaign-sr"></span></button>
+              <p class="hint campaign-delete-hint">Deleting moves the campaign's folder, with every note in it, to the <span class="trash-name">Trash</span>, and takes it off this list. Backups stay.</p>
+              <p class="campaign-remove-why">Switch to another campaign to remove this one.</p>
             </div>
           </details>
         </div>
@@ -354,7 +357,8 @@
       <p class="hint" id="party-intro">Everyone sees each other's notes in every session, except the ones they keep private. Notes are encrypted on your computer before they're sent, so the sync server can't read them.</p>
       <p id="party-sync" role="status"></p>
       <label>I play
-        <select id="party-me"></select></label>
+        <select id="party-me" aria-describedby="party-dm-hint"></select></label>
+      <p class="hint" id="party-dm-hint" hidden></p>
       <p class="hint" id="party-no-pcs" hidden>Your character needs a page in PCs first: make one, or import it from D&amp;D Beyond.</p>
       <div id="party-key" hidden>
         <label>Creation key
@@ -373,7 +377,7 @@
             </select></label>
           <label class="party-switch"><input type="checkbox" role="switch" id="party-owner-dm" aria-describedby="party-private-help" />
             I'm the DM</label>
-          <p class="hint" id="party-private-help">Pages in a player's Private folder, and notes they start with ~, go only to their own computers, or also to the DM when you choose that. Turn on I'm the DM only if you run the game: then you read them too.</p>
+          <p class="hint" id="party-private-help">Pages in a player's Private folder, and notes they start with ~, go only to their own computers, or also to the DM when you choose that. Turn on I'm the DM only if you run the game: then you read them too. It's separate from I play: I'm the DM (no character), which only shows your notes as the DM's.</p>
         </div>
       </div>
       <div id="party-invites" hidden>
@@ -405,6 +409,11 @@
           Shared with my party</label>
         <p class="hint" id="party-shared-help">Turn off to stop syncing on this computer. Your notes stay here.</p>
       </div>
+      <!-- The owner stops sharing (deletes the room on the server); anyone else leaves. Both ask first (confirm-dialog). -->
+      <div id="party-end" hidden>
+        <button type="button" class="ghost" id="party-end-go">Stop sharing</button>
+        <p class="hint" id="party-end-help"></p>
+      </div>
       <p id="players-status" role="status"></p>
       <p class="error" id="sharing-error" role="alert"></p>
       <p class="error" id="players-error" role="alert"></p>
@@ -415,19 +424,52 @@
       </div>
     </dialog>
 
+    <!-- Add campaign…: a new one in the Lorekeeper folder (create_campaign), or a folder you already have. -->
+    <dialog id="add-dialog" aria-labelledby="add-title">
+      <form id="add-form" method="dialog" novalidate>
+        <h2 id="add-title">Add a campaign</h2>
+        <label>Name <input id="add-name" spellcheck="false" autocomplete="off" placeholder="Curse of Strahd" /></label>
+        <p class="hint" id="add-help">A new campaign gets a folder of its own in the Lorekeeper folder.</p>
+        <p class="error" id="add-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="ghost" id="add-existing">Choose existing folder…</button>
+          <button type="button" class="ghost" id="add-cancel">Cancel</button>
+          <button class="seal" id="add-create">New campaign</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="join-dialog" aria-labelledby="join-title">
       <h2 id="join-title">Join a shared campaign</h2>
-      <label>Invite link
+      <label id="join-link-row">Invite link
         <textarea id="join-link" rows="3" spellcheck="false" autocomplete="off" placeholder="https://lorekeeper.yonatankarp.com/join/…"></textarea></label>
       <div id="join-confirm" hidden>
         <p id="join-server"></p>
         <p class="error" id="join-warning"></p>
       </div>
+      <div id="join-name-row" hidden>
+        <p class="hint">The owner's notes haven't reached the sync server yet, so Lorekeeper doesn't know the campaign's name. Ask the owner to open Lorekeeper and click Join again, or name the campaign's folder yourself.</p>
+        <label>Folder name <input type="text" id="join-name" autocomplete="off" spellcheck="false"></label>
+      </div>
       <p id="join-status" role="status"></p>
+      <progress id="join-progress" hidden></progress>
       <p class="error" id="join-error" role="alert"></p>
       <div class="dialog-actions">
         <button type="button" class="ghost" id="join-cancel">Cancel</button>
         <button type="button" class="seal" id="join-go">Continue</button>
+      </div>
+    </dialog>
+    <!-- Asks before Stop sharing, Leave and Delete campaign; the action runs with the dialog open, so errors show here. -->
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <p class="hint" id="confirm-extra"></p>
+      <p id="confirm-status" role="status"></p>
+      <p class="error" id="confirm-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="confirm-cancel">Cancel</button>
+        <button type="button" class="ghost" id="confirm-alt" hidden></button>
+        <button type="button" class="seal" id="confirm-go"></button>
       </div>
     </dialog>
     <script type="module" src="settings.js"></script>
