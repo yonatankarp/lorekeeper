@@ -74,6 +74,12 @@ The private key is `~/.tauri/lorekeeper-updater.key` (password in `~/.tauri/lore
 
 Back it up and never commit it. If it's lost or leaks, a new key means everyone has to download the next version by hand.
 
+## macOS code signing
+
+The Mac build is signed with our own certificate, "Lorekeeper Code Signing" (self-signed, valid until 2046). It isn't an Apple Developer ID, so Gatekeeper still warns on first install (hence the `xattr` step in the release notes), but every version now has the same signature. The keychain recognizes the app by that signature, so after one last **Always Allow** on the first signed version, updates stop asking for Lorekeeper's passwords. `tauri dev` builds aren't signed and still ask: run them with `LOREKEEPER_PROFILE` to keep their own keychain items.
+
+The certificate is `~/.tauri/lorekeeper-macos-signing.p12` (password in `~/.tauri/lorekeeper-macos-signing.p12.password`), stored as the Actions secrets `MACOS_CERTIFICATE` (the `.p12`, base64) and `MACOS_CERTIFICATE_PASSWORD`. Release builds are signed only once both exist. Back it up with the update signing key and never commit it. If it's lost, a new certificate means everyone answers the keychain prompt once more; nothing else breaks. Make a replacement p12 with `/usr/bin/openssl` (LibreSSL): `security import` can't read the encryption newer OpenSSL uses by default. Tauri only accepts Apple-issued certificates through `APPLE_CERTIFICATE`, so `release.yml` imports ours into a keychain itself and passes Tauri the name in `APPLE_SIGNING_IDENTITY`.
+
 ## Windows code signing
 
 Off until its secrets exist; until then the Windows installer ships unsigned and SmartScreen says "Unknown publisher". Uses an SSL.com IV (individual) code signing certificate with eSigner cloud signing (Azure Artifact Signing only takes individuals in the US or Canada). Signing happens inside `tauri build` via `bundle.windows.signCommand` (jsign), so the update `.sig` matches the signed installer. Never sign the `-setup.exe` after the build: that breaks Windows updates.
