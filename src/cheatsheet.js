@@ -119,7 +119,7 @@ export function cheatSheetHtml({ settings = {}, mac = false } = {}) {
     [`${k("Tab")} or ${k("Enter")}`, `Takes the suggested page name (type ${code("[[")} or ${code("@")} for suggestions)`],
     [`${k("Tab")} ${k("Shift+Tab")}`, "Indents or outdents a list item"],
     [k("Enter"), "Continues a list"],
-    [k("CmdOrCtrl+Click"), "Follows a link on the line you're editing (elsewhere a click does)"],
+    [k("CmdOrCtrl+Click"), "Follows a link (a plain click just places the cursor)"],
   ]);
 
   const search = group("search", "In search", "Keys", [
