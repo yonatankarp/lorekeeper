@@ -182,7 +182,6 @@ figcaption { margin-top: 12px; color: var(--muted); font: italic 16px/1.5 var(--
 .kind-mystery { --k: var(--kind-mystery); }
 .kind-quote { --k: var(--kind-quote); }
 .section-lede { max-width: 34em; margin: -8px auto 22px; color: var(--muted); font: 16px/1.5 var(--font-ui); text-align: center; }
-.soon .card { border-style: dashed; box-shadow: none; background: transparent; }
 /* How it works: three numbered steps, the numbers in the drop-cap face. */
 .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 18px 28px; margin: 0; padding: 0; list-style: none; counter-reset: step; }
 .steps li { position: relative; padding-left: 58px; counter-increment: step; }
