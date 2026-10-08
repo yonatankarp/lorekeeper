@@ -1043,8 +1043,12 @@ async fn private_notes_stay_private_and_follow_a_reinvite() {
     for (who, peer) in [("dm", &dm), ("owner", &owner), ("other", &q)] {
         assert_eq!(holding(&peer.root, "cult leader"), None, "{who}");
         assert_eq!(holding(&peer.root, "lies about the mine"), None, "{who}");
-        let state = fs::read_to_string(&peer.state_file).unwrap();
-        assert!(!state.contains(".lorekeeper/dm") && !state.contains("Private/"), "{who}'s state names no private file");
+        // The state file is saved at most once a second (SAVE_EVERY), so it may still name the dropped copies.
+        until(&format!("{who}'s state names no private file"), || {
+            let state = fs::read_to_string(&peer.state_file).unwrap();
+            !state.contains(".lorekeeper/dm") && !state.contains("Private/")
+        })
+        .await;
     }
 
     // A re-invite: Syloth's new laptop becomes Syloth, with their private notes; the old computer is signed out.
