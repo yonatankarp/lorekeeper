@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  backlinks, badName, buildTree, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
+  backlinks, badName, buildTree, CHOICES, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
   authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel, startView,
   DM, mayPlayDm, myPc, ownSessionFiles, editChoices, editTarget, sessionDate,
@@ -300,9 +300,23 @@ test("shownProps leaves out the type and empty values, names labels, and links p
   assert.deepEqual(pc.rows.map((r) => [r.label, r.value, r.icon]), [["Played by", "Ofer", "pc"]]);
   const npc = shownProps([["race", "human"], ["role", "Miner's exchange"], ["location", "Phandalin"], ["status", "alive"]], paths, "npc");
   assert.equal(npc.summary, "Human, Miner's exchange");
-  assert.deepEqual(npc.rows.map((r) => [r.key, r.path]), [["location", "Locations/Phandalin.md"], ["status", ""]]);
+  assert.deepEqual(npc.rows.map((r) => [r.key, r.path]), [["location", "Locations/Phandalin.md"], ["status", ""], ["attitude", ""]]);
   assert.equal(shownProps([["type", "pc"], ["level", "3"]], paths, "note").summary, "Level 3", "the type property wins over the folder");
   assert.equal(kindOf("Ideas.md"), "note");
+});
+
+test("an NPC's status and attitude always show, as unknown until set, so their dropdowns are there", () => {
+  const rows = (props, kind = "npc") => shownProps(props, [], kind).rows.map((r) => [r.key, r.label, r.value]);
+  // An older page with neither: both rows, at the end.
+  assert.deepEqual(rows([["location", "Phandalin"]]), [["location", "Location", "Phandalin"], ["status", "Status", "unknown"], ["attitude", "Attitude", "unknown"]]);
+  // The template's empty "attitude:" keeps its place; a value the dropdown doesn't offer is kept as written.
+  assert.deepEqual(rows([["Status", "Captured"], ["attitude", ""], ["first-met", "2026-10-04"]]), [["status", "Status", "Captured"], ["attitude", "Attitude", "unknown"], ["first-met", "First met", "2026-10-04"]]);
+  assert.deepEqual(rows([["status", "dead"], ["attitude", "'hostile'"]]), [["status", "Status", "dead"], ["attitude", "Attitude", "hostile"]]);
+  // Only NPCs: a quest (or a DM's copy of an NPC, which is a plain note) shows no row it doesn't have.
+  assert.deepEqual(rows([["giver", "Harbin"]], "quest"), [["giver", "Giver", "Harbin"]]);
+  assert.deepEqual(rows([], "note"), []);
+  assert.deepEqual(Object.keys(CHOICES.npc), ["status", "attitude"]);
+  assert.ok(CHOICES.npc.status.includes("unknown") && CHOICES.npc.attitude.includes("unknown"), "the default is one of the choices");
 });
 
 test("setProps changes only the given properties and keeps everything else byte for byte", () => {

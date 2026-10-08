@@ -4,7 +4,7 @@ import { createEditor } from "./editor.js";
 import { authorLink, escape, insertLine, linkify, localTime, mergeTimelines, parse, parseMerged, playerFile, removeLine, sessions, splitPrivate, stripLinks, toHtml, zoned } from "./notes.js";
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
-  pcPath, QUEST_STATUSES, questStatus, recentlyMentioned, setProps, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
+  pcPath, CHOICES, questStatus, recentlyMentioned, setProps, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
   DM, dmCopyOf, editChoices, editTarget, isDmCopy, isPrivate, moveTarget, myPc, ownSessionFiles, privateLabel, privateMentions, sessionDate, shownAt, sidebarTree, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
@@ -167,11 +167,11 @@ const STATUS_ICONS = { done: "done", failed: "failed", dead: "failed", "in progr
 const badgeHtml = (key, value) =>
   `<span class="${key} ${key}-${escape(value.toLowerCase().replace(/[^a-z]/g, ""))}">${STATUS_ICONS[value.toLowerCase()] ? icon(STATUS_ICONS[value.toLowerCase()]) : ""}${escape(value)}</span>`;
 
-/** A quest's status as a dropdown of QUEST_STATUSES (and whatever else the page says, so it isn't lost). */
-function statusSelect(value) {
+/** A property row (see shownProps) as a dropdown of `choices` (and whatever else the page says, so it isn't lost). */
+function choiceSelect({ key, label, value }, choices) {
   const word = value.toLowerCase();
-  const options = QUEST_STATUSES.includes(word) ? QUEST_STATUSES : [...QUEST_STATUSES, word];
-  return `<select class="status status-${escape(word.replace(/[^a-z]/g, ""))}" data-prop="status" aria-label="Status">` +
+  const options = choices.includes(word) ? choices : [...choices, word];
+  return `<select class="${key} ${key}-${escape(word.replace(/[^a-z]/g, ""))}" data-prop="${key}" aria-label="${escape(label)}">` +
     options.map((s) => `<option value="${escape(s)}"${s === word ? " selected" : ""}>${escape(s)}</option>`).join("") + "</select>";
 }
 
@@ -197,16 +197,17 @@ function authorHtml(author) {
 /** A page's properties, as a small stat block: see shownProps. */
 function propsHtml(props, path) {
   const shown = shownProps(props, paths(), kindOf(path));
-  const quest = kindOf(path) === "quest" && !isDmCopy(path);
+  const choices = isDmCopy(path) ? {} : CHOICES[kindOf(path)] ?? {};
   // A portrait ("[[Attachments/Demus.jpg]]" or a plain path) shows as a picture in the corner, not as a row.
   const pic = shown.rows.find((r) => r.key === "portrait");
   shown.rows = shown.rows.filter((r) => r !== pic);
   const portrait = pic ? `<div class="props-portrait">${imageHtml(imageTarget(pic.value), baseName(path))}</div>` : "";
-  const rows = shown.rows.map(({ key, label, value, icon: name, path }) => {
+  const rows = shown.rows.map((row) => {
+    const { key, label, value, icon: name, path } = row;
     let html;
-    if (key === "status" && quest) {
-      html = statusSelect(value);
-    } else if (key === "status" || key === "rarity") {
+    if (choices[key]) {
+      html = choiceSelect(row, choices[key]);
+    } else if (key === "status" || key === "attitude" || key === "rarity") {
       html = badgeHtml(key, value);
     } else if (key === "dndbeyond") {
       // The sheet opens in the browser (the document click handler sends https links to open_url).
@@ -247,15 +248,15 @@ function treeHtml(node, names = {}) {
     .join("");
   const files = node.files
     .map((p) => {
-      // Finished quests: dimmed, with a check or a cross, and the outcome in the accessible name.
-      const status = p.startsWith("Quests/") ? questStatus(note(p)?.content ?? "") : "";
-      const ended = status === "done" || status === "failed";
+      // Finished quests and dead NPCs: dimmed, with a check or a cross, and the outcome in the accessible name.
+      const status = p.startsWith("Quests/") || p.startsWith("NPCs/") ? questStatus(note(p)?.content ?? "") : "";
+      const ended = p.startsWith("Quests/") ? status === "done" || status === "failed" : status === "dead";
       // A private page, and a session that has only private notes so far: a padlock and who reads them (a DM's copies
       // have theirs on their player's folder).
       const only = note(p)?.parts?.length === 0 && note(p).private?.[0]?.path;
       const lock = isDmCopy(p) ? "" : isPrivate(p) ? lockHtml(p) : only ? lockHtml(only) : "";
-      return `<button draggable="true" class="file${p === current ? " active" : ""}${ended ? " quest-ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
-        `${lock}${ended ? icon(status) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
+      return `<button draggable="true" class="file${p === current ? " active" : ""}${ended ? " ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
+        `${lock}${ended ? icon(STATUS_ICONS[status]) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
     })
     .join("");
   return dirs + files;
@@ -657,7 +658,7 @@ async function save(final = false) {
     base = written;
     const n = note(path);
     if (n) n.content = written;
-    if (path.startsWith("Quests/")) renderTree(); // a changed status moves the check mark
+    if (path.startsWith("Quests/") || path.startsWith("NPCs/")) renderTree(); // a changed status moves the check mark or cross
     // Notes added by the hotkeys while editing were kept on disk; show them in the editor too.
     if (written !== content && written.startsWith(content) && path === editPath()) ed().append(written.slice(content.length));
     say(moved ? `Moved ${moved} note${moved === 1 ? "" : "s"} to your private notes (${ownLabel()})` : "Saved");
@@ -1017,7 +1018,7 @@ $("tree").addEventListener("click", (e) => {
   if (b) openNewDialog("", { folder: b.dataset.folder });
 });
 
-// A quest's status dropdown writes the page's `status` property, with Undo.
+// A quest's or NPC's dropdown (status, attitude) writes that property of the page, with Undo.
 $("view").addEventListener("change", async (e) => {
   const select = e.target.closest("select[data-prop]");
   if (!select) return;
@@ -1025,11 +1026,11 @@ $("view").addEventListener("change", async (e) => {
   try {
     await rewrite(path, (md) => setProps(md, { [select.dataset.prop]: select.value }));
   } catch (err) {
-    return say(`Couldn't change the status: ${err}`);
+    return say(`Couldn't change the ${select.dataset.prop}: ${err}`);
   }
   const after = note(path).content;
-  record({ label: "Change status", undo: () => putBack(path, after, before), redo: () => putBack(path, before, after) });
-  renderTree(); // a finished quest gets its check mark
+  record({ label: `Change ${select.dataset.prop}`, undo: () => putBack(path, after, before), redo: () => putBack(path, before, after) });
+  renderTree(); // a finished quest gets its check mark, a dead NPC its cross
 });
 
 $("view").addEventListener("click", async (e) => {

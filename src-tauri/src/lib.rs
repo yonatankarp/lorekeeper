@@ -53,7 +53,7 @@ const VAULT_FOLDERS: [&str; 9] = ["Sessions", "PCs", "NPCs", "Locations", "Items
 
 const TEMPLATES: [(&str, &str); 7] = [
     ("PC", "---\ntype: pc\nplayer:\nclass:\nrace:\nlevel:\nbackground:\nalignment:\nportrait:\ndndbeyond:\n---\n# {{title}}\n\n## Appearance\n\n## Personality\n\n## Goals\n\n## Relationships\n\n## Notes\n"),
-    ("NPC", "---\ntype: npc\nrace:\nrole:\nlocation:\nstatus: alive\nfirst-met: {{date}}\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
+    ("NPC", "---\ntype: npc\nrace:\nrole:\nlocation:\nstatus: alive\nattitude:\nfirst-met: {{date}}\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
     ("Location", "---\ntype: location\nregion:\n---\n# {{title}}\n\n## Description\n\n## Notable people\n\n## Notes\n"),
     ("Item", "---\ntype: item\nrarity:\nowner:\n---\n# {{title}}\n\n## Description\n\n## Notes\n"),
     ("Faction", "---\ntype: faction\nleader:\nbase:\n---\n# {{title}}\n\n## Goals\n\n## Members\n\n## Notes\n"),
