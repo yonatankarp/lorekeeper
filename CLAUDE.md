@@ -10,12 +10,12 @@ Desktop app (Tauri: `src/` web UI, `src-tauri/` Rust) for D&D session notes, plu
 The website is https://yonatankarp.com/lorekeeper/. It is built from two sources that drift apart in different ways:
 
 - **`docs/GUIDE.md` and `docs/PRIVACY.md`** render to `GUIDE.html` and `PRIVACY.html`. Any push to main that touches `docs/**` deploys them right away.
-- **The home page is hand-written** in `scripts/build-site.mjs` (`FEATURES`, `SOON`, `STEPS`, `FAQ`, the hero copy and the meta descriptions). It never picks up doc changes on its own. When a feature, label or shortcut changes, grep this file too.
+- **The home page is hand-written** in `scripts/build-site.mjs` (`FEATURES`, `STEPS`, `FAQ`, the hero copy and the meta descriptions). It never picks up doc changes on its own. When a feature, label or shortcut changes, grep this file too.
 
 Rules:
 
 - **A user-facing change updates `docs/GUIDE.md` in the same commit.** Use the exact labels the UI shows (`src/*.html`, `src/*.js`), in **bold**, with both `⌘` and `Ctrl` shortcuts.
-- **The home page only advertises what's in the latest release** (`gh release view`). A feature that's on main but not released goes in `SOON`, under the `NEXT` version, never in `FEATURES`, the steps or the meta description. Check with `git log <latest tag>..HEAD`.
+- **The home page only advertises what's in the latest release** (`gh release view`). A feature that's on main but not released isn't on the home page at all: not in `FEATURES`, the steps, the FAQ or the meta description. It's added at release. Check with `git log <latest tag>..HEAD`.
 - **Check every website claim against the code or the docs at that release tag.** Don't describe planned or draft features, for example anything that's only in `docs/PARTY.md`, which is an unshipped draft.
 - **`docs/PRIVACY.md` changes whenever what Lorekeeper stores, sends or connects to changes.** That covers new network requests, services, stored secrets and sync behaviour. Bump its "Last updated" date. Never drop a section by accident: diff it before committing.
 - **Keep these URLs working:** `/lorekeeper/`, `GUIDE.html` and `PRIVACY.html` are on Google's OAuth consent screen. Keep heading ids stable too, because the home page links to `GUIDE.html#installing`.
@@ -26,8 +26,8 @@ Rules:
 
 Follow "CI and releases" in `docs/DEVELOPMENT.md`, then update the website for the new version:
 
-1. Move the `SOON` entries that shipped into `FEATURES` in `scripts/build-site.mjs`. Set `NEXT` to the following version, or empty `SOON`.
-2. Remove "coming in …" from the `FAQ`, and add the new features to the meta description if they're worth it.
+1. Add the features that shipped to `FEATURES` in `scripts/build-site.mjs`.
+2. Add the new features to the `FAQ` and the meta description if they're worth it.
 3. Update `docs/GUIDE.md` and the release notes in `RELEASE_NOTES.md`.
 4. If the release changes how the app looks, retake `docs/screenshots/light.jpg` and `dark.jpg` (the home page, its link preview and the README use them). They're 1120×740 macOS window captures of the real app with a demo campaign's Home open, in the Light and Dark themes. Retake them only for a release that's out, never for work on main.
 
