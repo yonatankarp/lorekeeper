@@ -94,7 +94,7 @@ export function folderFor(templateName, folders) {
   return named(`${templateName}s`) ?? named(templateName) ?? "";
 }
 
-/** A quest page's `status` property, lowercased and unquoted; missing or empty counts as "open". */
+/** A page's `status` property (a quest's or an NPC's), lowercased and unquoted; missing or empty counts as "open". */
 export function questStatus(content) {
   const value = splitFrontmatter(content).props.find(([k]) => k.toLowerCase() === "status")?.[1] ?? "";
   return value.replace(/^["']|["']$/g, "").trim().toLowerCase() || "open";
@@ -102,6 +102,12 @@ export function questStatus(content) {
 
 /** The statuses a quest page's dropdown offers, in order; "open" and "in progress" keep it in the open quest list. */
 export const QUEST_STATUSES = ["open", "in progress", "done", "failed"];
+
+/** The dropdowns at the top of a page of each kind (see kindOf): each property and the values it offers, in order. */
+export const CHOICES = {
+  quest: { status: QUEST_STATUSES },
+  npc: { status: ["alive", "dead", "missing", "unknown"], attitude: ["friendly", "neutral", "hostile", "unknown"] },
+};
 
 /** Paths of the pages in Quests/ that are still open ("open" or "in progress"), sorted by name. */
 export const openQuests = (notes) =>
@@ -326,14 +332,17 @@ function summary(kind, props) {
 
 /**
  * A page's properties as shown above it, for a page of `kind` (see kindOf; its `type` property wins): a summary line
- * for PCs and NPCs, then rows with `type`, empty ones and the summed-up ones left out (the page already says what it
- * is), labels in words ("first-met" is "First met"), and a value that names a page linked to it.
+ * for PCs and NPCs, then rows with `type`, empty ones (but an NPC's status and attitude) and the summed-up ones left out
+ * (the page already says what it is), labels in words ("first-met" is "First met"), and a value that names a page linked to it.
  * Each row: { key, label, value, icon, path } with path "" when the value isn't a page.
  */
 export function shownProps(props, paths, kind = "note") {
   const sum = summary(prop(props, "type").toLowerCase() || kind, props);
-  const rows = props
-    .map(([key, raw]) => [key, raw.replace(/^["']|["']$/g, "").trim()])
+  // An NPC's status and attitude always show, "unknown" until set, so their dropdowns are there on older pages too.
+  const always = kind === "npc" ? ["status", "attitude"] : [];
+  const missing = always.filter((k) => !props.some(([key]) => key.toLowerCase() === k)).map((k) => [k, ""]);
+  const rows = [...props, ...missing]
+    .map(([key, raw]) => [key, raw.replace(/^["']|["']$/g, "").trim() || (always.includes(key.toLowerCase()) ? "unknown" : "")])
     .filter(([key, value]) => value && key.toLowerCase() !== "type" && !sum.keys.includes(key.toLowerCase()))
     .map(([key, value]) => {
       const k = key.toLowerCase();
