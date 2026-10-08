@@ -1,0 +1,12 @@
+# The release notes are written from pull requests, so each title starts with its kind (CLAUDE.md, Commits).
+name: Pull request title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  title:
+    uses: yonatankarp/github-actions/.github/workflows/pr-title.yml@v2

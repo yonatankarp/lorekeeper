@@ -28,11 +28,14 @@ Follow "CI and releases" in `docs/DEVELOPMENT.md`, then update the website for t
 
 1. Add the features that shipped to `FEATURES` in `scripts/build-site.mjs`.
 2. Add the new features to the `FAQ` and the meta description if they're worth it.
-3. Update `docs/GUIDE.md` and the release notes in `RELEASE_NOTES.md`.
+3. Update `docs/GUIDE.md`. The release notes are written from the pull requests: preview them before tagging (step 2 of "To release" in `docs/DEVELOPMENT.md`) and fix a line by editing that pull request's `## Release note` or title.
 4. If the release changes how the app looks, retake `docs/screenshots/light.jpg` and `dark.jpg` (the home page, its link preview and the README use them). They're 1120×740 macOS window captures of the real app with a demo campaign's Home open, in the Light and Dark themes. Retake them only for a release that's out, never for work on main.
 
 ## Commits
 
-- Commit messages: `Area: what changed, in user terms` (`Settings: …`, `Sync: …`, `Website: …`, `Docs: …`).
+- Commit messages and pull request titles: `kind(Area): what changed, in user terms` (`feat(Sessions): …`, `fix(Sync): …`, `docs(Website): …`). Pull requests are squash-merged, so the title becomes the commit subject, and the release notes are written from the titles (a check fails a title without a kind):
+  - `feat` is a new feature, `change` an improvement and `fix` a bug fix: each goes in the release notes, under New features, Improvements or Bug fixes.
+  - `docs`, `chore`, `ci`, `test` and `refactor` are left out of them.
+- A `feat`, `change` or `fix` pull request can have a `## Release note` section in its description: the first paragraph is published instead of the title. One line, about 20 words, starting with a short **bold lead**, written for players, no file names. `none` leaves the pull request out of the notes.
 - Stage files by path. The working tree often holds unrelated work in progress. Never commit `site/` or `src-tauri/target-preview/`.
 - Ask before pushing. Main is protected (pull request and 2 checks), the owner can bypass it, and a push to main deploys the website.

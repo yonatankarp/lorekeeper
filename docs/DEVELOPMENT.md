@@ -20,7 +20,8 @@ pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":fal
 ## CI and releases
 
 - `.github/workflows/ci.yml` runs `pnpm test` on pushes to `main` and on pull requests.
-- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release: one job makes the draft, the platforms build in parallel into it, and a last job writes `latest.json` from their `.sig` files (`scripts/latest-json.mjs`), so builds can't make two drafts or drop each other's platforms. It builds a universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
+- `.github/workflows/pr-title.yml` fails a pull request whose title doesn't start with its kind (`feat(Sessions): …`), since the release notes are sorted by it. Dependabot's titles get `chore:` or `ci:` from `.github/dependabot.yml`.
+- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release: one job writes the notes from the pull requests (the `release-notes` action from `yonatankarp/github-actions`) and makes the draft, the platforms build in parallel into it, and a last job writes `latest.json` from their `.sig` files (`scripts/latest-json.mjs`), so builds can't make two drafts or drop each other's platforms. It builds a universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
 - `.github/workflows/sync-server.yml` tests `sync-protocol/` and `sync-server/` when they change, and on `main` publishes the server image to `ghcr.io/yonatankarp/lorekeeper-sync`.
 
 ## Sync server
@@ -64,7 +65,14 @@ Clean up afterwards: delete the profiles' notes folders, `<config>/profiles/`, a
 To release:
 
 1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
-2. Update `RELEASE_NOTES.md`. The update dialog shows its first ~400 characters, so keep "What's new" first.
+2. Preview the release notes. They're written from the pull requests merged since the last tag, by the kind in each title (`feat`, `change`, `fix`; CLAUDE.md, Commits), with `.github/release-footer.md` after them. The update dialog shows their first ~400 characters. After `git fetch origin --tags`:
+
+   ```bash
+   gh api 'repos/yonatankarp/github-actions/contents/.github/actions/release-notes/release_notes.py?ref=v2' -q .content | base64 -d |
+     python3 - X.Y.Z origin/main --override 'release-notes/{version}.md' --footer .github/release-footer.md
+   ```
+
+   To change a line, edit that pull request's title or its `## Release note`. The notes are read when the tag is pushed, so read this right before tagging. A version with no `feat`, `change` or `fix` fails before a draft is made. A `release-notes/X.Y.Z.md` file, if you add one, is published instead, word for word, without the footer. A re-run keeps the draft's notes; delete the draft to write them again.
 3. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
 4. Check there's exactly one draft for the tag, holding the `.dmg`, `.app.tar.gz`, `-setup.exe` and `.AppImage` (each with its `.sig`), and that its `latest.json` lists `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64` and `linux-x86_64` (re-run a job if one is missing), then publish. Installed apps only see published releases.
 
