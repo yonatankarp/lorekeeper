@@ -103,7 +103,7 @@ export function cheatSheetHtml({ settings = {}, mac = false } = {}) {
     [k("CmdOrCtrl+Shift+N"), "New session"],
     [k("CmdOrCtrl+Shift+H"), "Home"],
     [`${k("CmdOrCtrl+[")} ${k("CmdOrCtrl+]")}`, "Back, Forward"],
-    [k("F2"), "Rename the page"],
+    [k("F2"), "Rename the page, or give a session a title"],
     [k("CmdOrCtrl+Backspace"), "Move the page to the Trash (outside text)"],
     [k("CmdOrCtrl+Z"), "Undo, including deleting, renaming and moving pages"],
     [mac ? k("CmdOrCtrl+Shift+Z") : k("CmdOrCtrl+Shift+Z", "Ctrl+Y"), "Redo"],

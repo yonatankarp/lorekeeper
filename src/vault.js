@@ -71,13 +71,13 @@ export function backlinks(path, notes, paths = notes.map((n) => n.path)) {
   return result.sort((a, b) => naturally(a.path, b.path));
 }
 
-/** Case-insensitive search over names and content; name matches first. */
+/** Case-insensitive search over names (a session's title too, see shownName) and content; name matches first. */
 export function search(query, notes) {
   const q = query.trim().toLowerCase();
   if (!q) return [];
   const hits = [];
   for (const note of notes) {
-    const inName = baseName(note.path).toLowerCase().includes(q);
+    const inName = shownName(note).toLowerCase().includes(q);
     const line = note.content.split("\n").find((l) => l.toLowerCase().includes(q));
     if (inName || line) hits.push({ path: note.path, inName, snippet: line?.trim() ?? "" });
   }
@@ -227,8 +227,8 @@ export function pages(files, folders = []) {
       parts,
       private: secret,
       get content() {
-        const date = sessionDate(this);
-        const head = `---\nsession: ${id.replace(/^.* /, "")}\n${date ? `date: ${date}\n` : ""}---\n`;
+        const date = sessionDate(this), title = sessionTitle(this);
+        const head = `---\nsession: ${id.replace(/^.* /, "")}\n${date ? `date: ${date}\n` : ""}${title ? `title: ${yamlValue(title)}\n` : ""}---\n`;
         return head + parts.map((p) => splitFrontmatter(p.content).body).join("\n");
       },
     });
@@ -239,6 +239,40 @@ export function pages(files, folders = []) {
 /** A shared session's date: the `date` property of its first file that has one (its Session 4.md first), or "". */
 export const sessionDate = (page) =>
   (page?.parts ?? []).map((p) => splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "date")?.[1]).find(Boolean) ?? "";
+
+/**
+ * A session's title, which players give it after the game ("The bridge collapse"; "" when none): its `title` property,
+ * or a shared session's first file that has one (its Session 4.md, then the players' files by name). Private files never
+ * count. The file name and [[Session 4]] links stay as they are.
+ */
+export function sessionTitle(page) {
+  for (const p of page?.parts ?? (page ? [page] : [])) {
+    const raw = splitFrontmatter(p.content).props.find(([k]) => k.toLowerCase() === "title")?.[1] ?? "";
+    let value = raw.replace(/^'(.*)'$/, "$1");
+    try {
+      if (/^".*"$/.test(raw)) value = JSON.parse(raw); // setProps quotes it like this (yamlValue)
+    } catch {}
+    if (value.trim()) return value.trim();
+  }
+  return "";
+}
+
+/** A page's name as the app shows it: a titled session's is "Session 14 · The bridge collapse", any other its file name. */
+export const shownName = (page) => {
+  const title = keepsPlace(page.path) && sessionTitle(page);
+  return title ? `${baseName(page.path)} · ${title}` : baseName(page.path);
+};
+
+/**
+ * The file a session's title is written to (see sessionTitle), never another player's: the session's own file, a shared
+ * one's Session 4.md from before sharing (which Edit opens first), else yours (`me`, your PC's name), there yet or not.
+ * null when you have no character to write as.
+ */
+export function titleFile(page, me) {
+  if (!page.parts) return page.path;
+  const old = `${page.path}.md`;
+  return page.parts.some((p) => p.path === old) ? old : me ? `${page.path}/${me}.md` : null;
+}
 
 /**
  * The files Edit can change on shared session `page` (from pages()) for `me` (your PC's name, "" for none), the one it

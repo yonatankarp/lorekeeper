@@ -5,7 +5,7 @@ import { authorLink, escape, insertLine, linkify, localTime, mergeTimelines, par
 import {
   backlinks, badName, baseName, buildTree, characterProps, dndBeyondId, fillTemplate, folderFor, isSessionFolder, openQuests, pages, party, pcPageFor,
   pcPath, CHOICES, questStatus, recentlyMentioned, setProps, renameLinks, keepsPlace, moveProblem, movedPath, SESSIONS_STAY, naturally, kindOf, resolve, safePageName, search, sheetId, shownProps, splitFrontmatter, syncConflicts,
-  DM, dmCopyOf, editChoices, editTarget, isDmCopy, isPrivate, moveTarget, myPc, ownSessionFiles, privateLabel, privateMentions, sessionDate, shownAt, sidebarTree, startView, unprivate,
+  DM, dmCopyOf, editChoices, editTarget, isDmCopy, isPrivate, moveTarget, myPc, ownSessionFiles, privateLabel, privateMentions, sessionDate, sessionTitle, shownAt, shownName, titleFile, sidebarTree, startView, unprivate,
 } from "./vault.js";
 import { navHistory, undoStack } from "./history.js";
 import { applyTheme, nativeTheme } from "./theme.js";
@@ -47,6 +47,8 @@ let editor = null; // created on first Edit, then reused for every page
 /** A page, or a file inside a shared session (a player's file, a sync conflict's copy). */
 const note = (path) => vault.notes.find((n) => n.path === path) ?? vault.files.find((n) => n.path === path);
 const paths = () => vault.notes.map((n) => n.path);
+/** A page's name as shown: a titled session's is "Session 14 · The bridge collapse" (see shownName). */
+const nameOf = (path) => (note(path) ? shownName(note(path)) : baseName(path));
 /** The page a file is shown as: a player's file is part of its session's page. */
 const pageFor = (path) => vault.notes.find((n) => n.parts?.some((p) => p.path === path))?.path ?? path;
 /** In a campaign shared with your party, the PC page you play ("PCs/Sibling 5.md"); "" otherwise. */
@@ -256,7 +258,7 @@ function treeHtml(node, names = {}) {
       const only = note(p)?.parts?.length === 0 && note(p).private?.[0]?.path;
       const lock = isDmCopy(p) ? "" : isPrivate(p) ? lockHtml(p) : only ? lockHtml(only) : "";
       return `<button draggable="true" class="file${p === current ? " active" : ""}${ended ? " ended" : ""}"${p === current ? ' aria-current="page"' : ""} data-path="${escape(p)}" title="${escape(p)}">` +
-        `${lock}${ended ? icon(STATUS_ICONS[status]) : ""}${escape(baseName(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
+        `${lock}${ended ? icon(STATUS_ICONS[status]) : ""}${escape(nameOf(p))}${ended ? `<span class="sr-only">, ${status}</span>` : ""}</button>`;
     })
     .join("");
   return dirs + files;
@@ -300,7 +302,7 @@ function renderResults() {
     ? hits
         .map((h) => {
           const folder = whereOf(h.path);
-          return `<button class="file" data-path="${escape(h.path)}">${isPrivate(h.path) ? lockHtml(h.path) : ""}${mark(baseName(h.path))}
+          return `<button class="file" data-path="${escape(h.path)}">${isPrivate(h.path) ? lockHtml(h.path) : ""}${mark(nameOf(h.path))}
             ${folder ? `<span class="where">${escape(folder)}</span>` : ""}
             ${h.snippet ? `<span class="snip">${mark(h.snippet.slice(0, 160))}</span>` : ""}</button>`;
         })
@@ -356,7 +358,10 @@ function openQuestsHtml() {
 function sessionHtml(n) {
   const session = n.parts ? parseMerged([...n.parts, ...(n.private ?? [])], paths()) : parse(n.content);
   const items = sessionItems(n);
-  const title = `<h1 class="session-title">${session.title ? inlineLinks(session.title) : escape(baseName(current))}</h1>`;
+  const heading = session.title ? inlineLinks(session.title) : escape(baseName(current));
+  // A title players gave it (Rename…) leads, its "Session 4 - date" heading under it.
+  const named = sessionTitle(n);
+  const title = `<h1 class="session-title">${named ? `${escape(named)}<span class="home-meta">${heading}</span>` : heading}</h1>`;
   if (!items.length) return title + openQuestsHtml() + emptySessionHtml();
   const pressed = (v) => `aria-pressed="${sessionView === v}"`;
   const views = `<div class="view-switch" role="group" aria-label="Session view">
@@ -560,7 +565,7 @@ function render() {
   const links = backlinks(current, showsMentions(current) ? vault.notes.filter((b) => !isPrivate(b.path)) : vault.notes);
   $("backlinks").innerHTML = `<h2>Linked from</h2>` + (links.length
     ? `<ul>${links
-        .map((b) => `<li><a data-path="${escape(b.path)}" href="#">${escape(baseName(b.path))}</a>
+        .map((b) => `<li><a data-path="${escape(b.path)}" href="#">${escape(nameOf(b.path))}</a>
           ${b.lines.map((l) => `<div class="snip">${inlineLinks(l.replace(/^[-*+] (\d{1,2}:\d{2} )?/, ""))}</div>`).join("")}</li>`)
         .join("")}</ul>`
     : `<p class="none">No pages link here yet. Link to it with [[${escape(baseName(current))}]].</p>`);
@@ -1288,18 +1293,30 @@ function undoRedo(dir) {
 // ---------- renaming and moving ----------
 
 let renaming = null; // the page the Rename dialog is for
+let titling = false; // the Rename dialog sets a session's title instead (see setTitle)
 const dirOf = (path) => path.split("/").slice(0, -1).join("/");
 
-/** The Rename dialog, which also moves: `move` opens it as Move, with the folder list focused. */
+/**
+ * The Rename dialog, which also moves: `move` opens it as Move, with the folder list focused. On a session, which keeps
+ * its "Session N" name, Rename sets its title instead.
+ */
 function openRenameDialog(path, move = false) {
   if (modal()) return say("Close the open dialog first.");
   if (!note(path)) return say(`Open a page to ${move ? "move" : "rename"} it.`);
-  if (keepsPlace(path)) return say(SESSIONS_STAY);
+  titling = !move && keepsPlace(path) && vault.notes.some((n) => n.path === path); // a session's page, not a file in it
+  if (keepsPlace(path) && !titling) return say(SESSIONS_STAY);
+  if (titling && !titleFile(note(path), baseName(me()))) return say("Pick your character in Settings > General first");
   if (isDmCopy(path)) return say("A player's private note is read-only here.");
   renaming = path;
-  $("rename-title").textContent = move ? "Move page" : "Rename page";
-  $("rename-confirm").textContent = move ? "Move" : "Rename";
-  $("rename-name").value = baseName(path);
+  $("rename-title").textContent = titling ? `Rename ${baseName(path)}` : move ? "Move page" : "Rename page";
+  $("rename-confirm").textContent = titling ? "Save" : move ? "Move" : "Rename";
+  $("rename-label").textContent = titling ? "Title" : "Name";
+  $("rename-name").setAttribute("aria-required", String(!titling));
+  $("rename-folder-row").hidden = titling;
+  $("rename-help").textContent = titling ? `The file stays ${baseName(path)}, so links to it keep working. Leave the title empty to clear it.`
+    : "Links to this page are updated too.";
+  $("rename-help").classList.toggle("sr-only", !titling);
+  $("rename-name").value = titling ? sessionTitle(note(path)) : baseName(path);
   // Only sessions go in Sessions/ (a page already there can stay); Templates/ and Attachments/ aren't for pages, as in the tree.
   // Folders as the sidebar shows them: a private page stays private wherever it goes (see moveTarget).
   const here = shownAt(dirOf(path));
@@ -1356,12 +1373,51 @@ async function renameOrMove(from, to) {
     : `${done}${n ? `; links updated in ${n} page${n === 1 ? "" : "s"}` : ""}`);
 }
 
+/**
+ * Gives session `path` the title `title` ("" clears it) in the file titleFile picks, never another player's, undoably
+ * like a quest's status. Your own file in a shared session is made when you have none there yet.
+ */
+async function setTitle(path, title) {
+  const page = note(path), name = baseName(path);
+  if (title === sessionTitle(page)) return;
+  const file = titleFile(page, baseName(me()));
+  if (!file) throw "Pick your character in Settings > General first";
+  const label = `Rename ${name}`;
+  if (note(file)) {
+    const before = note(file).content;
+    await rewrite(file, (md) => setProps(md, { title }));
+    const after = note(file).content;
+    const put = (from, to) => async () => {
+      await putBack(file, from, to);
+      renderTree();
+    };
+    record({ label, undo: put(after, before), redo: put(before, after) });
+  } else if (title) { // clearing with no file of yours: nothing to write, another player's title shows (said below)
+    const content = setProps(playerFile(path, baseName(me()), sessionDate(page) || today()), { title });
+    await invoke("create_file", { path: file, content });
+    await refresh();
+    record({ label, undo: () => trashIfUnchanged(file, content), redo: () => restore(file, content) });
+  }
+  renderTree();
+  // Another player's file comes first (see sessionTitle): yours is saved, theirs still shows.
+  const shown = sessionTitle(note(path));
+  say(shown !== title ? `${name} shows another player's title first: ${shown}` : title ? `Titled ${name}: ${title}` : `${name} has no title now`);
+}
+
 $("rename-cancel").addEventListener("click", () => $("rename-dialog").close());
 $("rename-form").addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "rename") return;
   e.preventDefault();
   const from = renaming;
   const name = $("rename-name").value.trim();
+  if (titling) {
+    try {
+      await setTitle(from, name);
+    } catch (err) {
+      return ($("rename-error").textContent = err);
+    }
+    return $("rename-dialog").close();
+  }
   // Never across the private line (Make private / Make shared ask first): the same rules as a drop, but the name's own.
   const folder = moveTarget(from, $("rename-folder").value);
   const problem = badName(name) || moveProblem(from, folder, []);
@@ -1686,16 +1742,12 @@ $("sidebar").addEventListener("contextmenu", (e) => {
         { text: reveal, action: () => invoke("open_vault_folder").catch(say) },
         { item: "Separator" },
         { text: "Copy Link", action: () => copyLink(file) },
-        // Only what works for this page: sessions keep their name and folder, a shared one holds everyone's notes
-        // (unless it's all yours).
-        ...(note(file)?.parts && !ownSession(file).length ? [] : [
-          { item: "Separator" },
-          ...(keepsPlace(file) ? [] : [
-            { text: "Rename…", action: () => openRenameDialog(file) },
-            { text: "Move to…", action: () => openRenameDialog(file, true) },
-          ]),
-          { text: "Delete…", action: () => deletePage(file) },
-        ]),
+        // Only what works for this page: sessions keep their name and folder (Rename sets a session's title), a shared
+        // one holds everyone's notes (unless it's all yours).
+        { item: "Separator" },
+        { text: "Rename…", action: () => openRenameDialog(file) },
+        ...(keepsPlace(file) ? [] : [{ text: "Move to…", action: () => openRenameDialog(file, true) }]),
+        ...(note(file)?.parts && !ownSession(file).length ? [] : [{ text: "Delete…", action: () => deletePage(file) }]),
       ]
     : /^sessions(\/|$)/i.test(folder) // only sessions go in Sessions/ (moveProblem)
       ? [{ text: "New Session", action: () => actions.newSession() }]

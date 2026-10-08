@@ -453,6 +453,7 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
 }
 #view hr { margin: 24px 0; }
 #view .session-title::after { margin-top: 10px; }
+#view .session-title .home-meta { display: block; margin-top: 4px; } /* "Session 4 - date" under a session's title */
 .props {
   display: flow-root; /* holds the floated portrait */
   margin: 0 0 18px;

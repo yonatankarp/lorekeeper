@@ -174,6 +174,8 @@ test("sessions newest first, with title, date and note count", () => {
     { path: "Sessions/Session 10.md", title: "Session 10", date: "", count: 0 },
     { path: "Sessions/Session 2.md", title: "Session 2 at town", date: "2026-10-04", count: 2 },
   ]);
+  // A title players gave it comes before its heading.
+  assert.equal(sessions([{ path: "Sessions/Session 2.md", content: "---\ntitle: The bridge collapse\n---\n# Session 2\n" }])[0].title, "Session 2 · The bridge collapse");
 });
 
 const berlin = () => 120; // the viewer's zone in minutes east of UTC (see localZone), so tests don't depend on the computer's

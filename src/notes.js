@@ -1,7 +1,7 @@
 // Turns a session file into a timeline and sections grouped by kind (the Journal view).
 // Hotkey notes look like "- 21:43 @Mirela the innkeeper"; the first character picks the section.
 // Hand-written bullets and paragraphs count too, so nothing typed in the editor is silently dropped.
-import { authorOf, baseName, DM, isPrivate, kindOf, naturally, pcPath, resolve, sessionPaths, splitFrontmatter, WIKILINK } from "./vault.js";
+import { authorOf, baseName, DM, isPrivate, kindOf, naturally, pcPath, resolve, sessionPaths, sessionTitle, shownName, splitFrontmatter, WIKILINK } from "./vault.js";
 import { IMAGE_EMBED } from "./images.js";
 
 export const SECTIONS = [
@@ -103,12 +103,17 @@ export function insertLine(md, i, text) {
   return lines.join("\n");
 }
 
-/** Session pages, newest first: [{ path, title, date, count }] (title without link brackets, count = notes). */
+/**
+ * Session pages, newest first: [{ path, title, date, count }] (count = notes). The title is the one players gave it
+ * ("Session 14 · The bridge collapse", see shownName), else its first heading without link brackets, else its name.
+ */
 export const sessions = (notes) =>
   sessionPaths(notes).map((path) => {
-    const content = notes.find((n) => n.path === path).content;
+    const page = notes.find((n) => n.path === path);
+    const content = page.content;
     const date = splitFrontmatter(content).props.find(([k]) => k.toLowerCase() === "date")?.[1] ?? "";
-    return { path, title: stripLinks(parse(content).title) || baseName(path), date: date.replace(/^["']|["']$/g, ""), count: timeline(content).length };
+    const title = sessionTitle(page) ? shownName(page) : stripLinks(parse(content).title) || baseName(path);
+    return { path, title, date: date.replace(/^["']|["']$/g, ""), count: timeline(content).length };
   });
 
 export const escape = (s) =>
