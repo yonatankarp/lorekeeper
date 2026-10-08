@@ -110,15 +110,12 @@ ${[["@", "npc", "NPC"], ["#", "loot", "Loot"], ["!", "quest", "Quest"], ["?", "m
   ["session", "Sessions as a timeline", `<p>Every note keeps its time, so a session reads like the tale it was. The Journal groups it into a recap: who you met, what you found, the quests and mysteries.</p>`],
   ["pc", "Play with your party", `<p>Share a campaign with an invite link and everyone's notes land in one session timeline, each with who wrote it. Private notes stay with you (and the DM, if the campaign's owner allows it). It syncs end-to-end encrypted, so the server can't read a word.</p>`],
   ["faction", "Characters and connections", `<p>Import the whole party from D&amp;D Beyond: class, level, background and portrait, refreshed after a level up. Home maps your NPCs, PCs, places and factions and who's linked to whom.</p>`],
+  ["quest", "Keep the story straight", `<p>Mark quests open, in progress, done or failed, and NPCs alive, dead or missing, friend or foe. Give a session a title, like “The bridge collapse”, so you can find it again.</p>`],
   ["location", "The campaign vault", `<p>NPCs, PCs, places, items, factions, quests and lore, joined by <code>[[links]]</code> with backlinks on every page. Paste in maps and handouts. It's all plain Markdown files on your computer.</p>`],
   ["loot", "Backups, your way", `<p>To a folder, Dropbox, Google Drive or a private GitHub repository, straight from your computer to your own account. No accounts, <a href="PRIVACY.html">no analytics</a>.</p>`],
   ["note", "A cheat sheet", `<p>Every note symbol, link and shortcut on one page: <strong>Help &gt; Cheat Sheet</strong>, or <kbd>⌘/</kbd> (<kbd>Ctrl+/</kbd>).</p>`],
   ["home", "Tome or Dungeon", `<p>Aged parchment and red rubrics by day, torchlit stone and candle gold by night, set in the 5e book fonts. It follows your system, or pick one.</p>`],
 ];
-
-// Built but not in a release yet. When NEXT ships, move these into FEATURES (and drop "coming in" from the FAQ).
-const NEXT = "0.8";
-const SOON = [];
 
 const STEPS = [
   ["Install it", `Download Lorekeeper and open it. It waits in the menu bar (the system tray on Windows and Linux) and keeps itself up to date.`],
@@ -222,14 +219,6 @@ ${STEPS.map(([title, text]) => `    <li><h3>${title}</h3><p>${text}</p></li>`).j
 ${cards(FEATURES)}
   </div>
 </section>
-${SOON.length ? `<section class="section wrap" aria-labelledby="soon">
-  <h2 class="section-title" id="soon">Coming in ${NEXT}</h2>
-  <hr class="fleuron">
-  <p class="section-lede">Built and on their way to the next release. The <a href="GUIDE.html">guide</a> already covers them.</p>
-  <div class="cards soon">
-${cards(SOON)}
-  </div>
-</section>` : ""}
 <section class="section wrap" aria-labelledby="faq">
   <h2 class="section-title" id="faq">Questions</h2>
   <hr class="fleuron">
