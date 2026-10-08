@@ -200,7 +200,7 @@ ${DOWNLOADS.map(([os, label, file, suffix]) => `      <a class="seal" href="${RE
   <div class="frame">
     <picture>
       <source srcset="screenshots/dark.jpg" media="(prefers-color-scheme: dark)">
-      <img src="screenshots/light.jpg" width="1120" height="740" alt="Lorekeeper with a campaign open: a session's notes on a timeline, tagged NPC, Loot, Mystery and Quest, and the campaign's factions, places, NPCs and quests in the sidebar.">
+      <img src="screenshots/light.jpg" width="1120" height="740" alt="Lorekeeper with a campaign's Home open: the latest session, titled Ambush at the ford, with its notes tagged Loot, Mystery, Quest and Quote, the open quests with their status, the party, and the campaign's pages in the sidebar.">
     </picture>
   </div>
   <figcaption>Tome by day, Dungeon by night: Lorekeeper follows your system's light or dark mode.</figcaption>
