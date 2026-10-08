@@ -4,7 +4,7 @@ import {
   backlinks, badName, buildTree, CHOICES, characterProps, dndBeyondId, fillTemplate, fillSection, folderFor, kindOf, openQuests, party, pcPageFor, questStatus,
   recentlyMentioned, resolve, safePageName, search, sessionPaths, setProps, shownProps, splitFrontmatter,
   authorOf, isSessionFolder, pages, pcPath, syncConflicts, isDmCopy, dmCopyOf, isPrivate, unprivate, privateLabel, startView,
-  DM, mayPlayDm, myPc, ownSessionFiles, editChoices, editTarget, sessionDate,
+  DM, mayPlayDm, myPc, ownSessionFiles, editChoices, editTarget, sessionDate, sessionTitle, shownName, titleFile,
 } from "./vault.js";
 
 test("private notes: your own in Private/, a DM's read-only copies of the players' in .lorekeeper/dm/", () => {
@@ -471,6 +471,46 @@ test("Edit on a shared session: Session notes, My notes and Private notes, each 
   assert.equal(sessionDate(session(old, arn)), "2026-10-04");
   assert.equal(sessionDate(session(f(mine), arn)), "2026-10-05");
   assert.equal(sessionDate(session(f(mine))), "", "none: today's, then");
+});
+
+test("a session's title: its own, or a shared one's first file that has one, never a private file's", () => {
+  const f = (path, title) => ({ path, content: `---\ndate: 2026-10-04\n${title === undefined ? "" : `title: ${title}\n`}---\n- 20:00 x\n` });
+  const session = (...files) => pages(files, ["Sessions/Session 1"]).find((p) => p.path === "Sessions/Session 1");
+  const [old, arn, mine] = ["Sessions/Session 1.md", "Sessions/Session 1/Arn.md", "Sessions/Session 1/Sibling 5.md"];
+
+  assert.equal(sessionTitle(f("Sessions/Session 2.md", "The bridge collapse")), "The bridge collapse");
+  assert.equal(sessionTitle(f("Sessions/Session 2.md")), "");
+  assert.equal(sessionTitle(f("Sessions/Session 2.md", "")), "", "a cleared title is none");
+  // Session 1.md first, then the players' files by name; a blank one is skipped.
+  assert.equal(sessionTitle(session(f(old, "Old"), f(arn, "Arn's"), f(mine, "Mine"))), "Old");
+  assert.equal(sessionTitle(session(f(old, ""), f(arn, "Arn's"), f(mine, "Mine"))), "Arn's");
+  assert.equal(sessionTitle(session(f(arn), f(mine, "Mine"))), "Mine");
+  // Private files (yours, a DM's copy of a player's) never title the session.
+  const secret = [f("Private/Sessions/Session 1/Sibling 5.md", "Secret"), f(".lorekeeper/dm/aaaaaaaaaaaaaaaaaaaaaaaaaa/Sessions/Session 1/Arn.md", "Arn's secret")];
+  assert.equal(sessionTitle(session(f(mine), ...secret)), "");
+  // What setProps writes reads back as typed, quotes and all; the page's content carries it, so search finds it.
+  for (const title of ['The "bridge": gone', "'Twas a trap", "- Dragons -"]) {
+    const md = setProps(f(mine).content, { title });
+    assert.equal(sessionTitle(session({ path: mine, content: md })), title, md);
+  }
+  assert.ok(session(f(arn, "The bridge collapse")).content.includes("\ntitle: The bridge collapse\n"));
+  assert.equal(search("bridge", pages([f(arn, "The bridge collapse")], ["Sessions/Session 1"]))[0]?.inName, true, "search finds it by its title");
+
+  assert.equal(shownName(session(f(arn, "The bridge collapse"))), "Session 1 · The bridge collapse");
+  assert.equal(shownName(session(f(arn))), "Session 1");
+  assert.equal(shownName(f("NPCs/Vex.md", "Baron")), "Vex", "only sessions show a title");
+});
+
+test("a session's title goes to its own file, or yours in a shared one, never another player's", () => {
+  const f = (path) => ({ path, content: "- 20:00 x\n" });
+  const session = (...paths) => pages(paths.map(f), ["Sessions/Session 1"]).find((p) => p.path === "Sessions/Session 1");
+  const [old, arn, mine] = ["Sessions/Session 1.md", "Sessions/Session 1/Arn.md", "Sessions/Session 1/Sibling 5.md"];
+  assert.equal(titleFile(f("Sessions/Session 2.md"), ""), "Sessions/Session 2.md", "a session of your own");
+  assert.equal(titleFile(session(old, arn), "Sibling 5"), old, "Session 1.md, which Edit opens first");
+  assert.equal(titleFile(session(old, arn), ""), old);
+  assert.equal(titleFile(session(arn), "Sibling 5"), mine, "yours, there yet or not");
+  assert.equal(titleFile(session(arn, mine), "Sibling 5"), mine);
+  assert.equal(titleFile(session(arn), ""), null, "no character: never Arn's");
 });
 
 test("Delete takes a shared session only when every file in it is yours", () => {

@@ -123,8 +123,9 @@
     <dialog id="rename-dialog" aria-labelledby="rename-title">
       <form id="rename-form" method="dialog" novalidate>
         <h2 id="rename-title">Rename page</h2>
-        <label>Name <input id="rename-name" aria-required="true" aria-describedby="rename-help" autocomplete="off" /></label>
-        <label>Folder <select id="rename-folder" aria-describedby="rename-help"></select></label>
+        <!-- On a session it sets its title instead (Session title): the file and its links keep their "Session N" name. -->
+        <label><span id="rename-label">Name</span> <input id="rename-name" aria-required="true" aria-describedby="rename-help" autocomplete="off" /></label>
+        <label id="rename-folder-row">Folder <select id="rename-folder" aria-describedby="rename-help"></select></label>
         <p id="rename-help" class="sr-only">Links to this page are updated too.</p>
         <p id="rename-error" role="alert"></p>
         <div class="dialog-actions">
