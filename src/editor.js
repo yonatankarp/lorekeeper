@@ -336,8 +336,8 @@ export function createEditor(parent, { onChange, onFollowLink, pageNames, onImag
         }
         const link = e.target.closest?.(".cm-md-wikilink");
         if (!link) return false;
-        const onActiveLine = activeLines(view.state).has(view.state.doc.lineAt(view.posAtDOM(link)).number);
-        if (onActiveLine && !e.metaKey && !e.ctrlKey) return false;
+        // Only ⌘/Ctrl-click follows a link, so a click while editing never jumps away.
+        if (!e.metaKey && !e.ctrlKey) return false;
         e.preventDefault();
         onFollowLink(link.dataset.target);
         return true;

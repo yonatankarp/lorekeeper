@@ -263,7 +263,7 @@ These work even while Lorekeeper is in the background. Change them in **Settings
 | `Tab` or `Enter` | Takes the suggested page name (type `[[` or `@` for suggestions) |
 | `Tab` `⇧Tab` / `Tab` `Shift+Tab` | Indents or outdents a list item |
 | `Enter` | Continues a list |
-| `⌘`-click / `Ctrl`-click | Follows a link on the line you're editing (elsewhere a click does) |
+| `⌘`-click / `Ctrl`-click | Follows a link (a plain click just places the cursor) |
 
 ### In search
 
