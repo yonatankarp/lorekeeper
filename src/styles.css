@@ -463,9 +463,9 @@ a.missing { opacity: 0.7; text-decoration: underline dashed; }
   background: var(--surface-panel);
   font-size: 15px;
 }
-/* A PC's portrait from D&D Beyond, in the stat block's corner. */
+/* A page's portrait in the stat block's corner, uncropped up to 2:3 (a full-length one is cut from the bottom, keeping the face). */
 .props-portrait { float: right; margin: 0 0 6px 14px; }
-.props-portrait img { display: block; width: 96px; height: 96px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.props-portrait img { display: block; width: 120px; height: auto; max-height: 180px; object-fit: cover; object-position: top; border-radius: 6px; border: 1px solid var(--line); }
 .props dl { display: grid; grid-template-columns: max-content 1fr; align-items: baseline; gap: 2px 16px; margin: 0; }
 /* "Human Barbarian, level 1": the stat block's first line, as under a monster's name. */
 .props-summary { margin: 0; font-style: italic; color: var(--accent-text); }
@@ -584,7 +584,7 @@ select:is(.status, .attitude) { appearance: auto; border: 0; cursor: pointer; }
 /* Who wrote a note in a shared session: a quiet name after it, with a small portrait. */
 .timeline .by { color: var(--muted); font: 14px var(--font-ui); white-space: nowrap; }
 .timeline .author { color: inherit; }
-.author-portrait img { width: 16px; height: 16px; margin-right: 4px; border-radius: 50%; object-fit: cover; vertical-align: -3px; }
+.author-portrait img { width: 16px; height: 16px; margin-right: 4px; border-radius: 50%; object-fit: cover; object-position: top; vertical-align: -3px; }
 
 /* ---------- Home: the campaign's contents page ---------- */
 #view .home-title { text-align: center; }
