@@ -54,6 +54,8 @@ jobs:
     env:
       # Windows code signing (docs/DEVELOPMENT.md) is on only once the ESIGNER_* secrets exist.
       WINDOWS_SIGNING: ${{ secrets.ESIGNER_CREDENTIAL_ID != '' }}
+      # macOS signing with our own certificate (docs/DEVELOPMENT.md) is on once the MACOS_CERTIFICATE secrets exist.
+      MACOS_SIGNING: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v7
       - name: Linux build dependencies
@@ -73,6 +75,27 @@ jobs:
         with:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
+      # A stable signature, so the macOS keychain knows each new version is the same app and stops asking for its
+      # passwords after every update. Tauri only takes Apple-issued certificates from APPLE_CERTIFICATE, so the
+      # certificate goes into a keychain here and Tauri gets just the name (APPLE_SIGNING_IDENTITY).
+      - name: macOS code signing
+        if: runner.os == 'macOS' && env.MACOS_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kc_password=$(openssl rand -hex 16)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$kc_password" "$kc"
+          security set-keychain-settings "$kc"
+          security unlock-keychain -p "$kc_password" "$kc"
+          security import "$RUNNER_TEMP/signing.p12" -k "$kc" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_password" "$kc" > /dev/null
+          read -ra keychains <<< "$(security list-keychains -d user | tr -d '"')"
+          security list-keychains -d user -s "$kc" "${keychains[@]}"
+          echo "APPLE_SIGNING_IDENTITY=Lorekeeper Code Signing" >> "$GITHUB_ENV"
       # Tauri runs this signCommand on the app exe, the NSIS plugins, the uninstaller and the installer
       # while bundling, so the update .sig is made from the signed installer. Passwords stay in env
       # (jsign's "env:"), never in the config or on a command line.
