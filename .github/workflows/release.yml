@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read # the release notes are written from the pull requests
 
 # The platforms build in parallel between two one-off jobs: `draft` makes the one draft release first (left to the
 # builds, each made its own: v0.7.0 had two), and `updater` writes latest.json last (each build rewrote it, dropping
@@ -20,19 +21,38 @@ jobs:
       id: ${{ steps.draft.outputs.id }}
     steps:
       - uses: actions/checkout@v7
-      # A re-run reuses the draft for the tag. The update dialog shows the start of the notes (about 400 characters):
-      # keep "What's new" first in RELEASE_NOTES.md.
-      - id: draft
+        with:
+          fetch-depth: 0 # the notes list the pull requests since the previous v* tag
+      - id: version
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           version=$(jq -r .version src-tauri/tauri.conf.json)
-          tag=${TAG:-v$version}
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate -q ".[] | select(.tag_name == \"$tag\" and .draft) | .id" | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG:-v$version}" >> "$GITHUB_OUTPUT"
+      # The pull requests merged since the last version, by the kind in their titles, then the fixed text in
+      # .github/release-footer.md. A version with no feat, fix or change fails here, before any draft exists.
+      # The update dialog shows the start of the notes (about 400 characters), which is the changes.
+      # `ref` is this commit, so a manual run on main (no tag yet) works too.
+      - id: notes
+        uses: yonatankarp/github-actions/.github/actions/release-notes@v2
+        with:
+          version: ${{ steps.version.outputs.tag }}
+          ref: ${{ github.sha }}
+          override: release-notes/{version}.md
+          footer: .github/release-footer.md
+      # A re-run reuses the draft for the tag, notes and all.
+      - id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NOTES: ${{ steps.notes.outputs.path }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate -q ".[] | select(.tag_name == \"$TAG\" and .draft) | .id" | head -n1)
           if [ -z "$id" ]; then
-            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" \
-              -f name="Lorekeeper $version" -F body=@RELEASE_NOTES.md -F draft=true -q .id)
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+              -f name="Lorekeeper $VERSION" -F body=@"$NOTES" -F draft=true -q .id)
           fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
 

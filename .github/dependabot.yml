@@ -1,5 +1,7 @@
 # Weekly dependency update PRs, grouped so each ecosystem is one PR.
 # Security fixes come separately, as soon as an advisory is published.
+# The prefixes make the titles pass the pull request title check (`chore: bump …`, `ci: bump …`),
+# and both kinds stay out of the release notes.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -12,6 +14,8 @@ updates:
       rust:
         patterns: ["*"]
         update-types: [minor, patch]
+    commit-message:
+      prefix: chore
 
   # The sync server and its protocol crate (docs/SYNC.md); the app will share sync-protocol.
   - package-ecosystem: cargo
@@ -21,6 +25,8 @@ updates:
     groups:
       sync:
         patterns: ["*"]
+    commit-message:
+      prefix: chore
 
   - package-ecosystem: docker
     directory: /sync-server
@@ -29,6 +35,8 @@ updates:
     groups:
       docker:
         patterns: ["*"]
+    commit-message:
+      prefix: chore
 
   # Build tools only; nothing from node_modules ships. After a marked or
   # @codemirror/* update, run `pnpm vendor` and commit src/vendor.
@@ -39,6 +47,8 @@ updates:
     groups:
       js:
         patterns: ["*"]
+    commit-message:
+      prefix: chore
 
   - package-ecosystem: github-actions
     directory: /
@@ -47,3 +57,5 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    commit-message:
+      prefix: ci

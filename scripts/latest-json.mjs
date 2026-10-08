@@ -20,9 +20,11 @@ function entry(suffix) {
 // The universal macOS app serves both chips; the keys are the ones tauri-action writes.
 const mac = entry(".app.tar.gz"), windows = entry("-setup.exe"), linux = entry(".AppImage");
 const keys = (names, value) => Object.fromEntries(names.map((n) => [n, value]));
+// The update dialog shows plain text: the release body without its markdown marks (### headings, **bold**, `code`).
+const plain = (md) => md.replace(/^#+ /gm, "").replace(/\*\*|`/g, "");
 const json = JSON.stringify({
   version: release.tag_name.replace(/^v/, ""),
-  notes: release.body ?? "",
+  notes: plain(release.body ?? ""),
   pub_date: new Date().toISOString(),
   platforms: {
     ...keys(["darwin-aarch64", "darwin-x86_64", "darwin-universal", "darwin-aarch64-app", "darwin-x86_64-app", "darwin-universal-app"], mac),
