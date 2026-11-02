@@ -42,3 +42,7 @@ Building, releasing and the update signing key: [docs/DEVELOPMENT.md](docs/DEVEL
 ## Credits
 
 Fonts: Solbera's D&D 5e fonts ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), see [src/fonts](src/fonts/README.md)). Editor: [CodeMirror](https://codemirror.net). Markdown: [marked](https://marked.js.org).
+
+## License
+
+The code is [MIT](LICENSE). The fonts and any vendored third-party code keep their own licences.
