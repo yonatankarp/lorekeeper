@@ -36,7 +36,8 @@ pub(crate) fn invite_link(url: &str) -> Result<String, &'static str> {
     if url.len() > MAX_LEN {
         return Err(NOT_AN_INVITE);
     }
-    let encoded = url.strip_prefix(PREFIX).ok_or(NOT_AN_INVITE)?;
+    // Windows hands the link over as `lorekeeper://join/?link=…`: a slash after the host.
+    let encoded = url.strip_prefix(PREFIX).or_else(|| url.strip_prefix("lorekeeper://join/?link=")).ok_or(NOT_AN_INVITE)?;
     // What encodeURIComponent makes of a link: unreserved characters and %XX. No second parameter, no fragment.
     if !encoded.bytes().all(|b| b.is_ascii_alphanumeric() || b"%-._~".contains(&b)) {
         return Err(NOT_AN_INVITE);
@@ -127,7 +128,9 @@ mod tests {
             assert_eq!(invite_link(&format!("{PREFIX}{}", encode(&l))), Ok(l.clone()), "{server}");
             // Through the URL type the deep-link plugin hands over, unchanged.
             let url: tauri::Url = format!("{PREFIX}{}", encode(&l)).parse().unwrap();
-            assert_eq!(invite_link(url.as_str()), Ok(l));
+            assert_eq!(invite_link(url.as_str()), Ok(l.clone()));
+            // As Windows hands it over, with a slash after the host.
+            assert_eq!(invite_link(&format!("lorekeeper://join/?link={}", encode(&l))), Ok(l));
         }
         // The host is lowercased as for a pasted link.
         let l = link("https://lorekeeper.yonatankarp.com");
@@ -142,7 +145,7 @@ mod tests {
             "lorekeeper://".into(),
             "lorekeeper://join".into(),
             format!("lorekeeper://JOIN?link={good}"),
-            format!("lorekeeper://join/?link={good}"),
+            format!("lorekeeper://join//?link={good}"),
             format!("lorekeeper://evil@join?link={good}"),
             format!("lorekeeper://join:80?link={good}"),
             format!("lorekeeper://join?url={good}"),

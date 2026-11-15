@@ -728,6 +728,8 @@ $("join-open").addEventListener("click", () => {
   $("join-link").focus();
 });
 $("join-link").addEventListener("input", resetJoin);
+// A pasted link is checked at once, so its server shows and Join is the only click left. Not while typing.
+$("join-link").addEventListener("paste", () => setTimeout(() => { if ($("join-link").value.trim()) checkJoin(); }));
 $("join-cancel").addEventListener("click", () => $("join-dialog").close());
 $("join-dialog").addEventListener("cancel", (e) => { if (joining) e.preventDefault(); });
 $("join-dialog").addEventListener("close", () => {
