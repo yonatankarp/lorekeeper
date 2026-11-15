@@ -1179,8 +1179,21 @@ fn emit_changed(app: &AppHandle) {
     let _ = app.emit("vault-changed", ());
 }
 
-#[tauri::command]
+/// Setup's preparing of the open campaign's folders. It runs off the main thread: on a first launch macOS holds the
+/// first read of Documents until you answer its prompt, and a blocked main thread leaves every window blank.
+static PREPARING: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// Waits for setup's preparing, so the first read shows the folders and templates it made. A second read waits too.
+fn wait_for_preparing() {
+    let mut preparing = PREPARING.lock().unwrap();
+    if let Some(prep) = preparing.take() {
+        let _ = prep.join();
+    }
+}
+
+#[tauri::command(async)] // off the main thread, like setup's preparing (see PREPARING)
 fn read_vault(app: AppHandle) -> Result<Vault, String> {
+    wait_for_preparing();
     let root = notes_dir(&app);
     let mut vault = Vault::default();
     if !root.is_absolute() {
@@ -2085,12 +2098,16 @@ pub fn run() {
                 let old = vault.join("Sessions").is_dir().then(|| vault.to_string_lossy().into_owned());
                 Settings { vault_path: old.clone().unwrap_or_default(), campaigns: old.into_iter().collect(), ..Settings::default() }
             });
-            // A folder on an unplugged drive shouldn't stop the app from starting.
-            let open = Path::new(&settings.vault_path);
-            if let Err(e) = if open.is_absolute() { prepare_campaign(handle, open) } else { Ok(()) } {
-                notify(handle, "Notes folder unavailable", &format!("{}: {e}", settings.vault_path));
-            }
             app.manage(Mutex::new(settings.clone()));
+            if Path::new(&settings.vault_path).is_absolute() {
+                let (app, path) = (handle.clone(), settings.vault_path.clone());
+                *PREPARING.lock().unwrap() = Some(thread::spawn(move || {
+                    // A folder on an unplugged drive shouldn't stop the app from starting.
+                    if let Err(e) = prepare_campaign(&app, Path::new(&path)) {
+                        notify(&app, "Notes folder unavailable", &format!("{path}: {e}"));
+                    }
+                }));
+            }
             allow_vault_images(handle, &settings.vault_path);
             build_tray(handle)?;
             // Windows are created here ("create": false in tauri.conf.json), after the state their
@@ -2270,6 +2287,36 @@ mod tests {
         assert!(vault.notes.iter().any(|n| n.path == "NPCs/Villains/Vex.md" && n.content == "# Vex"));
         assert!(!vault.folders.iter().chain(vault.notes.iter().map(|n| &n.path)).any(|p| p.contains(".obsidian")));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reading the notes waits for setup's preparing (off the main thread), and so does a read that starts meanwhile.
+    #[test]
+    fn reads_wait_for_the_folders_setup_prepares() {
+        let dir = temp_dir("preparing");
+        fs::create_dir_all(&dir).unwrap();
+        let made = dir.join("NPCs");
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let m = made.clone();
+        *PREPARING.lock().unwrap() = Some(thread::spawn(move || {
+            wait.recv().unwrap(); // held up, as by macOS asking about Documents
+            fs::create_dir(&m).unwrap();
+        }));
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let m = made.clone();
+                thread::spawn(move || {
+                    wait_for_preparing();
+                    m.is_dir()
+                })
+            })
+            .collect();
+        thread::sleep(Duration::from_millis(50));
+        assert!(readers.iter().all(|r| !r.is_finished()), "a read went ahead before the folders were made");
+        go.send(()).unwrap();
+        assert!(readers.into_iter().all(|r| r.join().unwrap()));
+        assert!(PREPARING.lock().unwrap().is_none());
+        wait_for_preparing(); // nothing left to wait for
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn temp_dir(name: &str) -> PathBuf {
