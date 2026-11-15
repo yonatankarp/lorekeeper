@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag like v0.2.0 (matching "version" in src-tauri/tauri.conf.json) to build installers
-# for macOS, Windows and Linux and attach them to a draft GitHub Release.
+# for macOS, Windows and Linux, attach them to a GitHub Release and publish it once every platform is up.
 on:
   push:
     tags: ["v*"]
@@ -13,7 +13,7 @@ permissions:
 
 # The platforms build in parallel between two one-off jobs: `draft` makes the one draft release first (left to the
 # builds, each made its own: v0.7.0 had two), and `updater` writes latest.json last (each build rewrote it, dropping
-# the others' platforms).
+# the others' platforms), then publishes the release.
 jobs:
   draft:
     runs-on: ubuntu-latest
@@ -157,6 +157,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Fails unless every platform's update bundle and its .sig are up, so a missing build stops here.
       - run: node scripts/latest-json.mjs "$GITHUB_REPOSITORY" "${{ needs.draft.outputs.id }}" --upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Every build passed and latest.json lists all platforms: publish, so installed apps see the update. The .dmg is
+      # the one download latest.json doesn't need, so it's checked here.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ID: ${{ needs.draft.outputs.id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$ID" -q '.assets[].name' | grep '\.dmg$' > /dev/null || { echo "::error::no .dmg in the release"; exit 1; }
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -f make_latest=true -q .html_url

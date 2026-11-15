@@ -21,7 +21,7 @@ pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":fal
 
 - `.github/workflows/ci.yml` runs `pnpm test` on pushes to `main` and on pull requests.
 - `.github/workflows/pr-title.yml` fails a pull request whose title doesn't start with its kind (`feat(Sessions): …`), since the release notes are sorted by it. Dependabot's titles get `chore:` or `ci:` from `.github/dependabot.yml`.
-- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release: one job writes the notes from the pull requests (the `release-notes` action from `yonatankarp/github-actions`) and makes the draft, the platforms build in parallel into it, and a last job writes `latest.json` from their `.sig` files (`scripts/latest-json.mjs`), so builds can't make two drafts or drop each other's platforms. It builds a universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
+- `.github/workflows/release.yml` runs on `v*` tags and creates a **draft** release: one job writes the notes from the pull requests (the `release-notes` action from `yonatankarp/github-actions`) and makes the draft, the platforms build in parallel into it, and a last job writes `latest.json` from their `.sig` files (`scripts/latest-json.mjs`), so builds can't make two drafts or drop each other's platforms, then publishes the release once every platform is up. It builds a universal `.dmg`, Windows `-setup.exe`, Linux `.AppImage`, plus the updater files (`latest.json`, `.app.tar.gz`, `.sig`).
 - `.github/workflows/sync-server.yml` tests `sync-protocol/` and `sync-server/` when they change, and on `main` publishes the server image to `ghcr.io/yonatankarp/lorekeeper-sync`.
 
 ## Sync server
@@ -74,7 +74,7 @@ To release:
 
    To change a line, edit that pull request's title or its `## Release note`. The notes are read when the tag is pushed, so read this right before tagging. A version with no `feat`, `change` or `fix` fails before a draft is made. A `release-notes/X.Y.Z.md` file, if you add one, is published instead, word for word, without the footer. A re-run keeps the draft's notes; delete the draft to write them again.
 3. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. Check there's exactly one draft for the tag, holding the `.dmg`, `.app.tar.gz`, `-setup.exe` and `.AppImage` (each with its `.sig`), and that its `latest.json` lists `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64` and `linux-x86_64` (re-run a job if one is missing), then publish. Installed apps only see published releases.
+4. The workflow publishes the release itself once every build passed: the `updater` job runs only then, `latest.json` fails without each platform's update bundle and `.sig`, and it checks for the `.dmg`. If a job fails, the release stays a draft (installed apps only see published ones): re-run the failed job and the rest follows.
 
 ## Update signing key
 
