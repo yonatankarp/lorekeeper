@@ -2119,9 +2119,9 @@ pub fn run() {
             }
             Ok(())
         })
-        // Closing a window only hides it; the app keeps running in the tray. The D&D Beyond sign-in window really closes.
+        // Closing a window only hides it; the app keeps running in the tray. The D&D Beyond sign-in windows really close.
         .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } if window.label() != dndbeyond::LABEL => {
+            WindowEvent::CloseRequested { api, .. } if ![dndbeyond::LABEL, dndbeyond::POPUP].contains(&window.label()) => {
                 api.prevent_close();
                 let _ = window.hide();
                 #[cfg(target_os = "macos")]

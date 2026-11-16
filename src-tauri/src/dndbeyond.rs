@@ -13,8 +13,9 @@ use tauri::{AppHandle, Emitter, Manager, Url};
 
 use crate::github::{keychain, AGENT};
 
-/// The sign-in window's label; lib.rs lets it close for real (other windows only hide).
+/// The sign-in window's label, and its Google sign-in popup's; lib.rs lets them close for real (other windows only hide).
 pub const LABEL: &str = "dndbeyond";
+pub const POPUP: &str = "dndbeyond-google";
 const SITE: &str = "https://www.dndbeyond.com";
 const COOKIE: &str = "CobaltSession";
 const CANCELLED: &str = "Sign-in cancelled.";
@@ -351,14 +352,49 @@ fn open_window(app: &AppHandle) -> Result<(), String> {
     let url: Url = format!("{SITE}/sign-in?returnUrl=%2F").parse().expect("valid URL");
     // No capability names this window, and Tauri refuses IPC from remote pages without one.
     // Private browsing: nothing of the session stays in the app's web storage once the window closes.
+    let handle = app.clone();
+    let opener = app.clone();
     tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::External(url))
         .title("Sign in to D&D Beyond")
         .inner_size(480.0, 720.0)
         .center()
         .incognito(true)
+        // "Sign in with Google" is a Google popup, and webviews refuse every popup unless one is let through.
+        .on_new_window(move |url, features| {
+            if url.scheme() != "https" || url.host_str() != Some("accounts.google.com") {
+                return tauri::webview::NewWindowResponse::Deny;
+            }
+            if let Some(old) = handle.get_webview_window(POPUP) {
+                let _ = old.destroy();
+            }
+            let blank = tauri::WebviewUrl::External("about:blank".parse().expect("valid URL"));
+            // window_features keeps the opener's private session, so Google can hand the sign-in back to it.
+            match tauri::WebviewWindowBuilder::new(&handle, POPUP, blank).window_features(features).title("Sign in with Google").incognito(true).build() {
+                Ok(window) => tauri::webview::NewWindowResponse::Create { window },
+                Err(_) => tauri::webview::NewWindowResponse::Deny,
+            }
+        })
+        // Google is done once D&D Beyond's page moves on (signed in or refused): its popup stays blank otherwise.
+        .on_navigation(move |url| {
+            if url.host_str() == Some("www.dndbeyond.com") {
+                if let Some(popup) = opener.get_webview_window(POPUP) {
+                    let _ = popup.destroy();
+                }
+            }
+            true
+        })
         .build()
         .map_err(|e| format!("Couldn't open the sign-in window: {e}"))?;
     Ok(())
+}
+
+/// Closes the sign-in window and its Google popup. The popup can't close itself: macOS webviews ignore window.close().
+fn close_windows(app: &AppHandle) {
+    for label in [POPUP, LABEL] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.destroy();
+        }
+    }
 }
 
 /// Waits, while the window is open, for the signed-in session cookie: once the window has left the sign-in
@@ -367,7 +403,10 @@ fn wait_sign_in(app: &AppHandle) -> Result<(), String> {
     let mut next_try = Instant::now();
     loop {
         thread::sleep(Duration::from_secs(1));
-        let Some(w) = app.get_webview_window(LABEL) else { return Err(CANCELLED.into()) };
+        let Some(w) = app.get_webview_window(LABEL) else {
+            close_windows(app);
+            return Err(CANCELLED.into());
+        };
         let signed_in_page = w.url().is_ok_and(|u| u.host_str() == Some("www.dndbeyond.com") && !u.path().starts_with("/sign-in"));
         if !signed_in_page || Instant::now() < next_try {
             continue;
@@ -385,7 +424,7 @@ fn wait_sign_in(app: &AppHandle) -> Result<(), String> {
             continue;
         }
         let saved = save_session(&cookie);
-        let _ = w.destroy();
+        close_windows(app);
         return saved;
     }
 }
