@@ -1,0 +1,74 @@
+name: Smoke test
+
+# Runs the release build on macOS and Windows (the party's systems) and opens the D&D Beyond sign-in window's Google
+# popup, the path that crashed 0.8.2 on macOS. Unit tests can't see this: they always unwind and open no webview.
+# No paths filter: the main ruleset requires both checks, and a required check that never runs blocks the pull
+# request. A pull request that leaves the app alone passes in seconds instead (the "App changed" step).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      pull-requests: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: App changed
+        id: app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Pushes to main always run; a diff GitHub can't list (very large) runs too.
+          if [ -z "$PR" ] || ! files=$(gh pr diff "$PR" --name-only -R "$GITHUB_REPOSITORY") \
+            || grep -qE '^(src-tauri/|\.github/workflows/smoke\.yml$)' <<<"$files"; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        if: steps.app.outputs.run
+      # "abort" turns a WebKit exception that wry catches into a crash (see the comment in Cargo.toml).
+      - name: Release profile unwinds
+        if: steps.app.outputs.run
+        run: grep -qx 'panic = "unwind"' src-tauri/Cargo.toml || { echo '::error::[profile.release] must keep panic = "unwind"'; exit 1; }
+      - uses: pnpm/action-setup@v6
+        if: steps.app.outputs.run
+      - uses: actions/setup-node@v7
+        if: steps.app.outputs.run
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.app.outputs.run
+      - uses: Swatinem/rust-cache@v2
+        if: steps.app.outputs.run
+        with:
+          workspaces: src-tauri
+      - if: steps.app.outputs.run
+        run: pnpm install --frozen-lockfile
+      - if: steps.app.outputs.run
+        run: pnpm tauri build --no-bundle --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      # Exits 0 once Google's window opened and stayed up, 1 if it never opened, and dies if opening it crashes.
+      - name: Open the Google sign-in popup
+        if: steps.app.outputs.run
+        timeout-minutes: 3
+        env:
+          LOREKEEPER_PROFILE: smoke
+          LOREKEEPER_SMOKE: dndbeyond-google
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            src-tauri/target/release/Lorekeeper
+          else
+            # A GUI app doesn't hold the shell on Windows: wait for it, keep its output, pass on its exit code.
+            pwsh -Command '$p = Start-Process src-tauri/target/release/Lorekeeper.exe -Wait -PassThru -RedirectStandardOutput out.txt -RedirectStandardError err.txt; Get-Content out.txt, err.txt; exit $p.ExitCode'
+          fi

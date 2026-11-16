@@ -70,16 +70,18 @@ sync-protocol = { opt-level = 3 }
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# Not "abort": WebKit exceptions that wry catches must unwind through Rust frames, or the app dies on one (0.8.2's
+# Google sign-in crash). Rust panics still abort, from the panic hook in lib.rs. CI checks this stays.
+panic = "unwind"
 strip = true
 
 # glib 0.18.5 with the RUSTSEC-2024-0429 fix backported (Linux only); see patches/README.md.
 [patch.crates-io]
 glib = { path = "patches/glib-0.18.5" }
 
-# Returning focus to the app the quick-note box was opened over.
+# Returning focus to the app the quick-note box was opened over; the CI smoke test's click (dndbeyond::smoke_test).
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace", "NSEvent", "NSGraphicsContext", "NSResponder", "NSWindow"] }
 
 # O_NOFOLLOW when sync reads files to upload.
 [target.'cfg(unix)'.dependencies]
