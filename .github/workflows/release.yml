@@ -106,7 +106,8 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.draft.outputs.version }}
-        run: perl -pi -e 's/^version = "0\.0\.0"$/version = "$ENV{VERSION}"/' src-tauri/Cargo.toml && grep -qx "version = \"$VERSION\"" src-tauri/Cargo.toml
+        # Windows checks files out with CRLF line endings, so the \r stays where it was.
+        run: perl -pi -e 's/^version = "0\.0\.0"(\r?)$/version = "$ENV{VERSION}"$1/' src-tauri/Cargo.toml && grep -q "^version = \"$VERSION\"" src-tauri/Cargo.toml
       # A stable signature, so the macOS keychain knows each new version is the same app and stops asking for its
       # passwords after every update. Tauri only takes Apple-issued certificates from APPLE_CERTIFICATE, so the
       # certificate goes into a keychain here and Tauri gets just the name (APPLE_SIGNING_IDENTITY).
