@@ -1916,7 +1916,12 @@ window.addEventListener("focus", refresh);
 window.addEventListener("beforeunload", flush);
 
 applySettings(await invoke("get_settings").catch(() => ({})));
+// On a first launch macOS asks before Lorekeeper may open Documents, and the notes wait for the answer.
+const waiting = setTimeout(() => {
+  $("view").innerHTML = `<p>Opening your notes…</p><p>If macOS asks whether Lorekeeper may access files in your Documents folder, choose <strong>Allow</strong>.</p>`;
+}, 1000);
 await refresh();
+clearTimeout(waiting);
 open(null); // Home
 
 buildMenu().catch((err) => console.error("menu:", err));

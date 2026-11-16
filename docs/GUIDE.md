@@ -10,7 +10,7 @@ Download from the [latest release](https://github.com/yonatankarp/lorekeeper/rel
 
 From version 0.2.0 on, Lorekeeper updates itself.
 
-On macOS, allow **Accessibility** the first time you use `⌘⇧S` (System Settings > Privacy & Security), and **Documents** access when asked.
+On macOS, allow **Accessibility** the first time you use `⌘⇧S` (System Settings > Privacy & Security), and **Documents** access when asked. Until you do, the window shows **Opening your notes…**.
 
 ## During the game
 
