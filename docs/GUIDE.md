@@ -62,7 +62,7 @@ If the current session's last note is over 12 hours old, the box offers the next
 
 PC pages can come straight from D&D Beyond character sheets:
 
-1. **Sign in** (once): **Settings > General > D&D Beyond > Sign in…** opens D&D Beyond's own sign-in page. Your password goes to D&D Beyond, never to Lorekeeper. Google sign-in is often refused in app windows like this one; use a Wizards, Apple or Twitch login instead. Public characters work without signing in; campaigns and "Campaign Only" characters need it.
+1. **Sign in** (once): **Settings > General > D&D Beyond > Sign in…** opens D&D Beyond's own sign-in page. Your password goes to D&D Beyond, never to Lorekeeper. **Sign in with Google** opens Google's sign-in in a second window, which closes by itself once Google is done. If Google refuses to sign you in there, use a Wizards, Apple or Twitch login instead. Public characters work without signing in; campaigns and "Campaign Only" characters need it.
 2. **Import:** **New page**, choose **PC**, then **Import from D&D Beyond…**. Paste a character link (`dndbeyond.com/characters/…`) or a campaign link (`dndbeyond.com/campaigns/…`) and click **Look up**. A character brings the rest of its campaign's party along. Tick the characters you want and click **Import**. Each one updates its page in `PCs/` (the one linking to its sheet, else the one with its name) or gets a new page from the PC template.
 3. **Refresh:** on a PC page, **Refresh** (the circling arrow next to **Character sheet**) reads the character again, say after a level up. **Edit > Undo** puts the page back, after an import too.
 
