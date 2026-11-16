@@ -1,11 +1,16 @@
 name: Release
 
-# Push a tag like v0.2.0 (matching "version" in src-tauri/tauri.conf.json) to build installers
-# for macOS, Windows and Linux, attach them to a GitHub Release and publish it once every platform is up.
+# Push a tag like v0.2.0 to build installers for macOS, Windows and Linux, attach them to a GitHub Release and publish
+# it once every platform is up. The version comes from the tag alone: the repository keeps 0.0.0 (Cargo.toml) and each
+# build writes the tag's version in before building.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, like 0.2.0 (the tag v0.2.0 is made on this commit)
+        required: true
 
 permissions:
   contents: write
@@ -19,17 +24,18 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       id: ${{ steps.draft.outputs.id }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the notes list the pull requests since the previous v* tag
       - id: version
         env:
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.version) }}
         run: |
-          version=$(jq -r .version src-tauri/tauri.conf.json)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG:-v$version}" >> "$GITHUB_OUTPUT"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG isn't a version tag like v0.2.0"; exit 1; }
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       # The pull requests merged since the last version, by the kind in their titles, then the fixed text in
       # .github/release-footer.md. A version with no feat, fix or change fails here, before any draft exists.
       # The update dialog shows the start of the notes (about 400 characters), which is the changes.
@@ -95,6 +101,12 @@ jobs:
         with:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
+      # The app's version (About, the updater, file names) is Cargo.toml's; tauri.conf.json names none.
+      - name: Version from the tag
+        shell: bash
+        env:
+          VERSION: ${{ needs.draft.outputs.version }}
+        run: perl -pi -e 's/^version = "0\.0\.0"$/version = "$ENV{VERSION}"/' src-tauri/Cargo.toml && grep -qx "version = \"$VERSION\"" src-tauri/Cargo.toml
       # A stable signature, so the macOS keychain knows each new version is the same app and stops asking for its
       # passwords after every update. Tauri only takes Apple-issued certificates from APPLE_CERTIFICATE, so the
       # certificate goes into a keychain here and Tauri gets just the name (APPLE_SIGNING_IDENTITY).
