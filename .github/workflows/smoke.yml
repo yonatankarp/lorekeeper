@@ -1,0 +1,51 @@
+name: Smoke test
+
+# Runs the release build on macOS and Windows (the party's systems) and opens the D&D Beyond sign-in window's Google
+# popup, the path that crashed 0.8.2 on macOS. Unit tests can't see this: they always unwind and open no webview.
+on:
+  push:
+    branches: [main]
+    paths: [src-tauri/**, .github/workflows/smoke.yml]
+  pull_request:
+    paths: [src-tauri/**, .github/workflows/smoke.yml]
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      # "abort" turns a WebKit exception that wry catches into a crash (see the comment in Cargo.toml).
+      - name: Release profile unwinds
+        run: grep -qx 'panic = "unwind"' src-tauri/Cargo.toml || { echo '::error::[profile.release] must keep panic = "unwind"'; exit 1; }
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tauri build --no-bundle --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      # Exits 0 once Google's window opened and stayed up, 1 if it never opened, and dies if opening it crashes.
+      - name: Open the Google sign-in popup
+        timeout-minutes: 3
+        env:
+          LOREKEEPER_PROFILE: smoke
+          LOREKEEPER_SMOKE: dndbeyond-google
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            src-tauri/target/release/Lorekeeper
+          else
+            # A GUI app doesn't hold the shell on Windows: wait for it, keep its output, pass on its exit code.
+            pwsh -Command '$p = Start-Process src-tauri/target/release/Lorekeeper.exe -Wait -PassThru -RedirectStandardOutput out.txt -RedirectStandardError err.txt; Get-Content out.txt, err.txt; exit $p.ExitCode'
+          fi

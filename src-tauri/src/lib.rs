@@ -1993,6 +1993,11 @@ pub fn run() {
     std::panic::set_hook(Box::new(move |info| {
         let _ = fs::write(std::env::temp_dir().join("lorekeeper-crash.log"), format!("Lorekeeper {}: {info}\n", env!("CARGO_PKG_VERSION")));
         default_hook(info);
+        // Release builds unwind (Cargo.toml) only so WebKit exceptions that wry catches can pass through Rust frames;
+        // a Rust panic still ends the app rather than one thread, leaving poisoned locks behind.
+        if !cfg!(debug_assertions) {
+            std::process::abort();
+        }
     }));
     let builder = tauri::Builder::default();
     // Windows and Linux start a new copy for each lorekeeper:// link (and each launch): it hands its arguments to the
@@ -2087,6 +2092,11 @@ pub fn run() {
             delete_campaign
         ])
         .setup(|app| {
+            // Nothing else starts, so no notes folder or Documents prompt can hold up CI.
+            if profile().is_some() && std::env::var_os("LOREKEEPER_SMOKE").is_some_and(|s| s == "dndbeyond-google") {
+                dndbeyond::smoke_test(app.handle());
+                return Ok(());
+            }
             // Menu-bar app: no Dock icon.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

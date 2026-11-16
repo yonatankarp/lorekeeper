@@ -344,12 +344,11 @@ fn lookup(link: &str) -> Result<Vec<Character>, String> {
 
 // ---------- sign-in window ----------
 
-fn open_window(app: &AppHandle) -> Result<(), String> {
+fn open_window(app: &AppHandle, url: Url) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(LABEL) {
         let _ = w.set_focus();
         return Err("Finish signing in in the D&D Beyond window.".into());
     }
-    let url: Url = format!("{SITE}/sign-in?returnUrl=%2F").parse().expect("valid URL");
     // No capability names this window, and Tauri refuses IPC from remote pages without one.
     // Private browsing: nothing of the session stays in the app's web storage once the window closes.
     let handle = app.clone();
@@ -386,6 +385,70 @@ fn open_window(app: &AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| format!("Couldn't open the sign-in window: {e}"))?;
     Ok(())
+}
+
+/// CI smoke test (`LOREKEEPER_SMOKE=dndbeyond-google`, test profiles only): opens the sign-in window on a plain
+/// page, has it open Google's popup the way D&D Beyond's button does, and exits 0 once the popup has stayed up,
+/// 1 if it never opened. A crash while opening it (0.8.2 aborted there on macOS) kills the process, failing the check.
+pub fn smoke_test(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || {
+        let fail = |why: &str| {
+            eprintln!("smoke test failed: {why}");
+            std::process::exit(1);
+        };
+        // A real page: scripts don't run on about:blank, and data: URLs need a Tauri feature the app doesn't ship.
+        if let Err(e) = open_window(&app, "https://example.com/".parse().expect("valid URL")) {
+            fail(&e);
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        // Until it opens: the page may not have loaded yet.
+        while app.get_webview_window(POPUP).is_none() {
+            if Instant::now() > deadline {
+                fail("Google's window never opened");
+            }
+            if let Some(w) = app.get_webview_window(LABEL) {
+                // WebKit only opens a popup for a click; WebView2 also for script.
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = w.eval("window.onclick = () => window.open('https://accounts.google.com/')");
+                    // A click on a window that isn't key only makes it key.
+                    let _ = w.set_focus();
+                    let _ = app.run_on_main_thread(move || click(&w));
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = w.eval("window.open('https://accounts.google.com/')");
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+        thread::sleep(Duration::from_secs(3));
+        if app.get_webview_window(POPUP).is_none() {
+            fail("Google's window closed by itself");
+        }
+        println!("smoke test passed: Google's window opened");
+        app.exit(0);
+    });
+}
+
+/// A left click in the middle of the window. WebKit only opens a popup for a real click, not for script alone.
+#[cfg(target_os = "macos")]
+fn click(w: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
+    let Ok(ptr) = w.ns_window() else { return };
+    // SAFETY: Tauri's NSWindow for this window, used on the main thread while the window is alive.
+    let window = unsafe { &*ptr.cast::<NSWindow>() };
+    let rect = window.contentLayoutRect();
+    let mut at = rect.origin;
+    at.x += rect.size.width / 2.0;
+    at.y += rect.size.height / 2.0;
+    for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind, at, NSEventModifierFlags::empty(), 0.0, window.windowNumber(), None, 0, 1, 1.0,
+        );
+        if let Some(event) = event {
+            window.sendEvent(&event);
+        }
+    }
 }
 
 /// Closes the sign-in window and its Google popup. The popup can't close itself: macOS webviews ignore window.close().
@@ -440,7 +503,7 @@ fn on_dndbeyond(domain: Option<&str>) -> bool {
 /// when the window is closed first.
 #[tauri::command]
 pub async fn dndbeyond_sign_in(app: AppHandle) -> Result<String, String> {
-    open_window(&app)?;
+    open_window(&app, format!("{SITE}/sign-in?returnUrl=%2F").parse().expect("valid URL"))?;
     let handle = app.clone();
     crate::off_main(move || wait_sign_in(&handle)).await?;
     let _ = app.emit("dndbeyond-changed", ());
