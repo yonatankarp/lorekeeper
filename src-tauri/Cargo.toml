@@ -1,6 +1,7 @@
 [package]
 name = "lorekeeper"
-version = "0.8.2"
+# Releases write the tag's version here (.github/workflows/release.yml); local builds stay 0.0.0.
+version = "0.0.0"
 description = "Quick D&D session notes from a hotkey"
 authors = ["Yonatan Karp-Rudin"]
 edition = "2021"

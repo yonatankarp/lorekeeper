@@ -17,6 +17,8 @@ Local release builds need the update signing key, or skip the update files:
 pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
+Local builds are version 0.0.0 (only releases get the tag's version), so on the real profile the updater offers every release. Run them with a test profile (`LOREKEEPER_PROFILE`, below), which skips the update check.
+
 ## CI and releases
 
 - `.github/workflows/ci.yml` runs `pnpm test` on pushes to `main` and on pull requests.
@@ -63,10 +65,9 @@ Test profiles ignore `lorekeeper://` invite links: two copies can't both own the
 
 Clean up afterwards: delete the profiles' notes folders, `<config>/profiles/`, and their keychain entries (`security delete-generic-password -s com.yonatankarp.dndnotes.profile.dm -a "sync-room <room>"` and so on, or Keychain Access).
 
-To release:
+To release (nothing to bump: the version comes from the tag):
 
-1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
-2. Preview the release notes. They're written from the pull requests merged since the last tag, by the kind in each title (`feat`, `change`, `fix`; CLAUDE.md, Commits), with `.github/release-footer.md` after them. The update dialog shows their first ~400 characters. After `git fetch origin --tags`:
+1. Preview the release notes. They're written from the pull requests merged since the last tag, by the kind in each title (`feat`, `change`, `fix`; CLAUDE.md, Commits), with `.github/release-footer.md` after them. The update dialog shows their first ~400 characters. After `git fetch origin --tags`:
 
    ```bash
    gh api 'repos/yonatankarp/github-actions/contents/.github/actions/release-notes/release_notes.py?ref=v2' -q .content | base64 -d |
@@ -74,8 +75,8 @@ To release:
    ```
 
    To change a line, edit that pull request's title or its `## Release note`. The notes are read when the tag is pushed, so read this right before tagging. A version with no `feat`, `change` or `fix` fails before a draft is made. A `release-notes/X.Y.Z.md` file, if you add one, is published instead, word for word, without the footer. A re-run keeps the draft's notes; delete the draft to write them again.
-3. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. The workflow publishes the release itself once every build passed: the `updater` job runs only then, `latest.json` fails without each platform's update bundle and `.sig`, and it checks for the `.dmg`. If a job fails, the release stays a draft (installed apps only see published ones): re-run the failed job and the rest follows.
+2. Tag `main` and push the tag: `git tag vX.Y.Z origin/main && git push origin vX.Y.Z`. Or run the Release workflow on `main` by hand with the version.
+3. The workflow writes the version into `src-tauri/Cargo.toml` (main keeps `0.0.0`, and `tauri.conf.json` names none, so Tauri takes Cargo's), builds, and publishes the release itself once every build passed: the `updater` job runs only then, `latest.json` fails without each platform's update bundle and `.sig`, and it checks for the `.dmg`. If a job fails, the release stays a draft (installed apps only see published ones): re-run the failed job and the rest follows.
 
 ## Update signing key
 

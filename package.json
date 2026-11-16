@@ -1,7 +1,6 @@
 {
   "name": "lorekeeper",
   "private": true,
-  "version": "0.8.2",
   "type": "module",
   "scripts": {
     "tauri": "tauri",
